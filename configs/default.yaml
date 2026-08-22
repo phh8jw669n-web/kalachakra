@@ -1,0 +1,73 @@
+# Project Kalachakra — default configuration.
+# Values mirror src/kalachakra/constants.py; this file is the operator-facing
+# knob board for a training run. Nothing here is read implicitly — scripts take
+# explicit CLI flags — but it documents the canonical settings in one place.
+
+timeline:
+  epoch_jd: 588465.5            # Kali Yuga: 3102-02-18 BCE 00:00 UTC
+  years: 10256
+  end_year_ce: 7154
+  vighatika_seconds: 24         # native temporal step
+  ephemeris_dataset: DE441
+
+grid:
+  n_nodes: 122880               # Level-5 hierarchical spatial index
+  scheme: fibonacci             # fibonacci | icosphere
+
+global_state:
+  n_bodies: 10                  # 7 masses + Rahu + Ketu + Ayanamsha
+  body_features: 7              # v_i(t) width
+  local_features: 5             # e_i(s,t) width
+
+storage:
+  chunk_frames: 1000000
+  dtype: bfloat16
+  delta_encode: true
+  ring_buffer_gb: 20
+
+model:
+  hidden: 128
+  latent: 64                    # d_latent
+  fourier_modes: 32
+  knn: 7
+  n_blocks: 3
+
+loss:
+  geodesic: 1.0
+  spectral: 0.5
+  aspect: 0.5
+
+optim:
+  optimizer: lion               # lion | adamw
+  lr: 1.0e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.99]
+  restart_period: 10000         # cosine annealing T_0 (steps)
+  restart_mult: 2               # T_mult
+  min_lr: 1.0e-6
+  amp_dtype: bfloat16
+
+training:
+  window_frames: 64
+  window_stride: 32
+  node_subsample: 4096
+  batch: 4
+  workers: 4
+  micro_checkpoint_hours: 12
+  era_checkpoint_years: 500
+  grad_clip: 1.0
+
+analysis:
+  singularity_sigma: 4.0
+  hdbscan_min_cluster_size: 50
+
+serving:
+  host: 127.0.0.1
+  port: 8000
+
+hardware:
+  unified_memory_gb: 128
+  bandwidth_gb_s: 546
+  mps_budget_gb: 80
+  target_frames_per_second: 150000
+  training_duration_days: 90

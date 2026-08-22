@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kalachakra"
+version = "0.1.0"
+description = "Autonomous unsupervised ML mapping of the solar system's spatio-temporal geometric waves onto a geodesic model of Earth."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Project Kalachakra" }]
+keywords = ["ephemeris", "autoencoder", "fourier-neural-operator", "spherical", "geodesic"]
+
+# Only numpy is required for the mathematical core (constants, geometry, grid,
+# projection, storage, losses.reference, analysis, serving.broadcast).
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+# Neural core, training, streaming data pipeline (Phase 3-4 compute).
+train = ["torch>=2.2"]
+# Physics engine for generating G(t) from DE441 (Phase 1).
+ephemeris = ["pyswisseph>=2.10"]
+# Density-based manifold clustering (Phase 3 analysis).
+cluster = ["hdbscan>=0.8.33", "scikit-learn>=1.3"]
+# REST broadcast API (Phase 4 serving).
+serve = ["fastapi>=0.110", "uvicorn>=0.29"]
+# Everything, for a full workstation build.
+all = [
+    "torch>=2.2",
+    "pyswisseph>=2.10",
+    "hdbscan>=0.8.33",
+    "scikit-learn>=1.3",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+dev = ["pytest>=8", "ruff>=0.4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kalachakra — Cosmic Weather Radar</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #05070e; color: #dfe7ff;
+    font: 14px/1.5 ui-monospace, "SF Mono", Menlo, monospace; overflow: hidden; }
+  #app { position: fixed; inset: 0; }
+  #hud { position: fixed; top: 16px; left: 16px; max-width: 340px;
+    background: rgba(10,14,26,.72); border: 1px solid #1d2740; border-radius: 10px;
+    padding: 14px 16px; backdrop-filter: blur(6px); }
+  #hud h1 { font-size: 15px; letter-spacing: .04em; margin-bottom: 4px; }
+  #hud p  { font-size: 12px; color: #8fa1c9; margin-bottom: 10px; }
+  .row { display: flex; justify-content: space-between; gap: 12px;
+    padding: 3px 0; border-top: 1px dashed #1d2740; }
+  .row span:last-child { color: #7ee0c0; }
+  #legend { position: fixed; bottom: 16px; left: 16px; width: 260px;
+    background: rgba(10,14,26,.72); border: 1px solid #1d2740; border-radius: 10px;
+    padding: 10px 14px; }
+  #bar { height: 10px; border-radius: 5px; margin: 6px 0;
+    background: linear-gradient(90deg,#20124d,#3a0ca3,#4361ee,#4cc9f0,#80ffdb,#ffd166,#ef476f); }
+  .lbl { display: flex; justify-content: space-between; font-size: 11px; color: #8fa1c9; }
+  #err { position: fixed; top: 16px; right: 16px; max-width: 320px; font-size: 12px;
+    color: #ffd166; background: rgba(40,26,10,.7); border: 1px solid #5a4420;
+    border-radius: 8px; padding: 8px 12px; display: none; }
+  label { font-size: 12px; color: #8fa1c9; display: block; margin-top: 8px; }
+  input[type=text] { width: 100%; margin-top: 3px; padding: 5px 7px; border-radius: 6px;
+    border: 1px solid #1d2740; background: #0b1020; color: #dfe7ff; font: inherit; }
+</style>
+<!-- Three.js is loaded as an ES module from a CDN when the page is served over
+     the network. The broadcast API supplies the field data at runtime. -->
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="app"></div>
+<div id="hud">
+  <h1>KALACHAKRA</h1>
+  <p>Cosmic weather radar — geometric potential &amp; temporal shear over the geodesic Earth mesh.</p>
+  <div class="row"><span>Nodes</span><span id="n-nodes">—</span></div>
+  <div class="row"><span>Frame</span><span id="n-frame">0</span></div>
+  <div class="row"><span>Clusters</span><span id="n-clusters">—</span></div>
+  <div class="row"><span>Source</span><span id="n-source">synthetic</span></div>
+  <label>Broadcast API base URL
+    <input id="api" type="text" value="http://127.0.0.1:8000" />
+  </label>
+</div>
+<div id="legend">
+  <div>Geometric potential field</div>
+  <div id="bar"></div>
+  <div class="lbl"><span>low</span><span>high (singularity)</span></div>
+</div>
+<div id="err"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const $ = (id) => document.getElementById(id);
+const showErr = (m) => { const e = $('err'); e.style.display = 'block';
+  e.textContent = m; };
+
+// ---- scene ---------------------------------------------------------------
+const app = $('app');
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.01, 100);
+camera.position.set(0, 0.6, 3.0);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+app.appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.4;
+
+// faint reference globe
+scene.add(new THREE.Mesh(
+  new THREE.SphereGeometry(0.985, 48, 32),
+  new THREE.MeshBasicMaterial({ color: 0x0a1024, transparent: true, opacity: 0.85 })
+));
+scene.add(new THREE.Mesh(
+  new THREE.SphereGeometry(0.99, 24, 16),
+  new THREE.MeshBasicMaterial({ color: 0x1d2740, wireframe: true,
+    transparent: true, opacity: 0.15 })
+));
+
+// ---- colormap (perceptual-ish heat ramp) ---------------------------------
+const STOPS = [[0x20,0x12,0x4d],[0x3a,0x0c,0xa3],[0x43,0x61,0xee],
+  [0x4c,0xc9,0xf0],[0x80,0xff,0xdb],[0xff,0xd1,0x66],[0xef,0x47,0x6f]];
+function heat(t){ t = Math.max(0, Math.min(1, t)); const x = t*(STOPS.length-1);
+  const i = Math.floor(x), f = x-i, a = STOPS[i], b = STOPS[Math.min(i+1,STOPS.length-1)];
+  return [((a[0]+(b[0]-a[0])*f)/255),((a[1]+(b[1]-a[1])*f)/255),((a[2]+(b[2]-a[2])*f)/255)]; }
+
+// ---- point cloud from a heatmap payload ----------------------------------
+let cloud = null;
+function render_heatmap(hm){
+  if (cloud){ scene.remove(cloud); cloud.geometry.dispose(); cloud.material.dispose(); }
+  const n = hm.lat_deg.length;
+  const pos = new Float32Array(n*3), col = new Float32Array(n*3);
+  const pMin = Math.min(...hm.potential), pMax = Math.max(...hm.potential);
+  const span = (pMax - pMin) || 1;
+  for (let i=0;i<n;i++){
+    const lat = hm.lat_deg[i]*Math.PI/180, lon = hm.lon_deg[i]*Math.PI/180;
+    const t = (hm.potential[i]-pMin)/span;
+    const r = 1.0 + 0.12*t;                       // vertex displacement by potential
+    pos[i*3]   = r*Math.cos(lat)*Math.cos(lon);
+    pos[i*3+1] = r*Math.sin(lat);
+    pos[i*3+2] = r*Math.cos(lat)*Math.sin(lon);
+    const c = heat(t); col[i*3]=c[0]; col[i*3+1]=c[1]; col[i*3+2]=c[2];
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  g.setAttribute('color', new THREE.BufferAttribute(col,3));
+  cloud = new THREE.Points(g, new THREE.PointsMaterial({ size: 0.012,
+    vertexColors: true, transparent: true, opacity: 0.95 }));
+  scene.add(cloud);
+  $('n-nodes').textContent = n.toLocaleString();
+  const clusters = new Set(hm.cluster || []); clusters.delete(-1);
+  $('n-clusters').textContent = (hm.cluster ? clusters.size : '—');
+}
+
+// ---- data: try the broadcast API, fall back to a synthetic field ---------
+function synthetic(n=8000){
+  const lat_deg=[], lon_deg=[], potential=[], cluster=[];
+  const ga = Math.PI*(3-Math.sqrt(5));
+  for (let i=0;i<n;i++){
+    const z = 1-(2*i+1)/n, r = Math.sqrt(Math.max(0,1-z*z)), phi = i*ga;
+    const la = Math.asin(z), lo = Math.atan2(r*Math.sin(phi), r*Math.cos(phi));
+    lat_deg.push(la*180/Math.PI); lon_deg.push(lo*180/Math.PI);
+    // a couple of moving interference "fronts" so it reads as weather
+    const p = 0.5 + 0.5*Math.sin(4*lo + 2*la) * Math.cos(3*la);
+    potential.push(p + 0.15*Math.random()); cluster.push(-1);
+  }
+  return { lat_deg, lon_deg, potential, shear: potential, cluster };
+}
+async function load(){
+  const base = $('api').value.replace(/\/+$/,'');
+  try {
+    const res = await fetch(base + '/heatmap', { mode: 'cors' });
+    if (!res.ok) throw new Error('HTTP '+res.status);
+    const hm = await res.json();
+    $('n-source').textContent = 'broadcast API';
+    $('err').style.display = 'none';
+    render_heatmap(hm);
+  } catch (e) {
+    $('n-source').textContent = 'synthetic (API offline)';
+    showErr('Broadcast API unreachable — showing synthetic field. Run scripts/serve.py --demo. ('+e.message+')');
+    render_heatmap(synthetic());
+  }
+}
+$('api').addEventListener('change', load);
+load();
+
+// ---- loop ----------------------------------------------------------------
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+(function animate(){ requestAnimationFrame(animate); controls.update();
+  renderer.render(scene, camera); })();
+</script>
+</body>
+</html>

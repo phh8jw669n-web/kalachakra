@@ -1,0 +1,24 @@
+# Core mathematical pipeline (always required).
+numpy>=1.24
+
+# Phase 1 — physics engine (DE441 via Swiss Ephemeris).
+#   pip install "kalachakra[ephemeris]"
+pyswisseph>=2.10
+
+# Phase 3-4 — neural core, training, streaming ingestion.
+#   pip install "kalachakra[train]"
+torch>=2.2
+
+# Phase 3 — density-based manifold clustering.
+#   pip install "kalachakra[cluster]"
+hdbscan>=0.8.33
+scikit-learn>=1.3
+
+# Phase 4 — REST broadcast API.
+#   pip install "kalachakra[serve]"
+fastapi>=0.110
+uvicorn>=0.29
+
+# Development.
+pytest>=8
+ruff>=0.4
