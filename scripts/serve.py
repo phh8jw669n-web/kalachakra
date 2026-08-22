@@ -31,11 +31,14 @@ from kalachakra.serving.broadcast import BroadcastEngine          # noqa: E402
 
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--date", default="now",
+                   help="ISO datetime or 'now' (UTC) for the real field (default)")
     p.add_argument("--fields", type=Path, default=None,
                    help="npz with arrays 'potential' and 'shear' (N_nodes,)")
-    p.add_argument("--nodes", type=int, default=C.N_SPATIAL_NODES)
+    p.add_argument("--nodes", type=int, default=8000)
     p.add_argument("--frame", type=int, default=0)
-    p.add_argument("--demo", action="store_true", help="synthesize a field")
+    p.add_argument("--demo", action="store_true",
+                   help="synthesize a field instead of computing real geometry")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     return p.parse_args(argv)
@@ -53,8 +56,20 @@ def main(argv=None) -> int:
         potential = np.abs(rng.normal(1.0, 0.3, args.nodes))
         shear = np.abs(rng.normal(0.5, 0.2, args.nodes))
     else:
-        print("ERROR: provide --fields FILE or --demo", file=sys.stderr)
-        return 2
+        # Default: compute the REAL weather field from real planetary geometry.
+        from kalachakra.analysis import weather
+        from kalachakra.ephemeris import global_state
+        from kalachakra.ephemeris.calendar import format_jd, parse_datetime
+
+        if not global_state.ephemeris_available():
+            print("ERROR: pyswisseph not installed. Run `pip install pyswisseph`, "
+                  "or pass --demo for a synthetic field.", file=sys.stderr)
+            return 2
+        jd = parse_datetime(args.date)
+        print(f"Computing real weather field for {format_jd(jd)} "
+              f"over {args.nodes:,} nodes...", file=sys.stderr)
+        wm = weather.weather_map(jd, grid)
+        potential, shear = wm["potential"], wm["shear"]
 
     engine = BroadcastEngine(grid, potential, shear)
 

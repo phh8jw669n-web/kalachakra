@@ -28,25 +28,34 @@ Stacking the ten rows (Sun … Saturn, Rahu, Ketu, Ayanamsha) gives `G(t)`.
 
 ```python
 from kalachakra.ephemeris import global_state
-global_state.ephemeris_available()      # False until pyswisseph is installed
-g = global_state.global_state_frame(jd) # (10, 7) once available
+global_state.global_state_frame(jd)     # (10, 7) real positions — works today
 ```
 
-The encoding itself (`encode_body`) is pure and unit-tested; only the *values*
-need pyswisseph.
+`pyswisseph` is a core dependency and its default **Moshier** backend needs no
+data files (valid ~1900 BCE – 4650 CE), so real `G(t)` is available out of the
+box. The encoding itself (`encode_body`) is pure and unit-tested; the *values*
+come from pyswisseph.
 
-## Installing DE441
+## Backends: Moshier (default) vs Swiss/DE441
+
+```python
+global_state.configure(mode="moshier")                     # default, no files
+global_state.configure(mode="swiss", ephe_path="/de441")   # full 10,256-yr range
+```
+
+Moshier covers all of recorded history and the present. To reach the Kali-Yuga
+epoch (3102 BCE) and the far future (past 4650 CE) — i.e. the full timeline —
+download the DE441 `.se1` files from the Swiss Ephemeris distribution and pass
+`--ephe-path`:
 
 ```bash
-pip install -e ".[ephemeris]"          # pyswisseph
-# Download the DE441 data files (sepl_*.se1 / semo_*.se1) from the
-# Swiss Ephemeris distribution and point the engine at them:
-python scripts/generate_ephemeris.py --ephe-path /path/to/ephe --max-frames 10000
+python scripts/generate_ephemeris.py --ephe-path /path/to/de441 \
+    --start-date 2024-01-01 --max-frames 10000
 ```
 
-Internally the generator calls `swe.set_ephe_path(...)`, then
-`swe.calc_ut(jd, body, SEFLG_SWIEPH | SEFLG_SPEED)` per body per frame, and
-serializes each chunk via `kalachakra.storage.binary_store.EphemerisStore`.
+Internally the generator calls `swe.calc_ut(jd, body, flags | SEFLG_SPEED)` per
+body per frame and serializes each chunk via
+`kalachakra.storage.binary_store.EphemerisStore`.
 
 ## Output
 

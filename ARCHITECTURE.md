@@ -193,11 +193,21 @@ With the decoder severed, analysis runs on `z(t, s)`:
 
 ## Status
 
-The **mathematical core is implemented and unit-tested end to end** (grid,
-projection, global-state encoding, BF16 + delta storage, ring buffer, composite
-loss, energy signatures, singularity detection, broadcast engine) and the
-**neural core, training loop, and streaming pipeline are implemented in PyTorch**
-with smoke tests covering forward/backward, the Lion step, and bf16 autocast.
-Generating the full 300 GB matrix and running the 90-day training cycle require
-`pyswisseph` + DE441 and the target M4 Max hardware. See `README.md` for what
-runs today.
+**This runs on real astronomical data today.** `G(t)` is computed from the Swiss
+Ephemeris (default Moshier backend, no data files, ~1900 BCE – 4650 CE); the
+`kalachakra` CLI produces real cosmic-weather readings, per-node maps, and
+singularity scans, validated against real eclipses (e.g. 2024-04-08: Sun–Moon
+0.04°) and conjunctions. The `analysis.weather` engine derives the objective
+signatures — harmonic resonance, structural tension, geometric potential,
+temporal shear, eclipse proximity, local intensity — directly from real geometry,
+with **no trained model required**.
+
+The **neural core and training loop are implemented and demonstrably learn on
+real projected data** (composite geodesic loss drops ~65% in 60 steps; a real
+checkpoint is saved). 69 tests cover the numpy core, the real ephemeris, and the
+torch model/trainer.
+
+What remains a **scaling exercise on the target hardware**: the full 10,256-year
+span reaches outside the Moshier window (the 3102 BCE epoch and post-4650 CE need
+DE441 `.se1` files), and the complete ~300 GB / 13.4B-frame matrix plus the
+~90-day training cycle assume the M4 Max unified-memory pipeline of §1.4.

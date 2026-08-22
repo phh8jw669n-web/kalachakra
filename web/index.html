@@ -140,21 +140,45 @@ function synthetic(n=8000){
   }
   return { lat_deg, lon_deg, potential, shear: potential, cluster };
 }
+function show_summary(hm){
+  if (hm.timestamp_utc) $('n-frame').textContent = hm.timestamp_utc.slice(0,16);
+  if (hm.summary){
+    const s = hm.summary;
+    showInfo(`resonance ${s.resonance?.toFixed?.(2)} · tension ${s.tension?.toFixed?.(2)}`
+      + (s.eclipse ? ' · ECLIPSE' : ''));
+  }
+}
 async function load(){
   const base = $('api').value.replace(/\/+$/,'');
+  // 1) real precomputed field (kalachakra map --out web/heatmap.json)
+  try {
+    const res = await fetch('./heatmap.json', { cache: 'no-store' });
+    if (res.ok) {
+      const hm = await res.json();
+      $('n-source').textContent = 'real (heatmap.json)';
+      $('err').style.display = 'none';
+      render_heatmap(hm); show_summary(hm); return;
+    }
+  } catch (e) { /* fall through */ }
+  // 2) live broadcast API
   try {
     const res = await fetch(base + '/heatmap', { mode: 'cors' });
     if (!res.ok) throw new Error('HTTP '+res.status);
     const hm = await res.json();
-    $('n-source').textContent = 'broadcast API';
+    $('n-source').textContent = 'real (broadcast API)';
     $('err').style.display = 'none';
-    render_heatmap(hm);
+    render_heatmap(hm); show_summary(hm); return;
   } catch (e) {
-    $('n-source').textContent = 'synthetic (API offline)';
-    showErr('Broadcast API unreachable — showing synthetic field. Run scripts/serve.py --demo. ('+e.message+')');
+    // 3) synthetic fallback (offline preview only)
+    $('n-source').textContent = 'synthetic (no data source)';
+    showErr('No real field found. Generate one with `kalachakra map --out web/heatmap.json` '
+      + 'or run `python scripts/serve.py`. Showing a synthetic preview.');
     render_heatmap(synthetic());
   }
 }
+function showInfo(m){ const e = $('err'); e.style.display='block';
+  e.style.color='#7ee0c0'; e.style.borderColor='#1d4a3a';
+  e.style.background='rgba(10,30,24,.7)'; e.textContent=m; }
 $('api').addEventListener('change', load);
 load();
 

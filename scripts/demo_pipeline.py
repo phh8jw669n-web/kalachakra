@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-End-to-end smoke demo of the Kalachakra pipeline using only numpy.
+End-to-end smoke run of the Kalachakra pipeline on REAL astronomical data.
 
-This exercises every dependency-light stage on a small synthetic timeline so you
-can see data flow through the whole system without PyTorch, pyswisseph or a
-90-day training run:
+Every stage uses real planetary positions (Swiss Ephemeris / Moshier backend,
+no data files required):
 
-    synthetic G(t)  ->  binary store (BF16 + delta)  ->  ring buffer
-      ->  analytical spatial projection E(t, s)
-      ->  (stand-in latent = the projected field)
-      ->  energy signatures (potential / shear)
-      ->  singularity detection
-      ->  broadcast engine point query
+    real G(t) via pyswisseph
+      -> BF16 + delta memory-mapped store  ->  ring-buffer stream
+      -> analytical spatial projection E(t, s)
+      -> real cosmic-weather signatures (resonance / tension / potential)
+      -> real per-node weather map
+      -> real singularity scan (finds actual eclipses)
 
 Run:  python scripts/demo_pipeline.py
 """
@@ -25,82 +24,71 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from kalachakra.analysis import anomaly, signatures            # noqa: E402
-from kalachakra.ephemeris import timeline                       # noqa: E402
-from kalachakra.ephemeris.global_state import encode_body       # noqa: E402
+from kalachakra.analysis import weather                         # noqa: E402
+from kalachakra.ephemeris import global_state, timeline         # noqa: E402
+from kalachakra.ephemeris.calendar import format_jd, parse_datetime  # noqa: E402
 from kalachakra.grid import geodesic                            # noqa: E402
 from kalachakra.projection import spatial                       # noqa: E402
-from kalachakra.serving.broadcast import BroadcastEngine        # noqa: E402
 from kalachakra.storage.binary_store import EphemerisStore      # noqa: E402
 from kalachakra.storage.ring_buffer import RingBuffer           # noqa: E402
 
 
-def synthetic_timeline(n_frames: int, seed: int = 0) -> np.ndarray:
-    """Smoothly drifting synthetic G(t): shape (n_frames, N_BODIES, 7)."""
-    rng = np.random.default_rng(seed)
-    n_bodies = 10
-    lam0 = rng.uniform(-np.pi, np.pi, n_bodies)
-    rate = rng.uniform(-0.05, 0.05, n_bodies)          # rad per frame
-    frames = np.empty((n_frames, n_bodies, 7), dtype=np.float32)
-    for k in range(n_frames):
-        for i in range(n_bodies):
-            lam = lam0[i] + rate[i] * k
-            frames[k, i] = encode_body(lam, bet=0.02 * np.sin(0.01 * k),
-                                       r=1.0 + i, lam_dot=rate[i],
-                                       bet_dot=0.0, r_dot=0.0)
-    return frames
-
-
 def main() -> None:
-    n_frames = 48
-    n_nodes = 400
-    print(f"[1] Grid: {n_nodes} observer nodes "
-          f"(production target = 122,880)")
-    grid = geodesic.fibonacci_sphere(n_nodes)
+    if not global_state.ephemeris_available():
+        print("pyswisseph not installed — run `pip install pyswisseph`.")
+        return
 
-    print(f"[2] Generating {n_frames} synthetic G(t) frames "
-          f"(Vighatika step = {timeline.JD_STEP * 86400:.0f}s)")
-    frames = synthetic_timeline(n_frames)
+    anchor = "2024-04-08T18:17:00Z"   # real total solar eclipse
+    jd0 = parse_datetime(anchor)
+    print(f"[0] Anchor: {format_jd(jd0)}  (real ephemeris: "
+          f"{'Swiss' if global_state._MODE == 'swiss' else 'Moshier'})")
 
-    tmp = Path(__file__).resolve().parents[1] / "data" / "_demo_store"
-    store = EphemerisStore(tmp)
-    store.write_chunk(0, frames)
-    print(f"[3] Serialized to BF16 + delta-encoded store at {tmp}")
+    # 1) Real weather signature at the anchor instant.
+    sig = weather.frame_signature(jd0)
+    print(f"[1] Real signature: resonance={sig.resonance:.2f} "
+          f"tension={sig.tension:.2f} potential(R)={sig.potential:.3f} "
+          f"eclipse={sig.eclipse['is_eclipse']} "
+          f"(sun-moon {sig.eclipse['sun_moon_sep_deg']:.2f} deg)")
 
-    print("[4] Streaming via ring buffer + projecting to E(t, s)")
-    fields = []
-    with RingBuffer(store, [0], max_prefetch=2) as rb:
-        for start_frame, chunk in rb:
-            for k in range(chunk.shape[0]):
-                jd = float(timeline.frame_to_jd(start_frame + k))
-                fields.append(spatial.project(chunk[k], jd, grid))
-    field_seq = np.stack(fields, axis=0)               # (T, N, B, 5)
-    print(f"    E(t,s) shape = {field_seq.shape}")
+    # 2) Generate a real G(t) block at the native 24 s Vighatika step, store it,
+    #    and confirm the BF16 + delta round-trip.
+    n_frames = 240
+    start_frame = timeline.jd_to_frame(jd0)
+    idx = np.arange(start_frame, start_frame + n_frames)
+    jds = timeline.frame_to_jd(idx)
+    frames = global_state.global_state_batch(jds)
+    store = EphemerisStore(Path(__file__).resolve().parents[1] / "data" / "_demo_store")
+    store.write_chunk(int(start_frame), frames.astype(np.float32))
+    back = store.read_chunk(int(start_frame))
+    err = float(np.abs(back - frames).max())
+    print(f"[2] Stored {n_frames} real frames (BF16+delta); "
+          f"round-trip max abs error = {err:.2e}")
 
-    # Stand-in "latent": flatten body/feature axes. The trained encoder would
-    # replace this with the 64-d code z(t, s).
-    z = field_seq.reshape(n_frames, n_nodes, -1)
-    print(f"[5] Latent stand-in shape = {z.shape} "
-          f"(trained model -> (..., {64}))")
+    # 3) Stream via ring buffer and project one frame to a small mesh.
+    grid = geodesic.fibonacci_sphere(400)
+    with RingBuffer(store, [int(start_frame)], max_prefetch=2) as rb:
+        for sframe, chunk in rb:
+            field = spatial.project(chunk[0], float(timeline.frame_to_jd(sframe)), grid)
+            break
+    print(f"[3] Projected E(t,s) shape = {field.shape} "
+          f"(direction sub-vectors unit-norm: "
+          f"{np.allclose(np.linalg.norm(field[..., :3], axis=-1), 1.0, atol=1e-6)})")
 
-    sig = signatures.energy_signature(z, time_axis=0)
-    print(f"[6] Potential field range = "
-          f"[{sig['potential'].min():.3f}, {sig['potential'].max():.3f}]; "
-          f"shear max = {sig['shear'].max():.4f}")
+    # 4) Real per-node weather map.
+    wm = weather.weather_map(jd0, grid)
+    print(f"[4] Weather map potential range = "
+          f"[{wm['potential'].min():.2f}, {wm['potential'].max():.2f}], "
+          f"shear max = {wm['shear'].max():.3f}")
 
-    events = anomaly.detect_singularities(sig["potential"], sig["shear"],
-                                          sigma=3.0, max_events=5)
-    print(f"[7] Singularities detected: {len(events)}")
-    for e in events[:3]:
-        print(f"    frame={e.time_index} node={e.node_index} score={e.score:.2f}")
+    # 5) Real singularity scan across the eclipse month.
+    scan = np.arange(parse_datetime("2024-04-01"), parse_datetime("2024-04-30"), 0.25)
+    scores = [(weather.frame_signature(float(j)).eclipse["solar_proximity"], j)
+              for j in scan]
+    best = max(scores, key=lambda t: t[0])
+    print(f"[5] Peak solar-eclipse proximity in April 2024: "
+          f"{format_jd(best[1])[:16]} (prox={best[0]:.3f})")
 
-    engine = BroadcastEngine(grid, sig["potential"][0], sig["shear"][0])
-    reading = engine.query(lat_deg=48.85, lon_deg=2.35)  # Paris
-    print(f"[8] Broadcast query @ Paris -> node {reading.node_index}, "
-          f"potential={reading.potential_index:.3f}, "
-          f"shear={reading.shear_velocity:.4f}")
-
-    print("\nDemo complete — the full numpy pipeline ran end to end.")
+    print("\nReal end-to-end pipeline ran successfully on live ephemeris data.")
 
 
 if __name__ == "__main__":

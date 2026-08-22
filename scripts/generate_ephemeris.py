@@ -33,12 +33,17 @@ def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--out", type=Path, default=Path("data/ephemeris"),
                    help="output store directory")
+    p.add_argument("--start-date", type=str, default=None,
+                   help="ISO datetime to start from (UTC); overrides --start-frame")
+    p.add_argument("--start-frame", type=int, default=0,
+                   help="frame index to start from (0 = Kali Yuga epoch, needs DE441)")
     p.add_argument("--chunk-frames", type=int, default=1_000_000,
                    help="frames per chunk file")
     p.add_argument("--max-frames", type=int, default=None,
-                   help="stop after this many frames (default: full timeline)")
+                   help="number of frames to generate from the start")
     p.add_argument("--ephe-path", type=str, default=None,
-                   help="directory holding the DE441 ephemeris data files")
+                   help="directory holding the DE441 .se1 files (enables full range; "
+                        "without it the Moshier backend covers ~1900 BCE - 4650 CE)")
     return p.parse_args(argv)
 
 
@@ -50,24 +55,33 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 2
 
-    import swisseph as swe
-    if args.ephe_path:
-        swe.set_ephe_path(args.ephe_path)
+    # Choose backend: Swiss (full range) if DE441 path given, else Moshier.
+    global_state.configure(mode="swiss" if args.ephe_path else "moshier",
+                           ephe_path=args.ephe_path)
 
-    total = C.total_temporal_frames()
-    if args.max_frames is not None:
-        total = min(total, args.max_frames)
+    # Resolve the start frame.
+    if args.start_date:
+        from kalachakra.ephemeris.calendar import parse_datetime
+        start_frame = int(timeline.jd_to_frame(parse_datetime(args.start_date)))
+    else:
+        start_frame = args.start_frame
+
+    timeline_total = C.total_temporal_frames()
+    count = args.max_frames if args.max_frames is not None else \
+        timeline_total - start_frame
+    end_frame = min(start_frame + count, timeline_total)
 
     store = EphemerisStore(args.out)
-    print(f"Generating {total:,} frames -> {args.out}")
-    print(f"  epoch JD {C.KALI_YUGA_EPOCH_JD} + {timeline.JD_STEP:.9f} d/frame")
+    from kalachakra.ephemeris.calendar import format_jd
+    print(f"Generating {end_frame - start_frame:,} frames -> {args.out}")
+    print(f"  start frame {start_frame:,} = {format_jd(timeline.frame_to_jd(start_frame))}")
+    print(f"  step {timeline.JD_STEP:.9f} d/frame ({C.VIGHATIKA_SECONDS}s)")
 
     written = 0
     t0 = time.monotonic()
-    for start, end in timeline.iter_chunk_ranges(args.chunk_frames):
-        if start >= total:
-            break
-        end = min(end, total)
+    start = start_frame
+    while start < end_frame:
+        end = min(start + args.chunk_frames, end_frame)
         idx = np.arange(start, end)
         jds = timeline.frame_to_jd(idx)
         frames = global_state.global_state_batch(jds)         # (n, 10, 7)
@@ -75,7 +89,8 @@ def main(argv=None) -> int:
         written += end - start
         rate = written / max(time.monotonic() - t0, 1e-9)
         print(f"  chunk [{start:,}:{end:,}] written "
-              f"({written:,}/{total:,}, {rate:,.0f} frames/s)")
+              f"({written:,}/{end_frame - start_frame:,}, {rate:,.0f} frames/s)")
+        start = end
 
     print(f"Done. {written:,} frames in {len(store.chunks())} chunks.")
     return 0
