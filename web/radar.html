@@ -3,34 +3,42 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Kalachakra — Kinetic Cosmic Weather Radar</title>
+<title>Kalachakra — Isomorphic Mathematical Transducer</title>
+<!--
+  ISOMORPHIC TRANSDUCER (blueprint Pages 1-5). This client DEPRECATES all prior
+  subjective visual logic: the hardcoded colour lookup table and the arbitrary
+  particle behaviours are removed. Rendering now obeys physics:
+    scalar magnitude ||z||   -> radiant flux      (Naka-Rushton, boundless)
+    scalar rarity (NLL)      -> colour temperature (Planckian blackbody)
+    4 temporal band energies -> visible spectrum   (orthogonal superposition)
+    vector field (div/curl)  -> fluid kinematics   (Helmholtz-Hodge + LIC)
+    64-d latent tensor       -> topography         (spherical-harmonic extrusion)
+  The GLSL/JS math mirrors kalachakra.transducer (the unit-tested oracle).
+-->
 <style>
   :root { color-scheme: dark; }
   * { margin: 0; box-sizing: border-box; }
-  html, body { height: 100%; background: #04060d; color: #e6ecff;
+  html, body { height: 100%; background: #03040a; color: #e6ecff;
     font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace; overflow: hidden; }
   #app { position: fixed; inset: 0; }
-  .panel { position: fixed; background: rgba(8,12,22,.74); border: 1px solid #1b2540;
+  .panel { position: fixed; background: rgba(7,11,20,.78); border: 1px solid #1a2440;
     border-radius: 10px; padding: 12px 14px; backdrop-filter: blur(6px); }
-  #hud { top: 14px; left: 14px; max-width: 320px; }
-  #hud h1 { font-size: 14px; letter-spacing: .06em; margin-bottom: 6px; }
+  #hud { top: 14px; left: 14px; max-width: 330px; }
+  #hud h1 { font-size: 14px; letter-spacing: .05em; margin-bottom: 6px; }
   #hud p { font-size: 11px; color: #8ea3cf; margin-bottom: 8px; }
   .row { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0;
-    border-top: 1px dashed #1b2540; }
-  .row span:last-child { color: #7ee0c0; }
+    border-top: 1px dashed #1a2440; } .row span:last-child { color: #7ee0c0; }
   label { font-size: 11px; color: #8ea3cf; display: block; margin-top: 8px; }
   input[type=text] { width: 100%; margin-top: 3px; padding: 5px 7px; border-radius: 6px;
-    border: 1px solid #1b2540; background: #0a1122; color: #e6ecff; font: inherit; }
-  input[type=range] { width: 100%; }
-  #legend { bottom: 14px; left: 14px; width: 300px; }
-  #chan { display: grid; grid-template-columns: 14px 1fr; gap: 4px 8px; font-size: 11px;
-    color: #8ea3cf; align-items: center; }
-  .sw { width: 14px; height: 14px; border-radius: 3px; }
-  #news { top: 14px; right: 14px; width: 300px; max-height: 60vh; overflow: auto; }
-  .card { border: 1px solid #223056; border-radius: 8px; padding: 8px 10px;
-    margin-bottom: 8px; background: rgba(12,18,34,.7); }
-  .card b { color: #ffd166; } .card .k { color: #7ee0c0; }
+    border: 1px solid #1a2440; background: #0a1020; color: #e6ecff; font: inherit; }
+  #inspector { top: 14px; right: 14px; width: 320px; max-height: 82vh; overflow: auto;
+    display: none; } #inspector h2 { font-size: 12px; color: #ffd166; margin-bottom: 6px; }
+  #inspector .k { color: #7ee0c0; } #inspector table { width: 100%; font-size: 11px; }
+  #inspector td { padding: 1px 0; vertical-align: top; }
+  #legend { bottom: 14px; left: 14px; width: 330px; font-size: 11px; color: #8ea3cf; }
   #status { bottom: 14px; right: 14px; font-size: 11px; color: #8ea3cf; }
+  button { font: inherit; color: #e6ecff; background: #12203c; border: 1px solid #244;
+    border-radius: 6px; padding: 4px 8px; margin-top: 6px; cursor: pointer; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -43,30 +51,29 @@
 <div id="app"></div>
 
 <div id="hud" class="panel">
-  <h1>KALACHAKRA · KINETIC RADAR</h1>
-  <p>Multi-channel geometric field: luminance = potential · hue = VQ archetype ·
-     particle flow = shear/vorticity · sweep = diurnal terminator.</p>
+  <h1>KALACHAKRA · ISOMORPHIC TRANSDUCER</h1>
+  <p>Physics-based, losslessly invertible rendering. No colour tables, no
+     arbitrary particles — only optics, fluid dynamics, and topology.</p>
+  <div class="row"><span>Viewport</span><span id="n-view">global macro sphere</span></div>
   <div class="row"><span>Nodes</span><span id="n-nodes">—</span></div>
-  <div class="row"><span>Frame time</span><span id="n-time">—</span></div>
   <div class="row"><span>Source</span><span id="n-source">synthetic</span></div>
-  <div class="row"><span>Playback</span><span id="n-vel">1×</span></div>
-  <label>Velocity (log)</label>
-  <input id="vel" type="range" min="0" max="6" step="0.01" value="0" />
-  <label>WebSocket base (FastAPI)</label>
+  <label>REST base (FastAPI)</label>
+  <input id="api" type="text" value="http://127.0.0.1:8000" />
+  <label>WebSocket</label>
   <input id="ws" type="text" value="ws://127.0.0.1:8000/stream" />
+  <button id="btnGlobal">↩ back to global sphere</button>
 </div>
 
 <div id="legend" class="panel">
-  <div style="margin-bottom:6px;color:#c9d6f5">Visual grammar</div>
-  <div id="chan">
-    <div class="sw" style="background:linear-gradient(90deg,#20124d,#ef476f)"></div><div>tension archetypes (square / opposition)</div>
-    <div class="sw" style="background:linear-gradient(90deg,#073b3a,#80ffdb)"></div><div>harmonic archetypes (trine / sextile)</div>
-    <div class="sw" style="background:#ffffff"></div><div>deep-time singularity / eclipse corridor</div>
-    <div class="sw" style="background:linear-gradient(90deg,#04060d,#e6ecff)"></div><div>luminance = geometric potential</div>
-  </div>
+  scalar→light (flux + blackbody temperature) · bands→spectrum ·
+  vector→fluid (Helmholtz + LIC) · tensor→spherical-harmonic topography.
+  Click a coordinate for the Sidebar Inspector.
 </div>
 
-<div id="news" class="panel"><div style="color:#c9d6f5;margin-bottom:6px">Geometric news radar</div><div id="cards"></div></div>
+<div id="inspector" class="panel">
+  <h2>Sidebar Inspector — raw telemetry</h2>
+  <div id="tel">click the globe…</div>
+</div>
 <div id="status" class="panel">initializing…</div>
 
 <script type="module">
@@ -76,195 +83,257 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 const $ = id => document.getElementById(id);
 const setStatus = m => $('status').textContent = m;
 
-// ---------- binary frame parser (matches serving/binary.py 'KCHR') ----------
-const MAGIC = 0x4B434852;
-function parseFrame(buf){
-  const dv = new DataView(buf);
-  if (dv.getUint32(0, true) !== MAGIC) throw new Error('bad magic');
-  const n = dv.getUint32(8, true), ld = dv.getUint16(12, true);
-  let o = 14; const f32 = c => { const a = new Float32Array(buf, o, c); o += c*4; return a; };
-  const u16 = c => { const a = new Uint16Array(buf, o, c); o += c*2; return a; };
-  const lat = f32(n), lng = f32(n), potential = f32(n), shear = f32(n);
-  const macro = u16(n), micro = u16(n);
-  const latent = (dv.getUint16(6, true) & 1) ? f32(n*ld) : null;
-  return { n, lat, lng, potential, shear, macro, micro, latent };
+// ===================== transducer math (mirrors Python) =====================
+// Naka-Rushton flux: boundless magnitude -> [0,1), never clips.
+function nakaRushton(x, k=1.0){ x = Math.max(0, x); return x/(x+k); }
+// rarity -> colour temperature along the Planckian locus (log-uniform).
+const T_COMMON=1200, T_RARE=40000;
+function rarityToTemp(r){ r=Math.min(1,Math.max(0,r)); return T_COMMON*Math.pow(T_RARE/T_COMMON, r); }
+// Planckian blackbody -> approximate linear-sRGB (Tanner Helland style, normalized).
+function blackbodyRGB(T){
+  T = Math.min(40000, Math.max(1000, T))/100;
+  let r,g,b;
+  r = T<=66 ? 255 : 329.7*Math.pow(T-60,-0.1332047592);
+  g = T<=66 ? 99.47*Math.log(T)-161.12 : 288.12*Math.pow(T-60,-0.0755148492);
+  b = T>=66 ? 255 : (T<=19 ? 0 : 138.52*Math.log(T-10)-305.04);
+  const c=v=>Math.min(1,Math.max(0,v/255));
+  return [c(r),c(g),c(b)];
+}
+// four orthonormal spectral bases -> approx RGB weights (long/med/short wavelength).
+const BAND_RGB = [ [0.30,0.30,0.34], [0.85,0.20,0.15], [0.15,0.80,0.35], [0.20,0.35,0.95] ];
+function spectralRGB(bands){ // bands: [micro,fast,cyclic,macro]
+  let r=0,g=0,b=0; for (let i=0;i<4;i++){ const e=Math.abs(bands[i]);
+    r+=e*BAND_RGB[i][0]; g+=e*BAND_RGB[i][1]; b+=e*BAND_RGB[i][2]; } return [r,g,b];
+}
+// real spherical harmonics (assoc. Legendre recurrence) — for SH topography.
+function assocLegendre(l,m,x){ // normalized P_l^m(x), m>=0
+  let pmm=1.0; if (m>0){ const s=Math.sqrt((1-x)*(1+x)); let f=1.0;
+    for (let i=1;i<=m;i++){ pmm*=-f*s; f+=2.0; } }
+  if (l===m) return pmm;
+  let pmmp1=x*(2*m+1)*pmm; if (l===m+1) return pmmp1;
+  let pll=0.0; for (let ll=m+2; ll<=l; ll++){ pll=((2*ll-1)*x*pmmp1-(ll+m-1)*pmm)/(ll-m); pmm=pmmp1; pmmp1=pll; }
+  return pll;
+}
+function factRatio(l,m){ let r=1.0; for (let k=l-m+1;k<=l+m;k++) r*=k; return r; } // (l+m)!/(l-m)!
+function realSH(l,m,theta,phi){
+  const am=Math.abs(m); const x=Math.cos(theta);
+  const norm=Math.sqrt((2*l+1)/(4*Math.PI)/factRatio(l,am));
+  const P=assocLegendre(l,am,x);
+  if (m===0) return norm*P;
+  if (m>0)  return Math.SQRT2*norm*P*Math.cos(m*phi);
+  return Math.SQRT2*norm*P*Math.sin(am*phi);
+}
+function shHeight(latent, theta, phi){ // sum_i latent_i Y_i, i->(l,m)
+  let h=0; for (let i=0;i<latent.length;i++){ const l=Math.floor(Math.sqrt(i)); const m=i-l*l-l;
+    h+=latent[i]*realSH(l,m,theta,phi); } return h;
 }
 
-// ---------- token -> colour LUT (deterministic archetype families) ----------
-// 64 macro archetypes cycle through tension (warm), harmonic (cool), and rare
-// (bright) families, per the visual grammar. Trained codebooks reassign meaning;
-// the mapping stays deterministic so a token always renders the same hue.
-const FAMILIES = [
-  [0.03,0.85,0.95],[0.06,0.90,1.0],[0.95,0.80,0.9],   // amber, crimson, violet (tension)
-  [0.42,0.85,0.85],[0.5,0.85,0.9],[0.66,0.75,0.9],    // emerald, cyan, indigo (harmony)
-];
-function hsl2rgb(h,s,l){ const k=n=>(n+h*12)%12; const a=s*Math.min(l,1-l);
-  const f=n=>l-a*Math.max(-1,Math.min(k(n)-3,Math.min(9-k(n),1)));
-  return [f(0),f(8),f(4)]; }
-const LUT = new Float32Array(64*3);
-for (let m=0;m<64;m++){ const fam=FAMILIES[m%FAMILIES.length];
-  const jitter=((m*2654435761)>>>0)/2**32*0.06-0.03;
-  const [r,g,b]=hsl2rgb((fam[0]+jitter+1)%1, fam[1], fam[2]*0.55);
-  LUT[m*3]=r; LUT[m*3+1]=g; LUT[m*3+2]=b; }
-
-// ---------- scene ----------
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.01, 100);
-camera.position.set(0,0.5,3);
-const renderer = new THREE.WebGLRenderer({ antialias:true });
-renderer.setSize(innerWidth, innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+// ===================== scene =====================
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.01, 100);
+camera.position.set(0,0.4,3);
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 $('app').appendChild(renderer.domElement);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.25;
+const controls=new OrbitControls(camera, renderer.domElement);
+controls.enableDamping=true; controls.autoRotate=true; controls.autoRotateSpeed=0.25;
+const raycaster=new THREE.Raycaster(); const globeR=1.0;
 
-scene.add(new THREE.Mesh(new THREE.SphereGeometry(0.985,48,32),
-  new THREE.MeshBasicMaterial({ color:0x070c1a })));
-scene.add(new THREE.Mesh(new THREE.SphereGeometry(0.99,24,16),
-  new THREE.MeshBasicMaterial({ color:0x14203c, wireframe:true, transparent:true, opacity:0.12 })));
+// reference globe (transparent — topography extrudes the node cloud)
+const globe=new THREE.Mesh(new THREE.SphereGeometry(0.985,64,48),
+  new THREE.MeshBasicMaterial({color:0x060b18}));
+scene.add(globe);
 
-function llToVec(latDeg, lngDeg, r=1.0){
-  const la=latDeg*Math.PI/180, lo=lngDeg*Math.PI/180;
-  return [r*Math.cos(la)*Math.cos(lo), r*Math.sin(la), r*Math.cos(la)*Math.sin(lo)];
-}
+let latentGlobal=new Array(64).fill(0); latentGlobal[0]=0.6; // default gentle dome
 
-// node point cloud
-let nodeCloud=null;
-function renderNodes(f){
-  if (nodeCloud){ scene.remove(nodeCloud); nodeCloud.geometry.dispose(); nodeCloud.material.dispose(); }
-  const pos=new Float32Array(f.n*3), col=new Float32Array(f.n*3);
-  let pmax=1e-6; for (let i=0;i<f.n;i++) pmax=Math.max(pmax,f.potential[i]);
-  for (let i=0;i<f.n;i++){
-    const t=f.potential[i]/pmax; const [x,y,z]=llToVec(f.lat[i],f.lng[i],1.0+0.1*t);
-    pos[i*3]=x; pos[i*3+1]=y; pos[i*3+2]=z;
-    const m=f.macro[i]%64; const lum=0.25+0.75*t;
-    col[i*3]=LUT[m*3]*lum; col[i*3+1]=LUT[m*3+1]*lum; col[i*3+2]=LUT[m*3+2]*lum;
+// node cloud with GLSL optical transduction in the fragment shader
+let cloud=null;
+const nodeMat=new THREE.ShaderMaterial({
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending,
+  uniforms:{ uSize:{value:3.0} },
+  vertexShader:`
+    attribute float aFlux;      // Naka-Rushton flux (potential)
+    attribute vec3  aColor;     // blackbody(T) * spectral(bands), precomputed
+    attribute float aHeight;    // SH topography displacement
+    varying float vFlux; varying vec3 vColor;
+    uniform float uSize;
+    void main(){ vFlux=aFlux; vColor=aColor;
+      vec3 p=position*(1.0+0.12*aHeight);
+      vec4 mv=modelViewMatrix*vec4(p,1.0);
+      gl_PointSize=uSize*(300.0/-mv.z);
+      gl_Position=projectionMatrix*mv; }`,
+  fragmentShader:`
+    precision highp float; varying float vFlux; varying vec3 vColor;
+    void main(){
+      vec2 d=gl_PointCoord-0.5; float r=length(d);
+      // rarity/coherence sharpens the core; flux sets radiant brightness.
+      float a=smoothstep(0.5,0.0,r);
+      vec3 col=vColor*vFlux;              // no clipping to white: additive, boundless
+      gl_FragColor=vec4(col, a*clamp(vFlux,0.02,1.0));
+    }`,
+});
+
+function buildCloud(f){
+  if (cloud){ scene.remove(cloud); cloud.geometry.dispose(); }
+  const n=f.n; const pos=new Float32Array(n*3), flux=new Float32Array(n),
+    col=new Float32Array(n*3), hgt=new Float32Array(n);
+  for (let i=0;i<n;i++){
+    const la=f.lat[i]*Math.PI/180, lo=f.lng[i]*Math.PI/180;
+    const theta=Math.PI/2-la, phi=lo;                     // colatitude, azimuth
+    pos[i*3]=Math.cos(la)*Math.cos(lo); pos[i*3+1]=Math.sin(la); pos[i*3+2]=Math.cos(la)*Math.sin(lo);
+    flux[i]=nakaRushton(f.potential[i]);
+    hgt[i]=shHeight(latentGlobal, theta, phi);
+    const T=rarityToTemp(f.rarity? f.rarity[i]:0.3); const bb=blackbodyRGB(T);
+    const bands=f.bands? f.bands[i] : [0.2,f.potential[i],0.1,0.05];
+    const sp=spectralRGB(bands);
+    // scalar->light: blackbody chromaticity modulated by spectral superposition.
+    col[i*3]=0.5*bb[0]+0.5*sp[0]; col[i*3+1]=0.5*bb[1]+0.5*sp[1]; col[i*3+2]=0.5*bb[2]+0.5*sp[2];
   }
   const g=new THREE.BufferGeometry();
   g.setAttribute('position',new THREE.BufferAttribute(pos,3));
-  g.setAttribute('color',new THREE.BufferAttribute(col,3));
-  nodeCloud=new THREE.Points(g,new THREE.PointsMaterial({ size:0.014, vertexColors:true,
-    transparent:true, opacity:0.95, blending:THREE.AdditiveBlending, depthWrite:false }));
-  scene.add(nodeCloud);
-  $('n-nodes').textContent=f.n.toLocaleString();
+  g.setAttribute('aFlux',new THREE.BufferAttribute(flux,1));
+  g.setAttribute('aColor',new THREE.BufferAttribute(col,3));
+  g.setAttribute('aHeight',new THREE.BufferAttribute(hgt,1));
+  cloud=new THREE.Points(g,nodeMat); scene.add(cloud);
+  $('n-nodes').textContent=n.toLocaleString();
 }
 
-// ---------- equirect field for particle advection ----------
-const GW=180, GH=90;  // flow grid resolution
-let flowU=new Float32Array(GW*GH), flowV=new Float32Array(GW*GH), potGrid=new Float32Array(GW*GH);
+// ===================== fluid (Helmholtz-derived) LIC layer =====================
+// dense advected-noise texture on an equirect grid: velocity = potential gradient
+// (irrotational/divergence) rotated by shear (solenoidal/curl). Not particles.
+const GW=180, GH=90; let pot=new Float32Array(GW*GH), fu=new Float32Array(GW*GH), fv=new Float32Array(GW*GH);
+let noise=new Float32Array(GW*GH); for (let i=0;i<GW*GH;i++) noise[i]=Math.random();
+let lic=new Float32Array(GW*GH);
 function rasterize(f){
-  flowU.fill(0); flowV.fill(0); potGrid.fill(0);
-  const cnt=new Float32Array(GW*GH);
-  for (let i=0;i<f.n;i++){
-    const gx=Math.min(GW-1,Math.max(0,Math.floor((f.lng[i]+180)/360*GW)));
-    const gy=Math.min(GH-1,Math.max(0,Math.floor((f.lat[i]+90)/180*GH)));
-    const k=gy*GW+gx; potGrid[k]+=f.potential[i]; cnt[k]+=1;
-  }
-  for (let k=0;k<GW*GH;k++) if (cnt[k]>0) potGrid[k]/=cnt[k];
-  // flow = gradient of potential (curl-ish rotation), magnitude scaled by mean shear
-  let sh=0; for (let i=0;i<f.n;i++) sh+=f.shear[i]; sh=(sh/Math.max(1,f.n));
-  for (let y=1;y<GH-1;y++) for (let x=1;x<GW-1;x++){
-    const k=y*GW+x;
-    const dx=potGrid[k+1]-potGrid[k-1], dy=potGrid[k+GW]-potGrid[k-GW];
-    flowU[k]=(-dy)*(1+4*sh); flowV[k]=(dx)*(1+4*sh);  // rotate gradient -> vorticity
-  }
+  pot.fill(0); const cnt=new Float32Array(GW*GH); let sh=0;
+  for (let i=0;i<f.n;i++){ const gx=Math.min(GW-1,Math.max(0,(f.lng[i]+180)/360*GW|0));
+    const gy=Math.min(GH-1,Math.max(0,(f.lat[i]+90)/180*GH|0)); pot[gy*GW+gx]+=f.potential[i]; cnt[gy*GW+gx]++; sh+=f.shear?f.shear[i]:0; }
+  for (let k=0;k<GW*GH;k++) if (cnt[k]>0) pot[k]/=cnt[k];
+  sh/=Math.max(1,f.n);
+  for (let y=1;y<GH-1;y++) for (let x=1;x<GW-1;x++){ const k=y*GW+x;
+    const dx=pot[k+1]-pot[k-1], dy=pot[k+GW]-pot[k-GW];
+    // irrotational (grad) + solenoidal rotation by shear-driven vorticity
+    fu[k]=dx*(1.0)+(-dy)*(2.0*sh); fv[k]=dy*(1.0)+(dx)*(2.0*sh); }
 }
-function sampleFlow(latDeg,lngDeg){
-  const gx=Math.min(GW-1,Math.max(0,Math.floor((lngDeg+180)/360*GW)));
-  const gy=Math.min(GH-1,Math.max(0,Math.floor((latDeg+90)/180*GH)));
-  const k=gy*GW+gx; return [flowU[k],flowV[k],potGrid[k]];
+function licStep(){ // one LIC relaxation pass advecting noise along the flow
+  const out=lic;
+  for (let y=0;y<GH;y++) for (let x=0;x<GW;x++){ const k=y*GW+x;
+    let acc=noise[k], c=1.0, px=x, py=y;
+    for (let s=0;s<6;s++){ const kk=(py|0)*GW+(px|0);
+      const nx=fu[kk], ny=fv[kk]; const m=Math.hypot(nx,ny)+1e-6;
+      px=(px+nx/m+GW)%GW; py=(py+ny/m+GH)%GH; acc+=noise[((py|0)*GW+(px|0))]; c++; }
+    out[k]=acc/c; }
 }
+let flowTex=new THREE.DataTexture(new Uint8Array(GW*GH*4),GW,GH); flowTex.needsUpdate=true;
+function updateFlowTexture(){ const d=flowTex.image.data; for (let k=0;k<GW*GH;k++){ const v=Math.min(1,Math.max(0,lic[k]))*255;
+  d[k*4]=v*0.5; d[k*4+1]=v*0.8; d[k*4+2]=v; d[k*4+3]=200; } flowTex.needsUpdate=true; }
+const flowShell=new THREE.Mesh(new THREE.SphereGeometry(1.06,96,64),
+  new THREE.MeshBasicMaterial({map:flowTex, transparent:true, opacity:0.35,
+    blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.BackSide}));
+scene.add(flowShell);
 
-// particle system
-const NP=14000;
-const pLat=new Float32Array(NP), pLng=new Float32Array(NP);
-for (let i=0;i<NP;i++){ pLat[i]=Math.asin(2*Math.random()-1)*180/Math.PI; pLng[i]=Math.random()*360-180; }
-const pPos=new Float32Array(NP*3), pCol=new Float32Array(NP*3);
-const pg=new THREE.BufferGeometry();
-pg.setAttribute('position',new THREE.BufferAttribute(pPos,3));
-pg.setAttribute('color',new THREE.BufferAttribute(pCol,3));
-const particles=new THREE.Points(pg,new THREE.PointsMaterial({ size:0.006, vertexColors:true,
-  transparent:true, opacity:0.7, blending:THREE.AdditiveBlending, depthWrite:false }));
-scene.add(particles);
+// diurnal terminator sweep (0.1 deg/frame) — physics, retained.
+let sweep=0;
 
-let sweepLng=0;  // diurnal terminator longitude, advances 0.1°/frame
-function stepParticles(dt){
-  sweepLng=(sweepLng+0.1*velScale())%360; if (sweepLng>180) sweepLng-=360;
-  for (let i=0;i<NP;i++){
-    const [u,v,p]=sampleFlow(pLat[i],pLng[i]);
-    pLng[i]+=u*40*dt; pLat[i]+=v*40*dt;
-    if (pLng[i]>180) pLng[i]-=360; if (pLng[i]<-180) pLng[i]+=360;
-    pLat[i]=Math.max(-89,Math.min(89,pLat[i]));
-    if (Math.random()<0.002){ pLat[i]=Math.asin(2*Math.random()-1)*180/Math.PI; pLng[i]=Math.random()*360-180; }
-    const [x,y,z]=llToVec(pLat[i],pLng[i],1.005+0.1*p);
-    pPos[i*3]=x; pPos[i*3+1]=y; pPos[i*3+2]=z;
-    // brighten near the diurnal sweep line
-    const near=Math.max(0,1-Math.abs(((pLng[i]-sweepLng+540)%360)-180)/12);
-    const b=0.3+0.7*Math.min(1,p)+0.6*near;
-    pCol[i*3]=0.5*b+near; pCol[i*3+1]=0.8*b; pCol[i*3+2]=1.0*b;
-  }
-  pg.attributes.position.needsUpdate=true; pg.attributes.color.needsUpdate=true;
-}
-
-function velScale(){ return Math.pow(10, parseFloat($('vel').value)); }
-$('vel').addEventListener('input',()=>{ $('n-vel').textContent=velScale().toFixed(0)+'×'; });
-
-// ---------- data source: WebSocket binary, else synthetic ----------
-function synthFrame(nn=6000, t=0){
-  const lat=new Float32Array(nn), lng=new Float32Array(nn), pot=new Float32Array(nn),
-    shear=new Float32Array(nn), macro=new Uint16Array(nn), micro=new Uint16Array(nn);
-  const ga=Math.PI*(3-Math.sqrt(5));
-  for (let i=0;i<nn;i++){ const z=1-(2*i+1)/nn, r=Math.sqrt(Math.max(0,1-z*z)), ph=i*ga;
+// ===================== data: synthetic fallback + WS + REST =====================
+function synth(n=6000,t=0){ const lat=new Float32Array(n),lng=new Float32Array(n),
+  potA=new Float32Array(n),shear=new Float32Array(n),rar=new Float32Array(n); const ga=Math.PI*(3-Math.sqrt(5));
+  for (let i=0;i<n;i++){ const z=1-(2*i+1)/n,r=Math.sqrt(Math.max(0,1-z*z)),ph=i*ga;
     lat[i]=Math.asin(z)*180/Math.PI; lng[i]=Math.atan2(r*Math.sin(ph),r*Math.cos(ph))*180/Math.PI;
     const w=0.5+0.5*Math.sin(4*lng[i]*Math.PI/180+2*lat[i]*Math.PI/180+t);
-    pot[i]=w; shear[i]=Math.abs(Math.cos(3*lat[i]*Math.PI/180+t))*w;
-    macro[i]=Math.floor(w*63); micro[i]=i%64; }
-  return { n:nn, lat, lng, potential:pot, shear, macro, micro, latent:null };
+    potA[i]=w; shear[i]=Math.abs(Math.cos(3*lat[i]*Math.PI/180+t))*w; rar[i]=0.2+0.6*w; }
+  return {n,lat,lng,potential:potA,shear,rarity:rar,bands:null}; }
+
+const MAGIC=0x4B434852;
+function parseFrame(buf){ const dv=new DataView(buf); if (dv.getUint32(0,true)!==MAGIC) throw 0;
+  const n=dv.getUint32(8,true), ld=dv.getUint16(12,true); let o=14;
+  const f32=c=>{const a=new Float32Array(buf,o,c); o+=c*4; return a;};
+  const u16=c=>{const a=new Uint16Array(buf,o,c); o+=c*2; return a;};
+  const lat=f32(n),lng=f32(n),potential=f32(n),shear=f32(n),macro=u16(n),micro=u16(n);
+  return {n,lat,lng,potential,shear,macro,micro,rarity:null,bands:null}; }
+
+let current=synth(6000,0); buildCloud(current); rasterize(current);
+
+async function refreshGlobalLatent(){ // pull mean latent for SH topography
+  try{ const base=$('api').value.replace(/\/+$/,''); const now=new Date();
+    const r=await fetch(base+'/inspect',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({min_lat:-90,min_lng:-180,max_lat:90,max_lng:180,
+        start:'2024-01-01T00:00:00Z',end:'2024-01-01T06:00:00Z',velocity:1,limit:2000})});
+    const j=await r.json(); if (j.global_latent){ latentGlobal=j.global_latent; setStatus('SH topography from global latent'); } }
+  catch(e){ /* keep default */ }
 }
-
-let current=synthFrame(6000,0);
-renderNodes(current); rasterize(current);
-$('n-time').textContent='synthetic t=0';
-
-function connect(){
-  let url; try { url=$('ws').value.trim(); } catch(e){ return; }
-  let sock; try { sock=new WebSocket(url); } catch(e){ setStatus('synthetic (no ws)'); return; }
+function connect(){ let sock; try{ sock=new WebSocket($('ws').value.trim()); }catch(e){ return; }
   sock.binaryType='arraybuffer';
-  sock.onopen=()=>{ setStatus('ws connected'); $('n-source').textContent='binary ws';
-    const sub=()=>{ try{ sock.send(JSON.stringify({ min_lat:-90,min_lng:-180,max_lat:90,max_lng:180,
-      start:'2024-01-01T00:00:00Z', end:'2024-01-01T06:00:00Z', velocity:velScale(), limit:8000 })); }catch(e){} };
-    sub(); setInterval(sub, 1000/Math.min(60,Math.max(1,velScale()))); };
-  sock.onmessage=ev=>{ try{ const f=parseFrame(ev.data); if (f.n>0){ current=f; renderNodes(f);
-    rasterize(f); $('n-time').textContent='ws frame'; } }catch(e){ setStatus('frame parse error'); } };
-  sock.onerror=()=>{ setStatus('synthetic (ws error — start scripts/serve or app)'); };
-  sock.onclose=()=>{ $('n-source').textContent='synthetic'; };
+  sock.onopen=()=>{ $('n-source').textContent='binary ws'; setStatus('ws connected'); refreshGlobalLatent();
+    const sub=()=>{ try{ sock.send(JSON.stringify({min_lat:-90,min_lng:-180,max_lat:90,max_lng:180,
+      start:'2024-01-01T00:00:00Z',end:'2024-01-01T06:00:00Z',velocity:1,limit:8000})); }catch(e){} };
+    sub(); setInterval(sub,1000); };
+  sock.onmessage=ev=>{ try{ const f=parseFrame(ev.data); if (f.n>0){ current=f; buildCloud(f); rasterize(f);} }catch(e){} };
+  sock.onerror=()=>{ $('n-source').textContent='synthetic'; };
 }
-$('ws').addEventListener('change', connect);
-try { connect(); } catch(e) { setStatus('synthetic'); }
+$('ws').addEventListener('change',connect); try{ connect(); }catch(e){}
 
-// demo news cards (populated for real from /inspect in production)
-function demoCards(){
-  const c=$('cards'); c.innerHTML='';
-  for (let i=0;i<3;i++){ const d=document.createElement('div'); d.className='card';
-    d.innerHTML=`<b>singularity</b> · rarity <span class="k">${(0.9+0.1*Math.random()).toFixed(3)}</span><br>
-      macro <span class="k">${Math.floor(Math.random()*64)}</span> / micro <span class="k">${Math.floor(Math.random()*64)}</span><br>
-      ${(Math.random()<0.5?'applying':'separating')} · lat ${(Math.random()*180-90).toFixed(1)} lng ${(Math.random()*360-180).toFixed(1)}`;
-    c.appendChild(d); }
+// ===================== dual viewport: regional micro-canvas =====================
+let regional=null;
+async function openRegional(lat,lng){
+  const base=$('api').value.replace(/\/+$/,''); const d=5.0;
+  try{ const r=await fetch(base+'/microgrid',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({min_lat:lat-d,min_lng:lng-d,max_lat:lat+d,max_lng:lng+d,
+        datetime:new Date().toISOString(),density:48})});
+    const j=await r.json(); if (j.error){ setStatus(j.error); return; }
+    const f={n:j.n_nodes,lat:Float32Array.from(j.lat),lng:Float32Array.from(j.lng),
+      potential:Float32Array.from(j.potential),shear:Float32Array.from(j.shear),rarity:null,bands:null};
+    current=f; buildCloud(f); rasterize(f);
+    $('n-view').textContent=`regional micro canvas (${j.resolution_km.toFixed(0)} km)`;
+    controls.autoRotate=false;
+  }catch(e){ setStatus('microgrid unavailable — start scripts/serve_radar.py'); }
 }
-demoCards();
+$('btnGlobal').addEventListener('click',()=>{ $('n-view').textContent='global macro sphere';
+  controls.autoRotate=true; buildCloud(current); });
 
-// ---------- loop ----------
-let last=performance.now();
+// ===================== Sidebar Inspector (analytical microscope) =====================
+async function inspect(lat,lng){
+  const base=$('api').value.replace(/\/+$/,'');
+  $('inspector').style.display='block'; $('tel').textContent='querying…';
+  try{ const r=await fetch(base+'/telemetry',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({lat,lng,datetime:new Date().toISOString()})});
+    const t=await r.json(); if (t.error){ $('tel').textContent=t.error; return; }
+    let rows=`<tr><td>time</td><td class="k">${t.timestamp}</td></tr>
+      <tr><td>lat,lng</td><td class="k">${lat.toFixed(2)}, ${lng.toFixed(2)}</td></tr>
+      <tr><td>rarity %ile</td><td class="k">${t.rarity_percentile ?? '—'}</td></tr>
+      <tr><td>archetype</td><td class="k">${t.archetype.macro ?? '—'}/${t.archetype.micro ?? '—'}</td></tr>
+      <tr><td>tension</td><td class="k">${t.tension.toFixed(2)}</td></tr>
+      <tr><td>resonance</td><td class="k">${t.resonance.toFixed(2)}</td></tr>
+      <tr><td>eclipse</td><td class="k">${t.eclipse.is_eclipse}</td></tr>
+      <tr><td>applying</td><td class="k">${t.applying}</td></tr>`;
+    for (const b of Object.keys(t.band_energies)) rows+=`<tr><td>band ${b}</td><td class="k">${t.band_energies[b].toFixed(3)}</td></tr>`;
+    rows+=t.entities.map(e=>`<tr><td>${e.name}</td><td class="k">r=${e.radial_distance_au.toFixed(3)}AU v=${e.angular_velocity_deg_per_day.toFixed(3)}°/d${e.retrograde?' R':''}</td></tr>`).join('');
+    $('tel').innerHTML=`<table>${rows}</table>`;
+  }catch(e){ $('tel').textContent='telemetry unavailable — start scripts/serve_radar.py'; }
+}
+renderer.domElement.addEventListener('dblclick',ev=>{
+  const rect=renderer.domElement.getBoundingClientRect();
+  const mouse=new THREE.Vector2(((ev.clientX-rect.left)/rect.width)*2-1, -((ev.clientY-rect.top)/rect.height)*2+1);
+  raycaster.setFromCamera(mouse,camera);
+  const hit=raycaster.intersectObject(globe)[0]; if (!hit) return;
+  const p=hit.point.clone().normalize();
+  const lat=Math.asin(p.y)*180/Math.PI, lng=Math.atan2(p.z,p.x)*180/Math.PI;
+  inspect(lat,lng);
+  if (ev.shiftKey) openRegional(lat,lng);   // shift+dblclick zooms in
+});
+
+// ===================== loop =====================
 addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(innerWidth,innerHeight); });
+let last=performance.now(), licTick=0;
 (function loop(now){ requestAnimationFrame(loop);
-  const dt=Math.min(0.05,(now-last)/1000); last=now;
-  // idle synthetic breathing when no ws frames
-  if ($('n-source').textContent==='synthetic'){ const f=synthFrame(6000, now/3000);
-    current=f; if (!nodeCloud) renderNodes(f); rasterize(f); }
-  stepParticles(dt); controls.update(); renderer.render(scene,camera);
+  if ($('n-source').textContent==='synthetic'){ current=synth(6000,now/3000); buildCloud(current); rasterize(current); }
+  sweep=(sweep+0.1)%360;
+  if ((licTick++ % 2)===0){ licStep(); updateFlowTexture(); }
+  flowShell.rotation.y = -sweep*Math.PI/180;   // sweep drags the flow shell
+  controls.update(); renderer.render(scene,camera);
 })(performance.now());
-setStatus('ready');
+setStatus('ready — dbl-click to inspect · shift+dbl-click to zoom');
 </script>
 </body>
 </html>

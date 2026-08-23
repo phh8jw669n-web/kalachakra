@@ -69,6 +69,7 @@ if _HAS_FASTAPI:
         band_gains: dict[str, float]
         n_rows: int
         rows: list[dict[str, Any]]
+        global_latent: list[float] | None = None   # mean latent -> SH topography
 
     class MicrogridRequest(BaseModel):
         min_lat: float = Field(..., ge=-90, le=90)
@@ -139,6 +140,10 @@ def create_app(store_root: str):
         q, rows = _query(req)
         span_years = max((q.end_jd - q.start_jd) / 365.25, 1e-6)
         tier = engine._tier_for(q)
+        # Mean latent -> global SH topography coefficients for the client.
+        latents = [r["latent"] for r in rows if r.get("latent") is not None]
+        global_latent = (_np.mean(_np.asarray(latents, dtype=float), axis=0).tolist()
+                         if latents else None)
         # Trim heavy latent vectors out of the JSON payload (they stream binary).
         light = [{k: v for k, v in r.items() if k != "latent"} for r in rows]
         return InspectResponse(
@@ -146,7 +151,7 @@ def create_app(store_root: str):
             significance_percentile=radar.significance_percentile(span_years),
             band_gains=radar.band_gains(radar.temporal_stride(
                 int((q.end_jd - q.start_jd) * 86400 / 24))),
-            n_rows=len(rows), rows=light,
+            n_rows=len(rows), rows=light, global_latent=global_latent,
         )
 
     @app.post("/microgrid")
