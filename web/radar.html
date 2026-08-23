@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kalachakra — Kinetic Cosmic Weather Radar</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #04060d; color: #e6ecff;
+    font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace; overflow: hidden; }
+  #app { position: fixed; inset: 0; }
+  .panel { position: fixed; background: rgba(8,12,22,.74); border: 1px solid #1b2540;
+    border-radius: 10px; padding: 12px 14px; backdrop-filter: blur(6px); }
+  #hud { top: 14px; left: 14px; max-width: 320px; }
+  #hud h1 { font-size: 14px; letter-spacing: .06em; margin-bottom: 6px; }
+  #hud p { font-size: 11px; color: #8ea3cf; margin-bottom: 8px; }
+  .row { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0;
+    border-top: 1px dashed #1b2540; }
+  .row span:last-child { color: #7ee0c0; }
+  label { font-size: 11px; color: #8ea3cf; display: block; margin-top: 8px; }
+  input[type=text] { width: 100%; margin-top: 3px; padding: 5px 7px; border-radius: 6px;
+    border: 1px solid #1b2540; background: #0a1122; color: #e6ecff; font: inherit; }
+  input[type=range] { width: 100%; }
+  #legend { bottom: 14px; left: 14px; width: 300px; }
+  #chan { display: grid; grid-template-columns: 14px 1fr; gap: 4px 8px; font-size: 11px;
+    color: #8ea3cf; align-items: center; }
+  .sw { width: 14px; height: 14px; border-radius: 3px; }
+  #news { top: 14px; right: 14px; width: 300px; max-height: 60vh; overflow: auto; }
+  .card { border: 1px solid #223056; border-radius: 8px; padding: 8px 10px;
+    margin-bottom: 8px; background: rgba(12,18,34,.7); }
+  .card b { color: #ffd166; } .card .k { color: #7ee0c0; }
+  #status { bottom: 14px; right: 14px; font-size: 11px; color: #8ea3cf; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="hud" class="panel">
+  <h1>KALACHAKRA · KINETIC RADAR</h1>
+  <p>Multi-channel geometric field: luminance = potential · hue = VQ archetype ·
+     particle flow = shear/vorticity · sweep = diurnal terminator.</p>
+  <div class="row"><span>Nodes</span><span id="n-nodes">—</span></div>
+  <div class="row"><span>Frame time</span><span id="n-time">—</span></div>
+  <div class="row"><span>Source</span><span id="n-source">synthetic</span></div>
+  <div class="row"><span>Playback</span><span id="n-vel">1×</span></div>
+  <label>Velocity (log)</label>
+  <input id="vel" type="range" min="0" max="6" step="0.01" value="0" />
+  <label>WebSocket base (FastAPI)</label>
+  <input id="ws" type="text" value="ws://127.0.0.1:8000/stream" />
+</div>
+
+<div id="legend" class="panel">
+  <div style="margin-bottom:6px;color:#c9d6f5">Visual grammar</div>
+  <div id="chan">
+    <div class="sw" style="background:linear-gradient(90deg,#20124d,#ef476f)"></div><div>tension archetypes (square / opposition)</div>
+    <div class="sw" style="background:linear-gradient(90deg,#073b3a,#80ffdb)"></div><div>harmonic archetypes (trine / sextile)</div>
+    <div class="sw" style="background:#ffffff"></div><div>deep-time singularity / eclipse corridor</div>
+    <div class="sw" style="background:linear-gradient(90deg,#04060d,#e6ecff)"></div><div>luminance = geometric potential</div>
+  </div>
+</div>
+
+<div id="news" class="panel"><div style="color:#c9d6f5;margin-bottom:6px">Geometric news radar</div><div id="cards"></div></div>
+<div id="status" class="panel">initializing…</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const $ = id => document.getElementById(id);
+const setStatus = m => $('status').textContent = m;
+
+// ---------- binary frame parser (matches serving/binary.py 'KCHR') ----------
+const MAGIC = 0x4B434852;
+function parseFrame(buf){
+  const dv = new DataView(buf);
+  if (dv.getUint32(0, true) !== MAGIC) throw new Error('bad magic');
+  const n = dv.getUint32(8, true), ld = dv.getUint16(12, true);
+  let o = 14; const f32 = c => { const a = new Float32Array(buf, o, c); o += c*4; return a; };
+  const u16 = c => { const a = new Uint16Array(buf, o, c); o += c*2; return a; };
+  const lat = f32(n), lng = f32(n), potential = f32(n), shear = f32(n);
+  const macro = u16(n), micro = u16(n);
+  const latent = (dv.getUint16(6, true) & 1) ? f32(n*ld) : null;
+  return { n, lat, lng, potential, shear, macro, micro, latent };
+}
+
+// ---------- token -> colour LUT (deterministic archetype families) ----------
+// 64 macro archetypes cycle through tension (warm), harmonic (cool), and rare
+// (bright) families, per the visual grammar. Trained codebooks reassign meaning;
+// the mapping stays deterministic so a token always renders the same hue.
+const FAMILIES = [
+  [0.03,0.85,0.95],[0.06,0.90,1.0],[0.95,0.80,0.9],   // amber, crimson, violet (tension)
+  [0.42,0.85,0.85],[0.5,0.85,0.9],[0.66,0.75,0.9],    // emerald, cyan, indigo (harmony)
+];
+function hsl2rgb(h,s,l){ const k=n=>(n+h*12)%12; const a=s*Math.min(l,1-l);
+  const f=n=>l-a*Math.max(-1,Math.min(k(n)-3,Math.min(9-k(n),1)));
+  return [f(0),f(8),f(4)]; }
+const LUT = new Float32Array(64*3);
+for (let m=0;m<64;m++){ const fam=FAMILIES[m%FAMILIES.length];
+  const jitter=((m*2654435761)>>>0)/2**32*0.06-0.03;
+  const [r,g,b]=hsl2rgb((fam[0]+jitter+1)%1, fam[1], fam[2]*0.55);
+  LUT[m*3]=r; LUT[m*3+1]=g; LUT[m*3+2]=b; }
+
+// ---------- scene ----------
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.01, 100);
+camera.position.set(0,0.5,3);
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+$('app').appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.25;
+
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(0.985,48,32),
+  new THREE.MeshBasicMaterial({ color:0x070c1a })));
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(0.99,24,16),
+  new THREE.MeshBasicMaterial({ color:0x14203c, wireframe:true, transparent:true, opacity:0.12 })));
+
+function llToVec(latDeg, lngDeg, r=1.0){
+  const la=latDeg*Math.PI/180, lo=lngDeg*Math.PI/180;
+  return [r*Math.cos(la)*Math.cos(lo), r*Math.sin(la), r*Math.cos(la)*Math.sin(lo)];
+}
+
+// node point cloud
+let nodeCloud=null;
+function renderNodes(f){
+  if (nodeCloud){ scene.remove(nodeCloud); nodeCloud.geometry.dispose(); nodeCloud.material.dispose(); }
+  const pos=new Float32Array(f.n*3), col=new Float32Array(f.n*3);
+  let pmax=1e-6; for (let i=0;i<f.n;i++) pmax=Math.max(pmax,f.potential[i]);
+  for (let i=0;i<f.n;i++){
+    const t=f.potential[i]/pmax; const [x,y,z]=llToVec(f.lat[i],f.lng[i],1.0+0.1*t);
+    pos[i*3]=x; pos[i*3+1]=y; pos[i*3+2]=z;
+    const m=f.macro[i]%64; const lum=0.25+0.75*t;
+    col[i*3]=LUT[m*3]*lum; col[i*3+1]=LUT[m*3+1]*lum; col[i*3+2]=LUT[m*3+2]*lum;
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  g.setAttribute('color',new THREE.BufferAttribute(col,3));
+  nodeCloud=new THREE.Points(g,new THREE.PointsMaterial({ size:0.014, vertexColors:true,
+    transparent:true, opacity:0.95, blending:THREE.AdditiveBlending, depthWrite:false }));
+  scene.add(nodeCloud);
+  $('n-nodes').textContent=f.n.toLocaleString();
+}
+
+// ---------- equirect field for particle advection ----------
+const GW=180, GH=90;  // flow grid resolution
+let flowU=new Float32Array(GW*GH), flowV=new Float32Array(GW*GH), potGrid=new Float32Array(GW*GH);
+function rasterize(f){
+  flowU.fill(0); flowV.fill(0); potGrid.fill(0);
+  const cnt=new Float32Array(GW*GH);
+  for (let i=0;i<f.n;i++){
+    const gx=Math.min(GW-1,Math.max(0,Math.floor((f.lng[i]+180)/360*GW)));
+    const gy=Math.min(GH-1,Math.max(0,Math.floor((f.lat[i]+90)/180*GH)));
+    const k=gy*GW+gx; potGrid[k]+=f.potential[i]; cnt[k]+=1;
+  }
+  for (let k=0;k<GW*GH;k++) if (cnt[k]>0) potGrid[k]/=cnt[k];
+  // flow = gradient of potential (curl-ish rotation), magnitude scaled by mean shear
+  let sh=0; for (let i=0;i<f.n;i++) sh+=f.shear[i]; sh=(sh/Math.max(1,f.n));
+  for (let y=1;y<GH-1;y++) for (let x=1;x<GW-1;x++){
+    const k=y*GW+x;
+    const dx=potGrid[k+1]-potGrid[k-1], dy=potGrid[k+GW]-potGrid[k-GW];
+    flowU[k]=(-dy)*(1+4*sh); flowV[k]=(dx)*(1+4*sh);  // rotate gradient -> vorticity
+  }
+}
+function sampleFlow(latDeg,lngDeg){
+  const gx=Math.min(GW-1,Math.max(0,Math.floor((lngDeg+180)/360*GW)));
+  const gy=Math.min(GH-1,Math.max(0,Math.floor((latDeg+90)/180*GH)));
+  const k=gy*GW+gx; return [flowU[k],flowV[k],potGrid[k]];
+}
+
+// particle system
+const NP=14000;
+const pLat=new Float32Array(NP), pLng=new Float32Array(NP);
+for (let i=0;i<NP;i++){ pLat[i]=Math.asin(2*Math.random()-1)*180/Math.PI; pLng[i]=Math.random()*360-180; }
+const pPos=new Float32Array(NP*3), pCol=new Float32Array(NP*3);
+const pg=new THREE.BufferGeometry();
+pg.setAttribute('position',new THREE.BufferAttribute(pPos,3));
+pg.setAttribute('color',new THREE.BufferAttribute(pCol,3));
+const particles=new THREE.Points(pg,new THREE.PointsMaterial({ size:0.006, vertexColors:true,
+  transparent:true, opacity:0.7, blending:THREE.AdditiveBlending, depthWrite:false }));
+scene.add(particles);
+
+let sweepLng=0;  // diurnal terminator longitude, advances 0.1°/frame
+function stepParticles(dt){
+  sweepLng=(sweepLng+0.1*velScale())%360; if (sweepLng>180) sweepLng-=360;
+  for (let i=0;i<NP;i++){
+    const [u,v,p]=sampleFlow(pLat[i],pLng[i]);
+    pLng[i]+=u*40*dt; pLat[i]+=v*40*dt;
+    if (pLng[i]>180) pLng[i]-=360; if (pLng[i]<-180) pLng[i]+=360;
+    pLat[i]=Math.max(-89,Math.min(89,pLat[i]));
+    if (Math.random()<0.002){ pLat[i]=Math.asin(2*Math.random()-1)*180/Math.PI; pLng[i]=Math.random()*360-180; }
+    const [x,y,z]=llToVec(pLat[i],pLng[i],1.005+0.1*p);
+    pPos[i*3]=x; pPos[i*3+1]=y; pPos[i*3+2]=z;
+    // brighten near the diurnal sweep line
+    const near=Math.max(0,1-Math.abs(((pLng[i]-sweepLng+540)%360)-180)/12);
+    const b=0.3+0.7*Math.min(1,p)+0.6*near;
+    pCol[i*3]=0.5*b+near; pCol[i*3+1]=0.8*b; pCol[i*3+2]=1.0*b;
+  }
+  pg.attributes.position.needsUpdate=true; pg.attributes.color.needsUpdate=true;
+}
+
+function velScale(){ return Math.pow(10, parseFloat($('vel').value)); }
+$('vel').addEventListener('input',()=>{ $('n-vel').textContent=velScale().toFixed(0)+'×'; });
+
+// ---------- data source: WebSocket binary, else synthetic ----------
+function synthFrame(nn=6000, t=0){
+  const lat=new Float32Array(nn), lng=new Float32Array(nn), pot=new Float32Array(nn),
+    shear=new Float32Array(nn), macro=new Uint16Array(nn), micro=new Uint16Array(nn);
+  const ga=Math.PI*(3-Math.sqrt(5));
+  for (let i=0;i<nn;i++){ const z=1-(2*i+1)/nn, r=Math.sqrt(Math.max(0,1-z*z)), ph=i*ga;
+    lat[i]=Math.asin(z)*180/Math.PI; lng[i]=Math.atan2(r*Math.sin(ph),r*Math.cos(ph))*180/Math.PI;
+    const w=0.5+0.5*Math.sin(4*lng[i]*Math.PI/180+2*lat[i]*Math.PI/180+t);
+    pot[i]=w; shear[i]=Math.abs(Math.cos(3*lat[i]*Math.PI/180+t))*w;
+    macro[i]=Math.floor(w*63); micro[i]=i%64; }
+  return { n:nn, lat, lng, potential:pot, shear, macro, micro, latent:null };
+}
+
+let current=synthFrame(6000,0);
+renderNodes(current); rasterize(current);
+$('n-time').textContent='synthetic t=0';
+
+function connect(){
+  let url; try { url=$('ws').value.trim(); } catch(e){ return; }
+  let sock; try { sock=new WebSocket(url); } catch(e){ setStatus('synthetic (no ws)'); return; }
+  sock.binaryType='arraybuffer';
+  sock.onopen=()=>{ setStatus('ws connected'); $('n-source').textContent='binary ws';
+    const sub=()=>{ try{ sock.send(JSON.stringify({ min_lat:-90,min_lng:-180,max_lat:90,max_lng:180,
+      start:'2024-01-01T00:00:00Z', end:'2024-01-01T06:00:00Z', velocity:velScale(), limit:8000 })); }catch(e){} };
+    sub(); setInterval(sub, 1000/Math.min(60,Math.max(1,velScale()))); };
+  sock.onmessage=ev=>{ try{ const f=parseFrame(ev.data); if (f.n>0){ current=f; renderNodes(f);
+    rasterize(f); $('n-time').textContent='ws frame'; } }catch(e){ setStatus('frame parse error'); } };
+  sock.onerror=()=>{ setStatus('synthetic (ws error — start scripts/serve or app)'); };
+  sock.onclose=()=>{ $('n-source').textContent='synthetic'; };
+}
+$('ws').addEventListener('change', connect);
+try { connect(); } catch(e) { setStatus('synthetic'); }
+
+// demo news cards (populated for real from /inspect in production)
+function demoCards(){
+  const c=$('cards'); c.innerHTML='';
+  for (let i=0;i<3;i++){ const d=document.createElement('div'); d.className='card';
+    d.innerHTML=`<b>singularity</b> · rarity <span class="k">${(0.9+0.1*Math.random()).toFixed(3)}</span><br>
+      macro <span class="k">${Math.floor(Math.random()*64)}</span> / micro <span class="k">${Math.floor(Math.random()*64)}</span><br>
+      ${(Math.random()<0.5?'applying':'separating')} · lat ${(Math.random()*180-90).toFixed(1)} lng ${(Math.random()*360-180).toFixed(1)}`;
+    c.appendChild(d); }
+}
+demoCards();
+
+// ---------- loop ----------
+let last=performance.now();
+addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight); });
+(function loop(now){ requestAnimationFrame(loop);
+  const dt=Math.min(0.05,(now-last)/1000); last=now;
+  // idle synthetic breathing when no ws frames
+  if ($('n-source').textContent==='synthetic'){ const f=synthFrame(6000, now/3000);
+    current=f; if (!nodeCloud) renderNodes(f); rasterize(f); }
+  stepParticles(dt); controls.update(); renderer.render(scene,camera);
+})(performance.now());
+setStatus('ready');
+</script>
+</body>
+</html>

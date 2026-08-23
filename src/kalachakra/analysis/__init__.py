@@ -1,3 +1,3 @@
-"""Phase 3 analysis + cosmic-weather engine + Phase-2 tokenization (blueprint §2, §6)."""
-from . import signatures, anomaly, weather, rarity, tokens
-__all__ = ["signatures", "anomaly", "weather", "rarity", "tokens"]
+"""Analysis: energy signatures, weather, tokenization/rarity, and the news radar."""
+from . import signatures, anomaly, weather, rarity, tokens, radar
+__all__ = ["signatures", "anomaly", "weather", "rarity", "tokens", "radar"]
