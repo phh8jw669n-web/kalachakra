@@ -52,9 +52,34 @@ def test_download_file_rejects_html(tmp_path):
     assert not ok and not dest.exists()
 
 
+def test_default_source_is_github_mirror():
+    assert "raw.githubusercontent.com/aloistr/swisseph" in setup.DEFAULT_BASE_URL
+
+
 def test_dry_run_lists_without_downloading(tmp_path, capsys):
     rc = setup.main(["--dry-run", "--dest", str(tmp_path / "ephe")])
     assert rc == 0
     out = capsys.readouterr().out
     assert "seplm36.se1" in out and "sepl_66.se1" in out
     assert not (tmp_path / "ephe").exists()  # nothing downloaded
+
+
+def test_configure_only_with_existing_files(tmp_path, capsys):
+    from kalachakra.ephemeris import se1_files
+    dest = tmp_path / "ephe"
+    dest.mkdir()
+    for name in se1_files.filenames_for_years():
+        (dest / name).write_bytes(b"FAKE" + b"\x00" * 4096)
+    rc = setup.main(["--configure-only", "--dest", str(dest),
+                     "--config-path", str(tmp_path / ".kalachakra.json"),
+                     "--no-verify"])
+    assert rc == 0
+    assert (tmp_path / ".kalachakra.json").exists()
+
+
+def test_configure_only_reports_missing(tmp_path, capsys):
+    dest = tmp_path / "ephe"
+    dest.mkdir()  # empty -> everything missing
+    rc = setup.main(["--configure-only", "--dest", str(dest), "--no-verify"])
+    assert rc == 1
+    assert "missing" in capsys.readouterr().err.lower()

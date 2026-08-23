@@ -33,9 +33,10 @@ config so every other command uses the full span automatically (no flags):
     pip install -e ".[train]"
     python scripts/setup_full_span.py
 
-That downloads the 36 needed Swiss .se1 files (~40 MB) to ~/.kalachakra/ephe,
-verifies it can compute the 3102 BCE Kali Yuga epoch, and writes ./.kalachakra.json.
-After it finishes you can go straight to training:
+That downloads the 36 needed Swiss .se1 files (~40 MB) to ~/.kalachakra/ephe from
+the official Swiss Ephemeris GitHub mirror (aloistr/swisseph), verifies it can
+compute the 3102 BCE Kali Yuga epoch, and writes ./.kalachakra.json. After it
+finishes you can go straight to training:
 
     python scripts/train.py --store data/full     # generates + trains, full span
 
@@ -44,10 +45,17 @@ Useful flags:
     python scripts/setup_full_span.py --jpl        # fetch raw JPL DE441 .bsp instead
     python scripts/setup_full_span.py --dest DIR --config-path PATH
     python scripts/setup_full_span.py --mirror-all # every block, not just the needed set
+    python scripts/setup_full_span.py --base-url https://www.astro.com/ftp/swisseph/ephe
+                                                   # alternative source (astro.com)
 
-If the automatic download is blocked on your network, or you want to understand
-exactly what it does, follow the manual steps (OPTION A / OPTION B) below — they
-produce the identical result.
+MANUAL DOWNLOAD, then automatic setup:
+If you prefer to download the files yourself (see OPTION A for the exact list),
+put them all in one folder and let the script verify + configure it — no download:
+
+    python scripts/setup_full_span.py --dest /path/to/your/folder --configure-only
+
+That is the recommended fallback if any automatic download is blocked on your
+network. OPTION A / OPTION B below explain the file list and sources in full.
 
 
 Timeline anchors you will need:
@@ -100,20 +108,24 @@ A1. Create a directory for them, e.g.:
 
 A2. Download the EXACT files covering 3102 BCE .. 7154 CE. That is 18 planet
     blocks (m36..m06, _00.._66) and the matching 18 Moon blocks — 36 files,
-    ~40 MB total. Download source page (from the site you referenced):
+    ~40 MB total.
 
-        https://www.astro.com/swisseph/swedownload_e.htm
-    Direct file directory (each file is a URL under this path):
-        https://www.astro.com/ftp/swisseph/ephe/
+    RECOMMENDED source — the official Swiss Ephemeris GitHub mirror
+    (aloistr/swisseph). This has been verified to host the complete file set and
+    to be reliably reachable (the astro.com FTP path 404'd on some networks):
 
-    Fetch exactly the needed blocks with a shell loop:
-
-        base=https://www.astro.com/ftp/swisseph/ephe
+        base=https://raw.githubusercontent.com/aloistr/swisseph/master/ephe
         blocks="m36 m30 m24 m18 m12 m06 _00 _06 _12 _18 _24 _30 _36 _42 _48 _54 _60 _66"
         for b in $blocks; do
             wget "$base/sepl$b.se1"   # planets
             wget "$base/semo$b.se1"   # Moon
         done
+
+    ALTERNATIVE source — astro.com FTP (browse the directory to confirm names):
+        https://www.astro.com/ftp/swisseph/ephe/
+        Download page: https://www.astro.com/swisseph/swedownload_e.htm
+    (Use base=https://www.astro.com/ftp/swisseph/ephe in the loop above. If a
+    file 404s here, use the GitHub mirror instead.)
 
     Block -> year coverage (planets sepl* and Moon semo* share these blocks):
         m36 : 3601 BCE .. 3002 BCE   <- contains the 3102 BCE Kali Yuga epoch
@@ -135,17 +147,19 @@ A2. Download the EXACT files covering 3102 BCE .. 7154 CE. That is 18 planet
         _60 : 6000 CE .. 6599 CE
         _66 : 6600 CE .. 7199 CE   <- contains the 7154 CE timeline end
 
-    Alternatives if the direct download is inconvenient:
-      * Mirror every .se1 block (~90 MB), then keep what you need:
+    Alternatives if fetching individual files is inconvenient:
+      * Sparse-clone the whole ephe/ folder from the GitHub mirror (it contains
+        the COMPLETE long-range sepl*/semo* set, verified), then point at it:
+            git clone --depth 1 --filter=blob:none --sparse \
+                https://github.com/aloistr/swisseph
+            cd swisseph && git sparse-checkout set ephe
+        (--ephe-path .../swisseph/ephe then covers the full span.)
+      * Mirror every .se1 block from astro.com (~90 MB), then keep what you need:
             wget -r -np -nH --cut-dirs=3 -A 'sepl*.se1,semo*.se1' \
                  https://www.astro.com/ftp/swisseph/ephe/
-      * GitHub mirror of the current-era files only (sepl_18/semo_18 etc.):
-            https://github.com/aloistr/swisseph   (folder: ephe/)
-        NOTE: the GitHub repo ships only the present-era blocks; the full
-        long-range set above lives on the astro.com ftp path.
 
 A3. Point Kalachakra at that directory with --ephe-path (see Part 3). No other
-    configuration is needed.
+    configuration is needed. (The QUICK SETUP script automates A1-A3.)
 
 
 -------------------------------------------------------------------------------

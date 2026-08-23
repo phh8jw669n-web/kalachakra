@@ -20,11 +20,14 @@ Options:
     --jpl              download raw JPL DE441 .bsp kernels instead of .se1
     --base-url URL     override the .se1 download directory
     --config-path P    where to write the config (default ./.kalachakra.json)
+    --configure-only   don't download; just verify + configure an existing --dest
+                       (use this if you downloaded the files manually)
     --dry-run          list what would be downloaded, then exit
     --force            re-download files that already exist
     --no-verify        skip the pyswisseph verification step
     --no-config        do not write a config file
 
+Files are fetched from the official Swiss Ephemeris GitHub mirror by default.
 The .se1 route is ~40 MB and covers the whole span (DE431). --jpl fetches the
 literal DE441 kernels (~3 GB). See instructions.txt for details.
 """
@@ -43,7 +46,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from kalachakra.ephemeris import se1_files                        # noqa: E402
 
-DEFAULT_BASE_URL = "https://www.astro.com/ftp/swisseph/ephe"
+# Default download source: the official Swiss Ephemeris GitHub mirror
+# (aloistr/swisseph). Verified to host the complete sepl*/semo* .se1 set and to
+# be reliably reachable. The astro.com FTP path is offered as an alternative via
+# --base-url, but it has been observed to 404 on some files/networks.
+DEFAULT_BASE_URL = "https://raw.githubusercontent.com/aloistr/swisseph/master/ephe"
+ASTRO_BASE_URL = "https://www.astro.com/ftp/swisseph/ephe"
 JPL_BASE_URL = "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets"
 JPL_FILES = ("de441_part-1.bsp", "de441_part-2.bsp")
 _UA = {"User-Agent": "kalachakra-setup/1.0 (+https://github.com/)"}
@@ -138,6 +146,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--jpl", action="store_true", help="download DE441 .bsp instead")
     p.add_argument("--base-url", default=DEFAULT_BASE_URL)
     p.add_argument("--config-path", type=Path, default=Path(".kalachakra.json"))
+    p.add_argument("--configure-only", action="store_true",
+                   help="skip download; verify + configure an existing --dest folder")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--force", action="store_true")
     p.add_argument("--no-verify", action="store_true")
@@ -173,13 +183,29 @@ def main(argv=None) -> int:
             print(f"    {url} -> {path}")
         return 0
 
-    print("\nDownloading...")
-    ok = all(download_file(url, path, force=args.force) for url, path in plan)
-    if not ok:
-        print("\nSome files failed to download. Re-run to resume "
-              "(existing files are skipped), or check --base-url / network.",
-              file=sys.stderr)
-        return 1
+    if args.configure_only:
+        # Manual-download path: the user placed the files in --dest themselves.
+        missing = [path.name for _url, path in plan if not path.exists()]
+        if missing:
+            print(f"\n{len(missing)} expected file(s) missing from {dest}:",
+                  file=sys.stderr)
+            for name in missing[:8]:
+                print(f"    {name}", file=sys.stderr)
+            if len(missing) > 8:
+                print(f"    ... and {len(missing) - 8} more", file=sys.stderr)
+            print("Download them (see instructions.txt) or drop --configure-only.",
+                  file=sys.stderr)
+            return 1
+        print(f"\nUsing {len(plan)} existing files in {dest} (no download).")
+    else:
+        print(f"\nDownloading from {args.base_url} ...")
+        ok = all(download_file(url, path, force=args.force) for url, path in plan)
+        if not ok:
+            print("\nSome files failed to download. Re-run to resume (existing "
+                  "files are skipped), try a different --base-url (e.g. "
+                  f"{ASTRO_BASE_URL}), or download manually and use "
+                  "--configure-only.", file=sys.stderr)
+            return 1
 
     if not args.no_verify:
         print("\nVerifying...")

@@ -105,9 +105,12 @@ python scripts/setup_full_span.py     # download + verify + configure
 python scripts/train.py --store data/full   # then just train (full span)
 ```
 
+Files come from the official Swiss Ephemeris GitHub mirror (verified complete and
+reachable). Downloaded them yourself? Point the script at your folder and it just
+verifies + configures: `python scripts/setup_full_span.py --dest DIR --configure-only`.
 Prefer the raw JPL DE441 kernels? `python scripts/setup_full_span.py --jpl`.
 **See [`instructions.txt`](instructions.txt)** for the complete guide, including
-the manual file list / year coverage, segmented matrix generation, and full-scale
+the exact 36-file list / year coverage, segmented matrix generation, and full-scale
 training on Apple MPS (`--nodes 122880 --hidden 128 --blocks 3 --modes 32`).
 
 Optional extras: `.[cluster]` (hdbscan), `.[serve]` (fastapi), `.[all]`.
