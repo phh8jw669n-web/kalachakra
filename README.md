@@ -89,7 +89,20 @@ python scripts/serve.py --date 2024-04-08T18:17 --nodes 8000
 
 `python scripts/demo_pipeline.py` runs the whole chain (real `G(t)` → store →
 ring buffer → projection → weather → real eclipse detection) in one script, and
-`pytest` runs 130 tests.
+`pytest` runs 144 tests.
+
+### Isomorphic transducer (physics-based, losslessly invertible)
+
+The rendering layer is an objective sensory converter, not a visualization:
+scalar magnitude → radiant flux (Naka-Rushton, boundless), rarity → Planckian
+colour temperature, four temporal bands → an orthonormal visible spectrum, vector
+field → Helmholtz-Hodge fluid + Line Integral Convolution, and the 64-d latent →
+spherical-harmonic Earth topography. The optical state is **losslessly
+invertible** — `IsomorphicTransducer.invert(transduce(...))` recovers the exact
+64-d latent to machine precision (verified in `tests/test_transducer.py`).
+`web/radar.html` implements the same math with a dual viewport (global sphere +
+regional micro-canvas) and a Sidebar Inspector. See
+[`docs/06_isomorphic_transducer.md`](docs/06_isomorphic_transducer.md).
 
 ### Tokenized index + kinetic radar (Phase 2-6)
 
@@ -176,14 +189,18 @@ src/kalachakra/
   analysis/           weather engine, signatures, HDBSCAN clustering, singularities,
                       rarity index, token serialization, dynamic news radar
   serving/            broadcast engine, binary framing, FastAPI + WebSocket app
+  transducer/         isomorphic transducer: SH topography, Planckian/Naka-Rushton
+                      optics, orthonormal spectra, Helmholtz-Hodge + LIC (lossless)
 configs/default.yaml  operator knob board
 scripts/              setup_full_span.py, generate_ephemeris.py, train.py, analyze.py,
                       build_index.py (tokenize->Parquet), serve.py, serve_radar.py
-web/index.html        WebGL cosmic-weather globe; web/radar.html kinetic multi-channel radar
+web/index.html        WebGL cosmic-weather globe (loads real heatmap.json)
 web/heatmap.json      a real precomputed field (2024-04-08 eclipse) for the globe
 instructions.txt      full 10,256-year span (DE441) integration guide
-tests/                130 tests (numpy + real-ephemeris + torch + persistence + API)
-docs/                 per-phase notes (05 = tokenization / persistence / serving)
+web/radar.html        isomorphic transducer client (physics-based, dual viewport)
+tests/                144 tests (numpy + real-ephemeris + torch + persistence + API
+                      + transducer lossless-invertibility to machine precision)
+docs/                 per-phase notes (05 = tokenization/serving, 06 = transducer)
 ```
 
 ## Design invariants
