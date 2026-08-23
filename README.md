@@ -89,24 +89,26 @@ python scripts/serve.py --date 2024-04-08T18:17 --nodes 8000
 
 `python scripts/demo_pipeline.py` runs the whole chain (real `G(t)` → store →
 ring buffer → projection → weather → real eclipse detection) in one script, and
-`pytest` runs 70 tests.
+`pytest` runs 88 tests.
 
 ### Full 10,256-year scale (DE441 + M4 Max)
 
 The Kali-Yuga epoch (3102 BCE) and the far future (past 4650 CE) fall outside
 Moshier's range, and the complete matrix is ~300 GB / ~13.4B frames trained over
-~90 days. **See [`instructions.txt`](instructions.txt) for the complete
-step-by-step**: obtaining the DE441 files (Swiss `.se1` or JPL `.bsp`), verifying
-the far-past reach, generating the matrix in segments, and training at full scale
-on Apple MPS. In short:
+~90 days. **One command sets it all up** — it downloads exactly the 36 Swiss
+`.se1` files (DE431, ~40 MB, which cover the whole span), verifies it can compute
+the 3102 BCE Kali Yuga epoch, and writes a config so every command uses the full
+span automatically:
 
 ```bash
-kalachakra --ephe-path /path/to/de441 reading --date -3101-02-18   # verify
-python scripts/generate_ephemeris.py --ephe-path /path/to/de441 \
-    --out data/full --start-frame 0 --chunk-frames 1000000          # generate
-python scripts/train.py --store data/full --ephe-path /path/to/de441 \
-    --nodes 122880 --hidden 128 --blocks 3 --modes 32               # train
+python scripts/setup_full_span.py     # download + verify + configure
+python scripts/train.py --store data/full   # then just train (full span)
 ```
+
+Prefer the raw JPL DE441 kernels? `python scripts/setup_full_span.py --jpl`.
+**See [`instructions.txt`](instructions.txt)** for the complete guide, including
+the manual file list / year coverage, segmented matrix generation, and full-scale
+training on Apple MPS (`--nodes 122880 --hidden 128 --blocks 3 --modes 32`).
 
 Optional extras: `.[cluster]` (hdbscan), `.[serve]` (fastapi), `.[all]`.
 
@@ -122,16 +124,15 @@ Optional extras: `.[cluster]` (hdbscan), `.[serve]` (fastapi), `.[all]`.
 | 4 | Broadcast potential/shear metrics; WebGL globe | `scripts/serve.py`, `web/index.html` |
 
 ```bash
-# Phase 1 — first 10k frames (full run is ~300 GB)
-python scripts/generate_ephemeris.py --out data/ephemeris \
-    --max-frames 10000 --chunk-frames 5000 --ephe-path /path/to/de441
+# Phase 1 — generate a real store (any window in the Moshier range)
+python scripts/generate_ephemeris.py --out data/store \
+    --start-date 2024-01-01 --max-frames 4096 --chunk-frames 512
 
-# Phase 3 — train
-python scripts/train.py --store data/ephemeris --checkpoints checkpoints \
-    --node-subsample 4096 --window 64 --batch 4 --max-steps 100000
+# Phase 3 — train + save models (auto-generates data/store if it is missing)
+python scripts/train.py
 
-# Phase 4 — serve (demo field, no trained model needed) then open web/index.html
-python scripts/serve.py --demo --nodes 4096 --port 8000
+# Phase 4 — serve the real field, then open web/index.html
+python scripts/serve.py --date 2024-04-08T18:17 --nodes 8000
 curl 'http://localhost:8000/potential?lat=48.85&lon=2.35'
 ```
 
@@ -144,7 +145,7 @@ src/kalachakra/
   cli.py              the `kalachakra` command (reading / map / scan) — real output
   constants.py        canonical figures (timeline, units, memory budget) — audited
   geometry.py         numpy geodesic/astronomy primitives (the shared math core)
-  ephemeris/          Phase 1: bodies, timeline, calendar, G(t) via pyswisseph
+  ephemeris/          Phase 1: bodies, timeline, calendar, se1_files, G(t) + config
   grid/               geodesic Earth mesh (fibonacci lattice + icosphere)
   projection/         Phase 2: analytical G(t) -> E(t,s) spherical trig
   storage/            BF16 + delta memory-mapped store, async ring buffer
@@ -156,10 +157,12 @@ src/kalachakra/
                       HDBSCAN clustering, singularities
   serving/            broadcast engine + REST/gRPC schema
 configs/default.yaml  operator knob board
-scripts/              generate_ephemeris.py, train.py, serve.py, demo_pipeline.py
+scripts/              setup_full_span.py (one-command DE441 setup), generate_ephemeris.py,
+                      train.py, analyze.py, serve.py, demo_pipeline.py
 web/index.html        WebGL / Three.js cosmic-weather globe (loads real heatmap.json)
 web/heatmap.json      a real precomputed field (2024-04-08 eclipse) for the globe
-tests/                69 tests (numpy + real-ephemeris + torch; each skips if dep absent)
+instructions.txt      full 10,256-year span (DE441) integration guide
+tests/                88 tests (numpy + real-ephemeris + torch; each skips if dep absent)
 docs/                 per-phase notes
 ```
 

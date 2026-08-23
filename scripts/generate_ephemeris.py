@@ -42,8 +42,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--max-frames", type=int, default=None,
                    help="number of frames to generate from the start")
     p.add_argument("--ephe-path", type=str, default=None,
-                   help="directory holding the DE441 .se1 files (enables full range; "
+                   help="directory holding the Swiss .se1 files, DE431 (enables full range; "
                         "without it the Moshier backend covers ~1900 BCE - 4650 CE)")
+    p.add_argument("--jpl-file", type=str, default=None,
+                   help="DE441 .bsp file for the JPL backend (full range)")
     return p.parse_args(argv)
 
 
@@ -55,9 +57,10 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 2
 
-    # Choose backend: Swiss (full range) if DE441 path given, else Moshier.
-    global_state.configure(mode="swiss" if args.ephe_path else "moshier",
-                           ephe_path=args.ephe_path)
+    # Backend: explicit flag wins, else a saved config (setup_full_span), else Moshier.
+    mode = global_state.configure_from_args(ephe_path=args.ephe_path,
+                                            jpl_file=args.jpl_file)
+    print(f"ephemeris backend: {mode}")
 
     # Resolve the start frame.
     if args.start_date:

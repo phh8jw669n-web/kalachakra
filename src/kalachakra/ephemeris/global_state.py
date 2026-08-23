@@ -16,11 +16,15 @@ Ephemeris backend
 By default this uses the **Moshier** analytical ephemeris, which needs no
 external data files and is valid 3000 BCE - 3000 CE (covering all of recorded
 history and the present). Call :func:`configure` with ``mode="swiss"`` and a
-path to the DE431/DE441 ``.se1`` files to cover the full 10,256-year timeline
+path to the Swiss ``.se1`` files (DE431) to cover the full 10,256-year timeline
 at full precision.
 """
 
 from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
 
 import numpy as np
 
@@ -59,8 +63,8 @@ def configure(mode: str = "moshier", ephe_path: str | None = None,
     ----------
     mode : {"moshier", "swiss", "jpl"}
         "moshier" (default) needs no data files (~1900 BCE - 4650 CE). "swiss"
-        uses DE431/DE441 ``.se1`` files (small, recommended). "jpl" reads the
-        NASA JPL DE441 ``.bsp`` file(s) directly.
+        uses the Swiss Ephemeris ``.se1`` files (DE431-based, ~13000 BCE-16800 CE;
+        small, recommended). "jpl" reads the NASA JPL DE441 ``.bsp`` file(s).
     ephe_path : str, optional
         Directory holding the ``.se1`` files (used by "swiss"; also where a JPL
         file may live).
@@ -80,6 +84,85 @@ def configure(mode: str = "moshier", ephe_path: str | None = None,
 
 def _calc_flags() -> int:
     return _FLAG_BY_MODE[_MODE] | _FLG_SPEED
+
+
+# --- persistent configuration (written by scripts/setup_full_span.py) --------
+
+DEFAULT_CONFIG_PATH = Path.home() / ".config" / "kalachakra" / "config.json"
+
+
+def _config_search_paths() -> list[Path]:
+    """Where auto_configure looks for a saved backend config, in priority order."""
+    paths = []
+    env_cfg = os.environ.get("KALACHAKRA_CONFIG")
+    if env_cfg:
+        paths.append(Path(env_cfg))
+    paths.append(Path.cwd() / ".kalachakra.json")   # project-local
+    paths.append(DEFAULT_CONFIG_PATH)               # user-global
+    return paths
+
+
+def save_config(*, mode: str = "swiss", ephe_path: str | None = None,
+                jpl_file: str | None = None, path: str | Path | None = None) -> Path:
+    """Persist the backend choice so future runs pick it up with no flags."""
+    if mode not in _FLAG_BY_MODE:
+        raise ValueError(f"mode must be one of {sorted(_FLAG_BY_MODE)}")
+    target = Path(path) if path else DEFAULT_CONFIG_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    data = {"mode": mode, "ephe_path": ephe_path, "jpl_file": jpl_file}
+    target.write_text(json.dumps(data, indent=2))
+    return target
+
+
+def configure_from_args(ephe_path: str | None = None,
+                        jpl_file: str | None = None) -> str:
+    """Configure from explicit flags if given, else fall back to auto_configure().
+
+    This is the single entry point the CLI and scripts use so that, after running
+    scripts/setup_full_span.py (which writes a config), every command uses the
+    full-span backend with no flags — while an explicit --ephe-path/--jpl-file
+    still wins.
+    """
+    if jpl_file:
+        configure(mode="jpl", jpl_file=jpl_file, ephe_path=ephe_path)
+        return "jpl"
+    if ephe_path:
+        configure(mode="swiss", ephe_path=ephe_path)
+        return "swiss"
+    return auto_configure()
+
+
+def auto_configure() -> str:
+    """Configure the backend from env vars / a saved config; fall back to Moshier.
+
+    Priority:
+      1. env KALACHAKRA_EPHE_PATH (swiss) or KALACHAKRA_JPL_FILE (jpl)
+      2. the first config file found via :func:`_config_search_paths`
+      3. Moshier (no data files)
+    Returns the mode selected.
+    """
+    env_ephe = os.environ.get("KALACHAKRA_EPHE_PATH")
+    env_jpl = os.environ.get("KALACHAKRA_JPL_FILE")
+    if env_jpl:
+        configure(mode="jpl", jpl_file=env_jpl)
+        return "jpl"
+    if env_ephe:
+        configure(mode="swiss", ephe_path=env_ephe)
+        return "swiss"
+
+    for cfg_path in _config_search_paths():
+        try:
+            if cfg_path and cfg_path.is_file():
+                data = json.loads(cfg_path.read_text())
+                mode = data.get("mode", "moshier")
+                configure(mode=mode, ephe_path=data.get("ephe_path"),
+                          jpl_file=data.get("jpl_file"))
+                return mode
+        except Exception:  # noqa: BLE001 - a bad config must not crash startup
+            continue
+
+    configure(mode="moshier")
+    return "moshier"
 
 
 def ephemeris_available() -> bool:

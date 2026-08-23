@@ -204,7 +204,7 @@ with **no trained model required**.
 
 The **neural core and training loop are implemented and demonstrably learn on
 real projected data** (composite geodesic loss drops ~65% in 60 steps; a real
-checkpoint is saved). 69 tests cover the numpy core, the real ephemeris, and the
+checkpoint is saved). 88 tests cover the numpy core, the real ephemeris, and the
 torch model/trainer.
 
 What remains a **scaling exercise on the target hardware**: the full 10,256-year

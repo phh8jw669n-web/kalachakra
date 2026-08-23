@@ -40,6 +40,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--date", default="now")
     p.add_argument("--window", type=int, default=64)
     p.add_argument("--ephe-path", default=None)
+    p.add_argument("--jpl-file", default=None)
     p.add_argument("--out", type=Path, default=None, help="write heatmap JSON here")
     p.add_argument("--top", type=int, default=5, help="report top-N singularities")
     p.add_argument("--sigma", type=float, default=2.5,
@@ -66,8 +67,8 @@ def main(argv=None) -> int:
         print("ERROR: pyswisseph not installed.", file=sys.stderr)
         return 2
 
-    global_state.configure(mode="swiss" if args.ephe_path else "moshier",
-                           ephe_path=args.ephe_path)
+    global_state.configure_from_args(ephe_path=args.ephe_path,
+                                     jpl_file=args.jpl_file)
 
     model, cfg, grid_xyz = load_model(args.checkpoint)
     grid = _grid_from_xyz(np.asarray(grid_xyz))

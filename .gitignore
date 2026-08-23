@@ -22,6 +22,11 @@ checkpoints/
 *.pt
 *.log
 
+# Local machine config written by scripts/setup_full_span.py, and ephemeris files
+.kalachakra.json
+*.se1
+*.bsp
+
 # OS / editor
 .DS_Store
 .idea/

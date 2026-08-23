@@ -7,13 +7,48 @@ Ephemeris "Moshier" backend, which needs NO data files but is only valid from
 about 1900 BCE to 4650 CE. The full Kalachakra timeline runs from the Kali Yuga
 epoch (3102 BCE, Julian Day 588465.5) to 7154 CE — 10,256 years — and the far
 past and far future fall OUTSIDE the Moshier window. To cover the whole span you
-must plug in the JPL DE441 long ephemeris (via the Swiss Ephemeris).
+plug a long-range ephemeris into the Swiss Ephemeris.
 
 You can do this two ways:
   * OPTION A — Swiss Ephemeris ".se1" files   (recommended: small, fast)
   * OPTION B — JPL DE441 ".bsp" files          (the raw NASA kernels; large)
 
+A note on DE431 vs DE441: the ready-made Swiss ".se1" files (OPTION A) are built
+from JPL DE431, which spans ~13000 BCE .. 16800 CE and therefore already covers
+Kalachakra's entire 3102 BCE .. 7154 CE timeline. DE441 is JPL's newer long
+integration (nearly identical over this span, agreeing far below the arc-second
+level — immaterial for a topological simulation); it ships only as raw ".bsp"
+kernels, which is OPTION B. The blueprint names DE441; OPTION A (DE431 .se1) is
+the practical way to get the full span, OPTION B is the literal DE441 route.
+
 The code supports both. Follow ONE option, then continue to Part 3.
+
+
+-------------------------------------------------------------------------------
+ QUICK SETUP (recommended) — one command does everything
+-------------------------------------------------------------------------------
+A single script downloads exactly the right files, verifies them, and writes a
+config so every other command uses the full span automatically (no flags):
+
+    pip install -e ".[train]"
+    python scripts/setup_full_span.py
+
+That downloads the 36 needed Swiss .se1 files (~40 MB) to ~/.kalachakra/ephe,
+verifies it can compute the 3102 BCE Kali Yuga epoch, and writes ./.kalachakra.json.
+After it finishes you can go straight to training:
+
+    python scripts/train.py --store data/full     # generates + trains, full span
+
+Useful flags:
+    python scripts/setup_full_span.py --dry-run    # show the file list, download nothing
+    python scripts/setup_full_span.py --jpl        # fetch raw JPL DE441 .bsp instead
+    python scripts/setup_full_span.py --dest DIR --config-path PATH
+    python scripts/setup_full_span.py --mirror-all # every block, not just the needed set
+
+If the automatic download is blocked on your network, or you want to understand
+exactly what it does, follow the manual steps (OPTION A / OPTION B) below — they
+produce the identical result.
+
 
 Timeline anchors you will need:
   * Start frame 0        = JD 588465.5   = 3102-02-18 BCE 00:00 UTC (Kali Yuga)
@@ -34,7 +69,7 @@ Timeline anchors you will need:
    Ephemeris; it reads both .se1 and .bsp files.)
 
 3. Decide where the big files and outputs will live. You need free disk for:
-       - ephemeris data files      : ~90 MB (.se1)  or  ~2.6 GB (.bsp)
+       - ephemeris data files      : ~40 MB (needed .se1)  or  ~3 GB (DE441 .bsp)
        - generated G(t) matrix     : up to ~300 GB for the full timeline
        - checkpoints               : a few GB
    Put them on a fast SSD.
@@ -43,33 +78,71 @@ Timeline anchors you will need:
 -------------------------------------------------------------------------------
  OPTION A — Swiss Ephemeris .se1 files  (recommended)
 -------------------------------------------------------------------------------
-The Swiss Ephemeris ships DE431-based .se1 files that already cover the full
-Kalachakra span (11 BCE ... they extend from 13201 BCE to 17191 CE). These are
-much smaller than the raw JPL kernels.
+The Swiss Ephemeris ships DE431-based ".se1" files spanning ~13000 BCE .. 16800
+CE, which fully covers Kalachakra's 3102 BCE .. 7154 CE timeline. They are far
+smaller than the raw JPL kernels.
+
+How the filenames work (from the official docs, verified):
+    * Each .se1 file covers exactly 600 years.
+    * Prefix = body group:  sepl = planets (Mercury..Pluto),
+                            semo = Moon,  seas = main asteroids (NOT needed here).
+    * Suffix = 600-year block.  "_NN" = CE, "mNN" = BCE, number x 100 = century:
+          sepl_00.se1 = 1 BCE .. 599 CE      seplm06.se1 = 601 BCE .. 2 BCE
+          sepl_18.se1 = 1800 .. 2399 CE      seplm36.se1 = 3601 BCE .. 3002 BCE
+    * Kalachakra uses only the Sun/Moon/planets and the lunar nodes (Rahu/Ketu),
+      so you need sepl* (planets) and semo* (Moon). You do NOT need seas*
+      (asteroids) or any other files.
 
 A1. Create a directory for them, e.g.:
 
-        mkdir -p ~/ephe/de441
+        mkdir -p ~/ephe/se1
+        cd ~/ephe/se1
 
-A2. Download the long-range .se1 files from the official distribution:
+A2. Download the EXACT files covering 3102 BCE .. 7154 CE. That is 18 planet
+    blocks (m36..m06, _00.._66) and the matching 18 Moon blocks — 36 files,
+    ~40 MB total. Download source page (from the site you referenced):
+
+        https://www.astro.com/swisseph/swedownload_e.htm
+    Direct file directory (each file is a URL under this path):
         https://www.astro.com/ftp/swisseph/ephe/
-    You need, at minimum, the planetary and lunar files that span the timeline.
-    The filename number encodes the 600-year block; negative blocks are BCE.
-    For the full 3102 BCE -> 7154 CE span, fetch the sepl_*, semo_* (and
-    optionally seas_*) files whose blocks cover roughly -32 .. +12, e.g.:
 
-        seplm54.se1 ... seplm06.se1   (planets, BCE blocks)
-        sepl_00.se1  ... sepl_12.se1  (planets, CE blocks)
-        semom54.se1 ... semom06.se1   (moon, BCE blocks)
-        semo_00.se1  ... semo_12.se1  (moon, CE blocks)
+    Fetch exactly the needed blocks with a shell loop:
 
-    The simplest robust approach is to mirror the whole ephe/ directory:
+        base=https://www.astro.com/ftp/swisseph/ephe
+        blocks="m36 m30 m24 m18 m12 m06 _00 _06 _12 _18 _24 _30 _36 _42 _48 _54 _60 _66"
+        for b in $blocks; do
+            wget "$base/sepl$b.se1"   # planets
+            wget "$base/semo$b.se1"   # Moon
+        done
 
-        cd ~/ephe/de441
-        wget -r -np -nH --cut-dirs=3 -A '*.se1' \
-             https://www.astro.com/ftp/swisseph/ephe/
+    Block -> year coverage (planets sepl* and Moon semo* share these blocks):
+        m36 : 3601 BCE .. 3002 BCE   <- contains the 3102 BCE Kali Yuga epoch
+        m30 : 3001 BCE .. 2402 BCE
+        m24 : 2401 BCE .. 1802 BCE
+        m18 : 1801 BCE .. 1202 BCE
+        m12 : 1201 BCE ..  602 BCE
+        m06 :  601 BCE ..    2 BCE
+        _00 :    1 BCE ..  599 CE
+        _06 :  600 CE .. 1199 CE
+        _12 : 1200 CE .. 1799 CE
+        _18 : 1800 CE .. 2399 CE
+        _24 : 2400 CE .. 2999 CE
+        _30 : 3000 CE .. 3599 CE
+        _36 : 3600 CE .. 4199 CE
+        _42 : 4200 CE .. 4799 CE
+        _48 : 4800 CE .. 5399 CE
+        _54 : 5400 CE .. 5999 CE
+        _60 : 6000 CE .. 6599 CE
+        _66 : 6600 CE .. 7199 CE   <- contains the 7154 CE timeline end
 
-    (That grabs every .se1 block; ~90 MB total. Trim later if you like.)
+    Alternatives if the direct download is inconvenient:
+      * Mirror every .se1 block (~90 MB), then keep what you need:
+            wget -r -np -nH --cut-dirs=3 -A 'sepl*.se1,semo*.se1' \
+                 https://www.astro.com/ftp/swisseph/ephe/
+      * GitHub mirror of the current-era files only (sepl_18/semo_18 etc.):
+            https://github.com/aloistr/swisseph   (folder: ephe/)
+        NOTE: the GitHub repo ships only the present-era blocks; the full
+        long-range set above lives on the astro.com ftp path.
 
 A3. Point Kalachakra at that directory with --ephe-path (see Part 3). No other
     configuration is needed.
@@ -108,7 +181,7 @@ Confirm you can compute a date Moshier cannot (the Kali Yuga epoch). Pick the
 flag matching your option:
 
     # Option A (.se1):
-    kalachakra --ephe-path ~/ephe/de441 reading --date -3101-02-18
+    kalachakra --ephe-path ~/ephe/se1 reading --date -3101-02-18
 
     # Option B (.bsp), pre-1969 CE dates use part-1:
     kalachakra --jpl-file ~/ephe/jpl/de441_part-1.bsp reading --date -3101-02-18
@@ -121,7 +194,7 @@ Quick programmatic check (optional):
 
     python - <<'PY'
     from kalachakra.ephemeris import global_state as gs
-    gs.configure(mode="swiss", ephe_path="~/ephe/de441".replace("~", __import__("os").path.expanduser("~")))
+    gs.configure(mode="swiss", ephe_path="~/ephe/se1".replace("~", __import__("os").path.expanduser("~")))
     print(gs.global_state_frame(588465.5))   # Kali Yuga epoch, shape (10,7)
     PY
 
@@ -136,7 +209,7 @@ checkpoint progress and parallelize.
 4a. A bounded real segment starting at the Kali Yuga epoch (frame 0):
 
         python scripts/generate_ephemeris.py \
-            --out data/full --ephe-path ~/ephe/de441 \
+            --out data/full --ephe-path ~/ephe/se1 \
             --start-frame 0 --max-frames 100000000 --chunk-frames 1000000
 
     (--jpl-file ~/ephe/jpl/de441_part-1.bsp instead of --ephe-path for Option B.)
@@ -144,7 +217,7 @@ checkpoint progress and parallelize.
 4b. Start a segment at a specific date instead of a frame index:
 
         python scripts/generate_ephemeris.py \
-            --out data/full --ephe-path ~/ephe/de441 \
+            --out data/full --ephe-path ~/ephe/se1 \
             --start-date -3101-02-18 --max-frames 100000000
 
 4c. The WHOLE timeline (very large — expect ~300 GB and a long run; do this in
@@ -152,7 +225,7 @@ checkpoint progress and parallelize.
 
         # omit --max-frames to run to the end of the 10,256-year timeline
         python scripts/generate_ephemeris.py \
-            --out data/full --ephe-path ~/ephe/de441 \
+            --out data/full --ephe-path ~/ephe/se1 \
             --start-frame 0 --chunk-frames 1000000
 
     Tip: resume a partial generation by setting --start-frame to the next frame
@@ -181,7 +254,7 @@ To train against the FULL-span store you generated in Part 4 (and, if the store
 is missing, generate it with DE441 rather than Moshier):
 
     python scripts/train.py \
-        --store data/full --ephe-path ~/ephe/de441 \
+        --store data/full --ephe-path ~/ephe/se1 \
         --nodes 122880 --window 64 --stride 32 --batch 4 \
         --hidden 128 --blocks 3 --modes 32 \
         --epochs 1 --save-every 500 --checkpoints checkpoints/full
@@ -207,7 +280,7 @@ Encode a real window into the 64-d latent manifold and emit potential/shear:
 
     python scripts/analyze.py \
         --checkpoint checkpoints/full/model_final.pt \
-        --date -3101-02-18 --ephe-path ~/ephe/de441 \
+        --date -3101-02-18 --ephe-path ~/ephe/se1 \
         --out web/heatmap.json
 
 Serve the real field and open the WebGL globe:
@@ -217,7 +290,7 @@ Serve the real field and open the WebGL globe:
 
 Any-date, any-place reading straight from geometry (no model needed):
 
-    kalachakra --ephe-path ~/ephe/de441 reading --date -3101-02-18 --lat 27.0 --lon 78.0
+    kalachakra --ephe-path ~/ephe/se1 reading --date -3101-02-18 --lat 27.0 --lon 78.0
 
 
 -------------------------------------------------------------------------------

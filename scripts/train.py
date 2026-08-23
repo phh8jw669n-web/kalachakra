@@ -46,7 +46,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--frames", type=int, default=2048,
                    help="frames to generate if the store is missing")
     p.add_argument("--ephe-path", default=None,
-                   help="DE441 .se1 directory (enables the full timeline)")
+                   help="Swiss .se1 directory, DE431 (enables the full timeline)")
     p.add_argument("--jpl-file", default=None,
                    help="DE441 .bsp file for the JPL backend (full timeline)")
     # Model / mesh. Defaults are sized for a real run that finishes in a few
@@ -88,9 +88,9 @@ def ensure_store(args) -> "EphemerisStore":  # noqa: F821
               file=sys.stderr)
         raise SystemExit(2)
 
-    mode = "jpl" if args.jpl_file else ("swiss" if args.ephe_path else "moshier")
-    global_state.configure(mode=mode, ephe_path=args.ephe_path,
-                           jpl_file=args.jpl_file)
+    mode = global_state.configure_from_args(ephe_path=args.ephe_path,
+                                            jpl_file=args.jpl_file)
+    print(f"  ephemeris backend: {mode}")
     import numpy as np
     start_frame = int(timeline.jd_to_frame(parse_datetime(args.start_date)))
     print(f"Generating {args.frames:,} real frames from "

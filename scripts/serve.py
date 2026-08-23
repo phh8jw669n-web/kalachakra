@@ -41,6 +41,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="synthesize a field instead of computing real geometry")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--ephe-path", default=None,
+                   help="Swiss .se1 directory, DE431 (full timeline)")
+    p.add_argument("--jpl-file", default=None,
+                   help="DE441 .bsp file for the JPL backend (full timeline)")
     return p.parse_args(argv)
 
 
@@ -65,6 +69,10 @@ def main(argv=None) -> int:
             print("ERROR: pyswisseph not installed. Run `pip install pyswisseph`, "
                   "or pass --demo for a synthetic field.", file=sys.stderr)
             return 2
+        # Honor a saved full-span config (setup_full_span) so far-past/future
+        # dates work; falls back to Moshier otherwise.
+        global_state.configure_from_args(ephe_path=args.ephe_path,
+                                         jpl_file=args.jpl_file)
         jd = parse_datetime(args.date)
         print(f"Computing real weather field for {format_jd(jd)} "
               f"over {args.nodes:,} nodes...", file=sys.stderr)
