@@ -1,0 +1,202 @@
+===============================================================================
+ KALACHAKRA — the whole idea, in plain words
+===============================================================================
+
+Read this first. No jargon, no setup — just what this thing actually is, why it
+exists, and what happens when YOU run it. If you finish this page you'll "get"
+the project. The step-by-step commands live in instructions.txt; this file is the
+mental picture that makes those commands make sense.
+
+
+-------------------------------------------------------------------------------
+ 1. What is this, really?
+-------------------------------------------------------------------------------
+Think of a weather radar. Not for rain — for the *geometry of the solar system*.
+
+Every moment, the Sun, Moon, and planets sit at particular angles to each other
+and to any spot on Earth. Those angles form patterns: sometimes things line up
+(tension, concentration), sometimes they spread out (release), sometimes a rare
+configuration shows up that hasn't happened in thousands of years. Kalachakra
+measures all of that, turns it into numbers, and shows it to you as a living,
+glowing map of Earth.
+
+That's the key word: MEASURES. This is not astrology. There's no "you'll meet a
+tall stranger" text anywhere in it. It refuses to interpret. It only reports cold,
+objective geometry — "these two bodies are 0.04 degrees apart," "this pattern is
+in the rarest 0.1% of the last ten thousand years," "the energy here is rising."
+What that *means* is entirely up to you. The project's whole personality is: give
+honest math, add zero folklore.
+
+So in one sentence: **Kalachakra is a cosmic weather station that watches the
+shape of the solar system over 10,256 years and paints it onto a globe as pure
+geometry.**
+
+
+-------------------------------------------------------------------------------
+ 2. Why 10,256 years? And why is that a big deal?
+-------------------------------------------------------------------------------
+The timeline runs from 3102 BCE (an ancient reference point called the Kali Yuga
+epoch) all the way to 7154 CE. That's 10,256 years.
+
+The clock doesn't tick in hours. It ticks every 24 seconds (an old unit called a
+"Vighatika"). Why so fine? Because in 24 seconds the sky rotates just enough
+(~0.1 degree) to matter for the horizon. Tick every 24 seconds for 10,256 years
+and you get about **13.4 BILLION snapshots** of the solar system. Each snapshot
+is the exact position and speed of 10 bodies.
+
+That's the "big" version. You do NOT need to compute all 13.4 billion to use the
+project — more on that in a second. But that's the full ambition: a complete,
+frame-by-frame movie of the solar system's geometry across ten millennia.
+
+
+-------------------------------------------------------------------------------
+ 3. What actually happens, start to finish (the pipeline)
+-------------------------------------------------------------------------------
+Here's the whole machine, in order. Picture it as a factory line:
+
+  (1) ASK THE SKY.  A real astronomy engine (the Swiss Ephemeris — the same kind
+      of precise planetary calculator astronomers use) tells us exactly where
+      every body is at a given instant. Real positions, not made up. This is the
+      raw ingredient.
+
+  (2) PROJECT IT ONTO EARTH.  Those positions are "global" — true for the whole
+      planet. We then work out how the sky looks from 122,880 evenly-spread
+      points across the Earth's surface (a geodesic mesh — imagine a soccer-ball
+      grid wrapped over the globe). Now every spot on Earth has its own local
+      picture of the sky.
+
+  (3) SQUEEZE OUT THE PATTERN.  A neural network (a "spherical autoencoder" plus
+      a "Fourier neural operator" — fancy names, simple job) learns to compress
+      that giant field of numbers down to a tiny fingerprint of just 64 numbers
+      that still captures the essential shape of the moment. It teaches itself,
+      unsupervised — nobody labels anything. It just finds the structure.
+
+  (4) TURN IT INTO TOKENS + A RARITY SCORE.  Those fingerprints get sorted into a
+      vocabulary of 4,096 recurring "shapes" (like an alphabet of cosmic moments),
+      and each moment gets a RARITY score: how unusual is this, compared to all
+      ten thousand years? Common = boring. Rare = something worth looking at.
+
+  (5) FILE IT SO IT'S INSTANT TO SEARCH.  All of that gets stored in a smart,
+      layered database. You can ask "show me the rarest events over India in
+      January 2024" and get an answer in milliseconds, even against a massive
+      archive. It keeps summaries at three zoom levels (second-by-second, hourly,
+      daily) so zooming out over centuries stays fast.
+
+  (6) SHOW IT TO YOU.  Finally, the numbers become something you can SEE and feel:
+      a glowing globe. And here's the clever part — the visuals aren't decoration,
+      they're an exact translation (see section 5).
+
+Steps 1-2 are pure, verified astronomy. Steps 3-4 are the "AI" part. Steps 5-6
+are storage and the pretty, useful front end.
+
+
+-------------------------------------------------------------------------------
+ 4. Two ways to run it: the easy way and the epic way
+-------------------------------------------------------------------------------
+This matters, because it decides how much time and disk you need.
+
+  EASY WAY (start here — minutes, on a normal laptop, no downloads):
+    The astronomy engine has a built-in mode that needs zero data files and
+    covers roughly 1900 BCE to 4650 CE — i.e. all of history and today. You can
+    immediately get real readings, scan a year for real eclipses, train a small
+    model, build an index, and open every visual. This is the "see it work today"
+    path. Most people live here.
+
+  EPIC WAY (the full 10,256 years — serious hardware):
+    To reach 3102 BCE and the far future you download a long-range planetary data
+    set (a ~40 MB set of files — one command does it and configures everything).
+    Generating the entire 13.4-billion-frame movie is around 300 GB on disk, and
+    training the model over the full cycle is roughly a 90-day run on a powerful
+    machine (an Apple M4 Max is the reference). Same exact commands as the easy
+    way — you just point them at the full data and let it run for a long time.
+
+The beautiful bit: **you learn everything on the easy path, and the epic path is
+the identical workflow scaled up.** Nothing is different except the size and the
+wait.
+
+
+-------------------------------------------------------------------------------
+ 5. The visuals — and why they're not "just pretty"
+-------------------------------------------------------------------------------
+There are two things you open in a web browser.
+
+  A) THE GLOBE (index.html).
+     A rotating Earth made of thousands of points. Each point glows based on the
+     geometric "potential" and "shear" at that spot right now (or at whatever
+     date you asked for). Bright, tense zones vs. calm zones, at a glance. Great
+     for "what does the whole planet look like at this instant?"
+
+  B) THE RADAR (radar.html) — this is the showpiece.
+     This one uses an idea the project calls the "isomorphic transducer." Big
+     phrase, cool concept: instead of arbitrarily picking colors, it translates
+     each *kind* of math into the matching *kind* of physical sensation, exactly:
+
+        - how strong a moment is        -> how bright it glows (like real light)
+        - how RARE it is                -> its color temperature (rare = hot blue/
+                                           white, like a hotter star; common = red)
+        - the four "rhythms" of time     -> a real spread of visible-light colors
+          (fast daily stuff vs slow
+           planet-cycle stuff)
+        - the flow/direction of change   -> a moving fluid, like wind on a weather
+                                           map (things "applying" vs "separating")
+        - the 64-number fingerprint      -> actual bumps and valleys in the globe's
+                                           surface (mountains and trenches that ARE
+                                           the math)
+
+     Because every translation is exact and reversible, you could literally read
+     the picture back into the original 64 numbers with no loss. The image isn't a
+     summary of the data — it IS the data, in a form your eyes understand.
+
+     You can double-click any point to pop open a "Sidebar Inspector" that shows
+     the raw numbers behind that spot: which bodies, their positions and speeds,
+     the rarity, whether an eclipse is near, and so on. Shift-double-click zooms
+     into a small region and computes it in fine detail on the fly.
+
+Both open right in your browser from the project's own server — no fiddling.
+
+(There's also a plain data feed — a REST API and a gRPC service — for people who
+want to pull the numbers into their own tools instead of looking at the globe.)
+
+
+-------------------------------------------------------------------------------
+ 6. So... what will *I* actually DO when I run it?
+-------------------------------------------------------------------------------
+Realistically, your first hour looks like this:
+
+  1. Install it (one line).
+  2. Type a command and instantly get a real reading — e.g. ask for the 2024
+     total solar eclipse and watch it report the Sun and Moon sitting 0.04
+     degrees apart. Real. Verifiable. Yours to check against the news.
+  3. Scan a whole year and watch it FIND the real eclipses on its own, ranked by
+     how unusual they are.
+  4. Run one turn-key training command. It quietly makes its own practice data,
+     trains the neural network, prints the "loss" dropping (that's it learning),
+     and saves the trained model to a folder.
+  5. Build the searchable index from that model.
+  6. Start the server and open the globe and the radar in your browser. Spin the
+     Earth. Double-click things. Watch it glow.
+
+Later, if you want the real thing at full scale, you run ONE setup command to
+pull the long-range data, then kick off the big generation + training and let it
+churn for as long as it takes. The commands are the same ones you already learned.
+
+That's it. You go from "typed a command" to "holding a living map of the solar
+system's geometry across ten thousand years" — and every number in it is honest.
+
+
+-------------------------------------------------------------------------------
+ 7. A few honest promises (so you know what you're getting)
+-------------------------------------------------------------------------------
+  * It's REAL, not a demo. The astronomy is genuine and checked against real
+    eclipses and conjunctions. The model genuinely trains. The database genuinely
+    answers in milliseconds. The picture genuinely reverses back into the math.
+  * It makes NO predictions and tells NO fortunes. It reports geometry. Meaning
+    is yours to add or not.
+  * The easy path runs today on a laptop. The full 10,256-year path is a real,
+    heavy compute job — hundreds of GB and a months-long train — and the project
+    is upfront about that instead of pretending it's instant.
+  * You can verify it yourself: it ships with 150+ automated tests, and every
+    command in the instructions has been run for real.
+
+Next stop: open instructions.txt and follow it top to bottom. Have fun. Look up.
+===============================================================================
