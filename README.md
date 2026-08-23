@@ -89,7 +89,23 @@ python scripts/serve.py --date 2024-04-08T18:17 --nodes 8000
 
 `python scripts/demo_pipeline.py` runs the whole chain (real `G(t)` → store →
 ring buffer → projection → weather → real eclipse detection) in one script, and
-`pytest` runs 88 tests.
+`pytest` runs 130 tests.
+
+### Tokenized index + kinetic radar (Phase 2-6)
+
+On top of the latent autoencoder: a hierarchical residual VQ turns each latent
+into discrete geometric tokens (64 macro × 64 micro = 4096 leaves), a deep-time
+**Rarity Index** scores statistical uniqueness, and everything is persisted to
+century-partitioned Parquet indexed by Uber H3 + a three-tier temporal mipmap,
+queried by an in-process DuckDB router (~24 ms viewport queries), and streamed as
+binary frames to a Three.js kinetic radar. See
+[`docs/05_tokenization_persistence_serving.md`](docs/05_tokenization_persistence_serving.md).
+
+```bash
+pip install -e ".[train,index,serve]"
+python scripts/build_index.py --out data/index --nodes 256 --frames 3000
+python scripts/serve_radar.py --index data/index --port 8000   # then open web/radar.html
+```
 
 ### Full 10,256-year scale (DE441 + M4 Max)
 
@@ -150,23 +166,24 @@ src/kalachakra/
   geometry.py         numpy geodesic/astronomy primitives (the shared math core)
   ephemeris/          Phase 1: bodies, timeline, calendar, se1_files, G(t) + config
   grid/               geodesic Earth mesh (fibonacci lattice + icosphere)
-  projection/         Phase 2: analytical G(t) -> E(t,s) spherical trig
-  storage/            BF16 + delta memory-mapped store, async ring buffer
-  data/               Phase 3: streaming IterableDataset
-  models/             spherical conv, 1-D FNO, hierarchical autoencoder
+  projection/         analytical G(t) -> E(t,s) spherical trig
+  geo/                Uber H3 hexagonal geospatial indexing
+  storage/            BF16 memmap + ring buffer; temporal mipmap; Parquet; DuckDB
+  data/               streaming IterableDataset
+  models/             spherical conv, 1-D FNO, autoencoder, residual VQ (tokens)
   losses/             composite geodesic loss (numpy reference + torch)
   training/           Lion optimizer, trainer/checkpoints, testing daemon
-  analysis/           weather engine (aspects/tension/eclipses), signatures,
-                      HDBSCAN clustering, singularities
-  serving/            broadcast engine + REST/gRPC schema
+  analysis/           weather engine, signatures, HDBSCAN clustering, singularities,
+                      rarity index, token serialization, dynamic news radar
+  serving/            broadcast engine, binary framing, FastAPI + WebSocket app
 configs/default.yaml  operator knob board
-scripts/              setup_full_span.py (one-command DE441 setup), generate_ephemeris.py,
-                      train.py, analyze.py, serve.py, demo_pipeline.py
-web/index.html        WebGL / Three.js cosmic-weather globe (loads real heatmap.json)
+scripts/              setup_full_span.py, generate_ephemeris.py, train.py, analyze.py,
+                      build_index.py (tokenize->Parquet), serve.py, serve_radar.py
+web/index.html        WebGL cosmic-weather globe; web/radar.html kinetic multi-channel radar
 web/heatmap.json      a real precomputed field (2024-04-08 eclipse) for the globe
 instructions.txt      full 10,256-year span (DE441) integration guide
-tests/                88 tests (numpy + real-ephemeris + torch; each skips if dep absent)
-docs/                 per-phase notes
+tests/                130 tests (numpy + real-ephemeris + torch + persistence + API)
+docs/                 per-phase notes (05 = tokenization / persistence / serving)
 ```
 
 ## Design invariants
