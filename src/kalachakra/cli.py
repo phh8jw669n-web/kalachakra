@@ -209,6 +209,8 @@ def build_parser() -> argparse.ArgumentParser:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ephe-path", default=None,
                    help="DE431/DE441 .se1 directory (enables the full timeline)")
+    p.add_argument("--jpl-file", default=None,
+                   help="DE441 .bsp file for the JPL backend (full timeline)")
     sub = p.add_subparsers(dest="command", required=True)
 
     r = sub.add_parser("reading", help="weather signature for a timestamp")
@@ -242,8 +244,9 @@ def main(argv=None) -> int:
         print("ERROR: pyswisseph not installed. Run `pip install pyswisseph`.",
               file=sys.stderr)
         return 2
-    mode = "swiss" if args.ephe_path else "moshier"
-    global_state.configure(mode=mode, ephe_path=args.ephe_path)
+    mode = "jpl" if args.jpl_file else ("swiss" if args.ephe_path else "moshier")
+    global_state.configure(mode=mode, ephe_path=args.ephe_path,
+                           jpl_file=args.jpl_file)
     return args.func(args)
 
 

@@ -56,37 +56,56 @@ Sun–Moon separation of 0.04° is the real new-moon conjunction to hundredths o
 degree. These are objective geometric quantities computed from the ephemeris —
 no trained model, no text, no interpretation.
 
-### The full ML pipeline on real data
+### The full ML pipeline on real data — one turn-key command
 
 ```bash
 pip install -e ".[train]"   # + torch
 
-# Phase 1 — generate a real ephemeris store (any window in the Moshier range)
-python scripts/generate_ephemeris.py --out data/store \
-    --start-date 2024-01-01 --max-frames 2048 --chunk-frames 512
+# Trains and SAVES models. With no store present it auto-generates a real one.
+python scripts/train.py
+```
 
-# Phase 3 — train the spherical autoencoder on the real projected field
-python scripts/train.py --store data/store --nodes 400 --node-subsample 200 \
-    --window 32 --batch 4 --workers 0 --max-steps 200
+`train.py` with no arguments generates a real ephemeris store, builds the mesh
+and STFNO autoencoder, trains in BF16 (Lion + cosine-annealing warm restarts),
+prints the composite geodesic loss as it falls (~65% in the first tens of
+steps), and writes checkpoints to `./checkpoints/`:
 
-# Phase 4 — serve the real field, then open web/index.html
+```
+step_XXXXXX.pt    resumable (weights + optimizer + scheduler)
+model_latest.pt   latest self-contained model (reload for inference)
+model_final.pt    final self-contained model
+```
+
+Then use the trained model, or serve/visualize:
+
+```bash
+# Encode a real window into the 64-d latent manifold; emit potential/shear
+python scripts/analyze.py --checkpoint checkpoints/model_final.pt \
+    --date 2024-04-08T18:17 --out web/heatmap.json
+
+# Serve the real field, then open web/index.html
 python scripts/serve.py --date 2024-04-08T18:17 --nodes 8000
 ```
 
-The autoencoder demonstrably learns on real data — the composite geodesic loss
-drops ~65% in the first 60 steps. `python scripts/demo_pipeline.py` runs the
-whole chain (real `G(t)` → store → ring buffer → projection → weather → real
-eclipse detection) in one script, and `pytest` runs 69 tests.
+`python scripts/demo_pipeline.py` runs the whole chain (real `G(t)` → store →
+ring buffer → projection → weather → real eclipse detection) in one script, and
+`pytest` runs 70 tests.
 
 ### Full 10,256-year scale (DE441 + M4 Max)
 
 The Kali-Yuga epoch (3102 BCE) and the far future (past 4650 CE) fall outside
 Moshier's range, and the complete matrix is ~300 GB / ~13.4B frames trained over
-~90 days. Point the engine at the DE441 `.se1` files to unlock the full span:
+~90 days. **See [`instructions.txt`](instructions.txt) for the complete
+step-by-step**: obtaining the DE441 files (Swiss `.se1` or JPL `.bsp`), verifying
+the far-past reach, generating the matrix in segments, and training at full scale
+on Apple MPS. In short:
 
 ```bash
-kalachakra --ephe-path /path/to/de441 reading --date -3101-02-18
-python scripts/generate_ephemeris.py --ephe-path /path/to/de441 --out data/full
+kalachakra --ephe-path /path/to/de441 reading --date -3101-02-18   # verify
+python scripts/generate_ephemeris.py --ephe-path /path/to/de441 \
+    --out data/full --start-frame 0 --chunk-frames 1000000          # generate
+python scripts/train.py --store data/full --ephe-path /path/to/de441 \
+    --nodes 122880 --hidden 128 --blocks 3 --modes 32               # train
 ```
 
 Optional extras: `.[cluster]` (hdbscan), `.[serve]` (fastapi), `.[all]`.

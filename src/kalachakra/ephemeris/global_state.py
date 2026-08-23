@@ -39,37 +39,47 @@ except Exception:  # noqa: BLE001 - any import failure means "not available"
 
 # swisseph calc flags (literals so the module imports without the native package;
 # values match pyswisseph's public constants).
+_FLG_JPLEPH = 1       # JPL DE441: needs the DE441 .bsp file(s)
 _FLG_SWIEPH = 2       # Swiss ephemeris: needs .se1 data files
-_FLG_MOSEPH = 4       # Moshier: analytical, no data files, 3000 BCE - 3000 CE
+_FLG_MOSEPH = 4       # Moshier: analytical, no data files, ~1900 BCE - 4650 CE
 _FLG_SPEED = 256      # also return instantaneous speeds
 
+_FLAG_BY_MODE = {"moshier": _FLG_MOSEPH, "swiss": _FLG_SWIEPH, "jpl": _FLG_JPLEPH}
+
 # Active backend. Moshier by default so the system produces real data out of the
-# box; switch to Swiss for the full timeline via configure().
+# box; switch to Swiss or JPL for the full timeline via configure().
 _MODE = "moshier"
 
 
-def configure(mode: str = "moshier", ephe_path: str | None = None) -> None:
-    """Select the ephemeris backend.
+def configure(mode: str = "moshier", ephe_path: str | None = None,
+              jpl_file: str | None = None) -> None:
+    """Select the ephemeris backend for the full 10,256-year span.
 
     Parameters
     ----------
-    mode : {"moshier", "swiss"}
-        "moshier" (default) needs no data files (3000 BCE - 3000 CE). "swiss"
-        uses DE431/DE441 ``.se1`` files for the full 10,256-year range.
+    mode : {"moshier", "swiss", "jpl"}
+        "moshier" (default) needs no data files (~1900 BCE - 4650 CE). "swiss"
+        uses DE431/DE441 ``.se1`` files (small, recommended). "jpl" reads the
+        NASA JPL DE441 ``.bsp`` file(s) directly.
     ephe_path : str, optional
-        Directory holding the ``.se1`` files (required for "swiss").
+        Directory holding the ``.se1`` files (used by "swiss"; also where a JPL
+        file may live).
+    jpl_file : str, optional
+        Path/name of the DE441 ``.bsp`` file (required for "jpl").
     """
     global _MODE
-    if mode not in ("moshier", "swiss"):
-        raise ValueError("mode must be 'moshier' or 'swiss'")
-    if _HAS_SWE and ephe_path:
-        swe.set_ephe_path(ephe_path)  # type: ignore[union-attr]
+    if mode not in _FLAG_BY_MODE:
+        raise ValueError(f"mode must be one of {sorted(_FLAG_BY_MODE)}")
+    if _HAS_SWE:
+        if ephe_path:
+            swe.set_ephe_path(ephe_path)      # type: ignore[union-attr]
+        if jpl_file:
+            swe.set_jpl_file(jpl_file)         # type: ignore[union-attr]
     _MODE = mode
 
 
 def _calc_flags() -> int:
-    base = _FLG_SWIEPH if _MODE == "swiss" else _FLG_MOSEPH
-    return base | _FLG_SPEED
+    return _FLAG_BY_MODE[_MODE] | _FLG_SPEED
 
 
 def ephemeris_available() -> bool:

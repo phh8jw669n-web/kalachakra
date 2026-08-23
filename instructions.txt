@@ -1,0 +1,232 @@
+===============================================================================
+ KALACHAKRA — integrating the FULL 10,256-year span (DE441) + running training
+===============================================================================
+
+By default Kalachakra computes real planetary positions with the Swiss
+Ephemeris "Moshier" backend, which needs NO data files but is only valid from
+about 1900 BCE to 4650 CE. The full Kalachakra timeline runs from the Kali Yuga
+epoch (3102 BCE, Julian Day 588465.5) to 7154 CE — 10,256 years — and the far
+past and far future fall OUTSIDE the Moshier window. To cover the whole span you
+must plug in the JPL DE441 long ephemeris (via the Swiss Ephemeris).
+
+You can do this two ways:
+  * OPTION A — Swiss Ephemeris ".se1" files   (recommended: small, fast)
+  * OPTION B — JPL DE441 ".bsp" files          (the raw NASA kernels; large)
+
+The code supports both. Follow ONE option, then continue to Part 3.
+
+Timeline anchors you will need:
+  * Start frame 0        = JD 588465.5   = 3102-02-18 BCE 00:00 UTC (Kali Yuga)
+  * Astronomical date    = -3101-02-18   (year 0 == 1 BCE, so 3102 BCE == -3101)
+  * End                  = 7154 CE       (10,256 years later)
+  * Step                 = 24 s (1 Vighatika); total ~13.4 billion frames
+
+
+-------------------------------------------------------------------------------
+ PART 0 — Prerequisites
+-------------------------------------------------------------------------------
+1. Python 3.11+ and this repo checked out.
+2. Install the package with the training extra:
+
+       pip install -e ".[train]"
+
+   This installs numpy, pyswisseph, and torch. (pyswisseph is the Swiss
+   Ephemeris; it reads both .se1 and .bsp files.)
+
+3. Decide where the big files and outputs will live. You need free disk for:
+       - ephemeris data files      : ~90 MB (.se1)  or  ~2.6 GB (.bsp)
+       - generated G(t) matrix     : up to ~300 GB for the full timeline
+       - checkpoints               : a few GB
+   Put them on a fast SSD.
+
+
+-------------------------------------------------------------------------------
+ OPTION A — Swiss Ephemeris .se1 files  (recommended)
+-------------------------------------------------------------------------------
+The Swiss Ephemeris ships DE431-based .se1 files that already cover the full
+Kalachakra span (11 BCE ... they extend from 13201 BCE to 17191 CE). These are
+much smaller than the raw JPL kernels.
+
+A1. Create a directory for them, e.g.:
+
+        mkdir -p ~/ephe/de441
+
+A2. Download the long-range .se1 files from the official distribution:
+        https://www.astro.com/ftp/swisseph/ephe/
+    You need, at minimum, the planetary and lunar files that span the timeline.
+    The filename number encodes the 600-year block; negative blocks are BCE.
+    For the full 3102 BCE -> 7154 CE span, fetch the sepl_*, semo_* (and
+    optionally seas_*) files whose blocks cover roughly -32 .. +12, e.g.:
+
+        seplm54.se1 ... seplm06.se1   (planets, BCE blocks)
+        sepl_00.se1  ... sepl_12.se1  (planets, CE blocks)
+        semom54.se1 ... semom06.se1   (moon, BCE blocks)
+        semo_00.se1  ... semo_12.se1  (moon, CE blocks)
+
+    The simplest robust approach is to mirror the whole ephe/ directory:
+
+        cd ~/ephe/de441
+        wget -r -np -nH --cut-dirs=3 -A '*.se1' \
+             https://www.astro.com/ftp/swisseph/ephe/
+
+    (That grabs every .se1 block; ~90 MB total. Trim later if you like.)
+
+A3. Point Kalachakra at that directory with --ephe-path (see Part 3). No other
+    configuration is needed.
+
+
+-------------------------------------------------------------------------------
+ OPTION B — JPL DE441 .bsp files  (raw NASA kernels)
+-------------------------------------------------------------------------------
+Use this if you specifically want the raw JPL DE441 integration.
+
+B1. Download DE441 from NASA JPL NAIF. DE441 is split into two files because of
+    its size (covering -13200 .. +17191):
+        https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/
+            de441_part-1.bsp   (~1.3 GB, 13201 BCE .. 1969 CE)
+            de441_part-2.bsp   (~1.3 GB, 1969 CE .. 17191 CE)
+
+    Example:
+        mkdir -p ~/ephe/jpl && cd ~/ephe/jpl
+        curl -O https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de441_part-1.bsp
+        curl -O https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de441_part-2.bsp
+
+B2. The Swiss Ephemeris reads ONE JPL file at a time. Because our timeline
+    straddles both parts, either:
+      (i)  generate the pre-1969 CE portion with part-1 and the post-1969 CE
+           portion with part-2 (two runs, different --jpl-file), or
+      (ii) obtain a merged DE441 .bsp if you have SPICE tooling to concatenate.
+    For most work OPTION A avoids this split entirely.
+
+B3. Point Kalachakra at the file with --jpl-file (see Part 3).
+
+
+-------------------------------------------------------------------------------
+ PART 3 — Verify the backend reaches the far past
+-------------------------------------------------------------------------------
+Confirm you can compute a date Moshier cannot (the Kali Yuga epoch). Pick the
+flag matching your option:
+
+    # Option A (.se1):
+    kalachakra --ephe-path ~/ephe/de441 reading --date -3101-02-18
+
+    # Option B (.bsp), pre-1969 CE dates use part-1:
+    kalachakra --jpl-file ~/ephe/jpl/de441_part-1.bsp reading --date -3101-02-18
+
+If this prints real planet positions (no "outside range" error), the full span
+is integrated. Without the data files the same command errors, which is the
+proof you were previously limited to the Moshier window.
+
+Quick programmatic check (optional):
+
+    python - <<'PY'
+    from kalachakra.ephemeris import global_state as gs
+    gs.configure(mode="swiss", ephe_path="~/ephe/de441".replace("~", __import__("os").path.expanduser("~")))
+    print(gs.global_state_frame(588465.5))   # Kali Yuga epoch, shape (10,7)
+    PY
+
+
+-------------------------------------------------------------------------------
+ PART 4 — Generate the ephemeris matrix G(t)
+-------------------------------------------------------------------------------
+The generator writes BF16 + delta-encoded, memory-mapped chunk files. The FULL
+timeline is ~13.4 billion frames (~300 GB) — generate it in segments so you can
+checkpoint progress and parallelize.
+
+4a. A bounded real segment starting at the Kali Yuga epoch (frame 0):
+
+        python scripts/generate_ephemeris.py \
+            --out data/full --ephe-path ~/ephe/de441 \
+            --start-frame 0 --max-frames 100000000 --chunk-frames 1000000
+
+    (--jpl-file ~/ephe/jpl/de441_part-1.bsp instead of --ephe-path for Option B.)
+
+4b. Start a segment at a specific date instead of a frame index:
+
+        python scripts/generate_ephemeris.py \
+            --out data/full --ephe-path ~/ephe/de441 \
+            --start-date -3101-02-18 --max-frames 100000000
+
+4c. The WHOLE timeline (very large — expect ~300 GB and a long run; do this in
+    many segments, e.g. one 600-year block at a time, and/or on the M4 Max):
+
+        # omit --max-frames to run to the end of the 10,256-year timeline
+        python scripts/generate_ephemeris.py \
+            --out data/full --ephe-path ~/ephe/de441 \
+            --start-frame 0 --chunk-frames 1000000
+
+    Tip: resume a partial generation by setting --start-frame to the next frame
+    after the last chunk already written (chunk dirs are named by start frame).
+
+
+-------------------------------------------------------------------------------
+ PART 5 — Train the model (this actually trains and SAVES models)
+-------------------------------------------------------------------------------
+The training script is turn-key. With NO store present it auto-generates a real
+one and trains immediately:
+
+    python scripts/train.py
+
+That command (defaults) will:
+    1. generate a real ephemeris store under data/store (Moshier, no files),
+    2. build the geodesic mesh + STFNO spherical autoencoder,
+    3. train with Lion + cosine-annealing warm restarts in BF16, printing the
+       composite geodesic loss as it falls, and
+    4. SAVE checkpoints under ./checkpoints/:
+           step_XXXXXX.pt   resumable (weights + optimizer + scheduler)
+           model_latest.pt  latest self-contained model (reloadable)
+           model_final.pt   final self-contained model
+
+To train against the FULL-span store you generated in Part 4 (and, if the store
+is missing, generate it with DE441 rather than Moshier):
+
+    python scripts/train.py \
+        --store data/full --ephe-path ~/ephe/de441 \
+        --nodes 122880 --window 64 --stride 32 --batch 4 \
+        --hidden 128 --blocks 3 --modes 32 \
+        --epochs 1 --save-every 500 --checkpoints checkpoints/full
+
+Resume an interrupted run from the newest resumable checkpoint:
+
+    python scripts/train.py --store data/full \
+        --resume checkpoints/full/micro_latest.pt
+
+Apple M4 Max full-scale notes (blueprint §1.4):
+    - Training auto-selects the MPS device on Apple Silicon.
+    - Use the full mesh: --nodes 122880.
+    - Keep BF16 mixed precision (the default) to fit the 80 GB MPS budget.
+    - The complete macro-harmonic cycle over the full timeline is a ~90-day run;
+      the two-tier checkpointing (step checkpoints here; era snapshots every 500
+      simulated years in the Trainer) makes it restartable.
+
+
+-------------------------------------------------------------------------------
+ PART 6 — Use the trained model
+-------------------------------------------------------------------------------
+Encode a real window into the 64-d latent manifold and emit potential/shear:
+
+    python scripts/analyze.py \
+        --checkpoint checkpoints/full/model_final.pt \
+        --date -3101-02-18 --ephe-path ~/ephe/de441 \
+        --out web/heatmap.json
+
+Serve the real field and open the WebGL globe:
+
+    python scripts/serve.py --date 2024-04-08T18:17 --nodes 8000
+    # then open web/index.html  (it loads web/heatmap.json / the API)
+
+Any-date, any-place reading straight from geometry (no model needed):
+
+    kalachakra --ephe-path ~/ephe/de441 reading --date -3101-02-18 --lat 27.0 --lon 78.0
+
+
+-------------------------------------------------------------------------------
+ COMMAND REFERENCE (backend selection)
+-------------------------------------------------------------------------------
+  default (no flags)           Moshier backend, ~1900 BCE .. 4650 CE, no files
+  --ephe-path DIR              Swiss .se1 files in DIR (full span)      [Option A]
+  --jpl-file FILE.bsp          JPL DE441 kernel (full span)            [Option B]
+
+  These flags are accepted by:  kalachakra (CLI),  scripts/generate_ephemeris.py,
+  scripts/train.py,  scripts/analyze.py.
+===============================================================================
