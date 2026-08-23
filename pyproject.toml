@@ -24,6 +24,8 @@ kalachakra = "kalachakra.cli:main"
 train = ["torch>=2.2"]
 # Density-based manifold clustering (Phase 3 analysis).
 cluster = ["hdbscan>=0.8.33", "scikit-learn>=1.3"]
+# Tokenized index persistence + query (Phase 3: Parquet / DuckDB / H3).
+index = ["pyarrow>=14", "duckdb>=1.0", "h3>=4.0", "pandas>=2.0"]
 # REST broadcast API (Phase 4 serving).
 serve = ["fastapi>=0.110", "uvicorn>=0.29"]
 # Everything, for a full workstation build.
@@ -31,6 +33,10 @@ all = [
     "torch>=2.2",
     "hdbscan>=0.8.33",
     "scikit-learn>=1.3",
+    "pyarrow>=14",
+    "duckdb>=1.0",
+    "h3>=4.0",
+    "pandas>=2.0",
     "fastapi>=0.110",
     "uvicorn>=0.29",
 ]

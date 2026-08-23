@@ -1,0 +1,114 @@
+"""Tests for the Phase-3 persistence layer: H3, mipmap, Parquet, DuckDB."""
+
+import numpy as np
+import pytest
+
+from kalachakra.geo import h3index
+from kalachakra.storage import mipmap
+
+
+# --- H3 indexing ----------------------------------------------------------
+@pytest.mark.skipif(not h3index.h3_available(), reason="h3 not installed")
+def test_h3_cell_is_stable_and_hierarchical():
+    a = h3index.cell_for(27.0, 78.0, 4)
+    b = h3index.cell_for(27.0, 78.0, 4)
+    assert a == b and a > 0
+    fine = h3index.cell_for(27.0, 78.0, 7)
+    assert h3index.parent(fine, 4) == a
+
+
+@pytest.mark.skipif(not h3index.h3_available(), reason="h3 not installed")
+def test_h3_bbox_contains_interior_point():
+    cells = set(h3index.cells_in_bbox(20, 70, 30, 80, 4))
+    assert h3index.cell_for(25.0, 75.0, 4) in cells
+
+
+def test_h3_grid_cells_shape():
+    lat = np.array([0.0, 45.0, -45.0])
+    lng = np.array([0.0, 90.0, -90.0])
+    cells = h3index.cells_for_grid(lat, lng, 4)
+    assert cells.shape == (3,) and cells.dtype == np.int64
+
+
+# --- temporal mipmapping --------------------------------------------------
+def test_bucket_reductions_ragged():
+    v = np.arange(10, dtype=np.float64)  # 3 buckets of 4,4,2
+    assert np.array_equal(mipmap.bucket_max(v, 4), [3, 7, 9])
+    assert np.allclose(mipmap.bucket_mean(v, 4), [1.5, 5.5, 8.5])
+
+
+def test_mode_per_bucket_picks_dominant_token():
+    tok = np.array([1, 1, 1, 2, 5, 5, 5, 5])
+    m = mipmap.mode_per_bucket(tok, 4, n_tokens=8)
+    assert list(m) == [1, 5]
+
+
+def test_hourly_rollup_bucket_count():
+    n = 300  # exactly 2 hourly buckets
+    pot = np.random.default_rng(0).random(n)
+    shear = np.random.default_rng(1).random(n)
+    leaf = np.random.default_rng(2).integers(0, 4096, n)
+    roll = mipmap.hourly_rollup(pot, shear, leaf)
+    assert roll["max_potential"].shape == (2,)
+    assert roll["archetype"].shape == (2,)
+
+
+def test_select_tier_thresholds():
+    assert mipmap.select_tier(500) == "tier1"
+    assert mipmap.select_tier(50_000) == "tier2"       # /150 <= 1000
+    assert mipmap.select_tier(500_000_000) == "tier3"
+
+
+# --- Parquet + DuckDB round trip -----------------------------------------
+pa = pytest.importorskip("pyarrow")
+duck = pytest.importorskip("duckdb")
+
+
+def _sample_columns(n=200, jd0=2451545.0):
+    from kalachakra.ephemeris import timeline
+    from kalachakra.grid import geodesic
+    grid = geodesic.fibonacci_sphere(8)
+    rng = np.random.default_rng(0)
+    frames = np.arange(n)
+    jd = jd0 + frames * (24 / 86400)
+    node = rng.integers(0, 8, n)
+    lat = np.rad2deg(grid.lat[node]); lng = np.rad2deg(grid.lon[node])
+    macro = rng.integers(0, 64, n); micro = rng.integers(0, 64, n)
+    return {
+        "jd": jd.astype(np.float64),
+        "frame": frames.astype(np.int64),
+        "node": node.astype(np.int32),
+        "lat": lat.astype(np.float32), "lng": lng.astype(np.float32),
+        "h3": h3index.cells_for_grid(lat, lng, 4),
+        "macro": macro.astype(np.int16), "micro": micro.astype(np.int16),
+        "leaf": (macro * 64 + micro).astype(np.int32),
+        "rarity": rng.random(n).astype(np.float32),
+        "potential": rng.random(n).astype(np.float32),
+        "shear": rng.random(n).astype(np.float32),
+    }
+
+
+def test_parquet_write_and_duckdb_query(tmp_path):
+    from kalachakra.storage.duckdb_engine import DuckDBEngine, ViewportQuery
+    from kalachakra.storage.parquet_store import ParquetTokenStore
+
+    store = ParquetTokenStore(tmp_path / "index")
+    cols = _sample_columns(200)
+    written = store.write_frames(cols)
+    assert written == 200
+    # partitioned dataset created
+    assert list((tmp_path / "index" / "tier1").glob("century=*"))
+
+    engine = DuckDBEngine(store)
+    pmf = engine.token_pmf("tier1")
+    assert sum(pmf.values()) == 200
+
+    q = ViewportQuery(min_lat=-90, min_lng=-180, max_lat=90, max_lng=180,
+                      start_jd=cols["jd"][0], end_jd=cols["jd"][-1],
+                      rarity_min=0.0, limit=50)
+    rows = engine.query(q)
+    assert 0 < len(rows) <= 50
+    # ordered by rarity descending
+    rar = [r["rarity"] for r in rows]
+    assert rar == sorted(rar, reverse=True)
+    engine.close()
