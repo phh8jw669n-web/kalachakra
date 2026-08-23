@@ -12,9 +12,12 @@ Requires pyarrow.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
+
+from .. import constants as C
 
 try:  # pragma: no cover - optional dependency
     import pyarrow as pa
@@ -57,6 +60,27 @@ class ParquetTokenStore:
         self.tier1 = self.root / "tier1"
         self.tier2 = self.root / "tier2"
         self.tier3 = self.root / "tier3"
+        self.meta_path = self.root / "meta.json"
+
+    # -- provenance metadata (projection version, etc.) ------------------
+    def read_meta(self) -> dict:
+        """Read the index's meta.json (provenance), or {} if absent/unreadable."""
+        try:
+            return json.loads(self.meta_path.read_text())
+        except Exception:  # noqa: BLE001
+            return {}
+
+    def write_meta(self, **fields) -> None:
+        """Merge ``fields`` into meta.json, always stamping the projection version."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        meta = self.read_meta()
+        meta.update(fields)
+        meta.setdefault("projection_version", C.PROJECTION_VERSION)
+        self.meta_path.write_text(json.dumps(meta, indent=2))
+
+    def projection_version(self) -> int:
+        """Projection version this index was built under (1 == legacy geocentric)."""
+        return int(self.read_meta().get("projection_version", 1))
 
     # -- tier 1: native frames -------------------------------------------
     def write_frames(self, columns: dict[str, np.ndarray]) -> int:

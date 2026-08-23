@@ -59,6 +59,14 @@ N_SPATIAL_NODES: int = 122_880
 #: polar flattening is far below the field's other approximations.
 EARTH_RADIUS_AU: float = 6_371.0088 / 149_597_870.7
 
+#: Version of the G(t) -> E(t,s) projection semantics. Bump whenever the local
+#: field's meaning changes so trained models and built indexes can refuse to mix
+#: incompatible artifacts. History:
+#:   1 = geocentric directions only (pre-parallax)
+#:   2 = topocentric, parallax applied to physical bodies only (nodes/Ayanamsha
+#:       kept geocentric)
+PROJECTION_VERSION: int = 2
+
 # ---------------------------------------------------------------------------
 # 2.3  Global state vector definition
 # ---------------------------------------------------------------------------

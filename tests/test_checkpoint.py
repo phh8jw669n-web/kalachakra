@@ -35,6 +35,33 @@ def test_save_load_roundtrip_preserves_outputs(tmp_path):
     assert torch.allclose(z_before, z_after, atol=1e-6)
 
 
+def test_checkpoint_stamps_projection_version_and_warns_on_mismatch(tmp_path):
+    import warnings
+
+    from kalachakra import constants as C
+    from kalachakra.training.checkpoint import load_model
+
+    grid = geodesic.fibonacci_sphere(48)
+    neighbors = build_knn(grid, 6)
+    cfg = AutoencoderConfig(n_nodes=48, hidden=16, latent=64,
+                            fourier_modes=4, knn=6, n_blocks=1)
+    model = SphericalAutoencoder(cfg, neighbors).eval()
+    path = save_model(tmp_path / "m.pt", model, cfg, neighbors, grid_xyz=grid.xyz)
+
+    # Stamped with the current projection version; matching load is silent.
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    assert ckpt["projection_version"] == C.PROJECTION_VERSION
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")            # no warning on a matching load
+        load_model(path)
+
+    # A checkpoint from a different projection warns loudly on load.
+    ckpt["projection_version"] = C.PROJECTION_VERSION + 99
+    torch.save(ckpt, path)
+    with pytest.warns(RuntimeWarning, match="projection"):
+        load_model(path)
+
+
 def test_quantized_model_roundtrip(tmp_path):
     from kalachakra.models.autoencoder import AutoencoderConfig
     from kalachakra.models.quantized_autoencoder import QuantizedSphericalAutoencoder

@@ -28,6 +28,7 @@ except Exception:  # noqa: BLE001
 
 import numpy as _np
 
+from .. import constants as C
 from ..analysis import radar, weather
 from ..ephemeris import bodies, global_state
 from ..ephemeris.calendar import format_jd, parse_datetime
@@ -171,7 +172,9 @@ def create_app(store_root: str):
         return {"status": "ok",
                 "tier1": store.has_tier("tier1"),
                 "tier2": store.has_tier("tier2"),
-                "tier3": store.has_tier("tier3")}
+                "tier3": store.has_tier("tier3"),
+                "projection_version": store.projection_version(),
+                "current_projection_version": C.PROJECTION_VERSION}
 
     @app.post("/inspect", response_model=InspectResponse)
     def inspect(req: InspectRequest) -> "InspectResponse":

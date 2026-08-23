@@ -63,6 +63,27 @@ def parse_args(argv=None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _prepare_store(out) -> "ParquetTokenStore":
+    """Open the token store, warning if it was built under a different projection.
+
+    Appending topocentric rows to a geocentric index (or vice versa) would mix
+    incompatible field semantics, so surface it loudly. Stamps the current
+    projection version once writing begins.
+    """
+    import warnings
+
+    store = ParquetTokenStore(out)
+    existing = store.projection_version() if store.meta_path.exists() else None
+    if existing is not None and existing != C.PROJECTION_VERSION:
+        warnings.warn(
+            f"{out}: existing index was built under projection_version={existing}, "
+            f"but the current projection is v{C.PROJECTION_VERSION}. Appending would "
+            "mix incompatible field semantics — build a fresh index directory.",
+            RuntimeWarning, stacklevel=2,
+        )
+    return store
+
+
 def _infer_window(model, grid, idx):
     """Run one contiguous window of frames through projection + tokenization.
 
@@ -169,13 +190,14 @@ def main(argv=None) -> int:
             for k, v in all_cols.items()}
     cols["rarity"] = rarity_model.rarity(cols["leaf"]).astype(np.float32)
 
-    store = ParquetTokenStore(args.out)
+    store = _prepare_store(args.out)
     n = store.write_frames(cols)
     print(f"Wrote {n:,} tier-1 rows -> {store.tier1}")
 
     # Tier-2 hourly rollups + tier-3 daily (epochal) rollups per node.
     _write_hourly(store, cols, args.nodes)
     _write_daily(store, cols, args.nodes)
+    store.write_meta(nodes=int(args.nodes), tiers=["tier1", "tier2", "tier3"])
 
     print(f"\nIndex ready at {args.out}. Query it with the DuckDB engine or "
           f"scripts/serve.py. Rarity spans [{cols['rarity'].min():.3f}, "
@@ -345,7 +367,7 @@ def _build_sparse_streaming(args, model, grid, h3cells, lat_deg, lng_deg, start_
 
     # -- PASS 2: score + stream-write -----------------------------------------
     print("  pass 2/2: scoring + streaming writes...")
-    store = ParquetTokenStore(args.out)
+    store = _prepare_store(args.out)
     stats = {"t1": 0, "t2": 0, "t3": 0, "total": 0}
     buf = {k: [] for k in ("jd", "potential", "shear", "leaf", "rarity")}
     buf_n = [0]
@@ -407,6 +429,8 @@ def _build_sparse_streaming(args, model, grid, h3cells, lat_deg, lng_deg, start_
 
     flush_t1(force=True)
     flush_block()
+    store.write_meta(nodes=int(n_nodes), sparse=True, rarity_min=float(rarity_min),
+                     tiers=["tier1", "tier2", "tier3"])
     pct = 100.0 * stats["t1"] / max(stats["total"], 1)
     print(f"\nSparse index ready at {args.out}. "
           f"tier-1: {stats['t1']:,} rows ({pct:.3f}% of {stats['total']:,} "

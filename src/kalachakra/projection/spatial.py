@@ -24,7 +24,17 @@ import numpy as np
 
 from .. import constants as C
 from .. import geometry as geo
+from ..ephemeris.bodies import ENTITIES, Kind
 from ..grid.geodesic import Grid
+
+#: Topocentric parallax applies only to physical masses at a real distance. The
+#: lunar nodes (Rahu/Ketu) are geometric directions (Swiss Ephemeris parks the
+#: Moon's distance in their distance slot) and Ayanamsha is a precession scalar —
+#: none has a body at a finite distance, so subtracting the observer offset would
+#: inject a spurious ~1 deg wobble. Mask parallax to the ``Kind.BODY`` rows; the
+#: rest keep their geocentric direction (treated as at infinity). Derived from the
+#: entity table so it tracks the canonical G(t) row order (blueprint §2.3).
+_PARALLAX_MASK = np.array([e.kind is Kind.BODY for e in ENTITIES], dtype=np.float64)
 
 
 def decode_ecliptic(global_frame: np.ndarray):
@@ -121,7 +131,11 @@ def project(global_frame: np.ndarray, jd_ut: float, grid: Grid) -> np.ndarray:
     )                                                          # (N, 3) AU
 
     # Topocentric body vectors: geocentric body minus observer, per (node, body).
-    r_topo_eq = r_body_eq[None, :, :] - obs_eq[:, None, :]     # (N, B, 3) AU
+    # The observer offset is applied only to physical bodies (parallax mask); the
+    # nodes and Ayanamsha keep their geocentric direction (at infinity), so they
+    # do not inherit the Moon's distance as a spurious ~1 deg parallax swing.
+    r_topo_eq = (r_body_eq[None, :, :]
+                 - obs_eq[:, None, :] * _PARALLAX_MASK[None, :, None])  # (N, B, 3) AU
     x, y, z = r_topo_eq[..., 0], r_topo_eq[..., 1], r_topo_eq[..., 2]
     r_topo = np.sqrt(x * x + y * y + z * z)                    # (N, B)
     ra = np.arctan2(y, x)                                       # topo RA (N, B)

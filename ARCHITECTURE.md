@@ -106,9 +106,14 @@ then Azimuth θ, Altitude h, and the Ascendant offset Δφ, encoded as
 e_i(s, t) = [ cos θ cos h, sin θ cos h, sin h, cos Δφ, sin Δφ ]
 ```
 
-Executed as one broadcast tensor multiply across all 122,880 nodes. The numpy
-reference (`projection.spatial.project`) is the correctness oracle for the Metal
-kernel.
+Executed as one broadcast tensor multiply across all 122,880 nodes. The field is
+**topocentric** — the observer's surface position is subtracted from each body's
+geocentric vector so lunar parallax (~0.95°) is resolved and eclipses localize to
+their ground track — with parallax masked to the seven physical bodies (the nodes
+and Ayanamsha are directions at infinity). The local field's meaning is versioned
+(`constants.PROJECTION_VERSION`); checkpoints and indexes stamp it and warn on
+mismatch. The numpy reference (`projection.spatial.project`) is the correctness
+oracle for the Metal kernel.
 
 ### 3.2 Memory-mapped binary storage
 `G(t)` is serialized to contiguous `.mmap` chunks in **BF16** with **temporal

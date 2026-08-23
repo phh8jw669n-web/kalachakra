@@ -25,9 +25,21 @@ call per node. The steps, all vectorized over `(nodes × bodies)`:
    and the **offset** `Δφ = wrap(λ_body − λ_asc)`.
 6. **Encode** `e_i(s,t) = [cos θ cos h, sin θ cos h, sin h, cos Δφ, sin Δφ]`.
 
+The field is **topocentric**: before step 4 the body's geocentric vector (its
+direction and the distance in `G(t)` column 5) has the observer's surface position
+subtracted, so lunar parallax (~0.95°) is resolved and an eclipse localizes to its
+ground track. This stays one broadcast — no per-node ephemeris call — preserving
+the global/local decoupling. Parallax is masked to the **seven physical bodies**;
+the lunar nodes (Rahu/Ketu) and Ayanamsha are geometric directions at infinity and
+are kept geocentric (Swiss Ephemeris parks the Moon's distance in the node slot, so
+an unmasked correction would swing them ~1° spuriously). Because this changes the
+local field's meaning, checkpoints and indexes carry a `projection_version`
+(`constants.PROJECTION_VERSION`) and warn on mismatch.
+
 The numpy implementation is the correctness oracle for the on-device Metal
 kernel; both compute the same broadcast. Validated by `tests/test_projection.py`
-(unit sub-vectors, altitude range, deterministic output, decode round-trip).
+(unit sub-vectors, altitude range, deterministic output, decode round-trip,
+topocentric eclipse localization, and node/precession parallax masking).
 
 > Edge case: near the polar circles the Ascendant is ill-conditioned; the
 > `(cos, sin)` encoding keeps the field finite and continuous there.

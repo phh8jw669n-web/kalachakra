@@ -11,14 +11,33 @@ Requires PyTorch.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 import torch
 
+from .. import constants as C
 from ..models.autoencoder import AutoencoderConfig, SphericalAutoencoder
 from ..models.rvq import RVQConfig
+
+
+def _warn_projection(ckpt: dict, path) -> None:
+    """Warn if a checkpoint was trained under a different projection version.
+
+    A model trained on geocentric fields will misbehave on the current
+    topocentric projection (and vice versa); missing == legacy geocentric (1).
+    """
+    ver = int(ckpt.get("projection_version", 1))
+    if ver != C.PROJECTION_VERSION:
+        warnings.warn(
+            f"{path}: trained under projection_version={ver} but the current "
+            f"projection is v{C.PROJECTION_VERSION}. The local field's meaning "
+            "changed (e.g. geocentric vs topocentric); results may be invalid. "
+            "Retrain or rebuild against the current projection.",
+            RuntimeWarning, stacklevel=3,
+        )
 
 
 def save_model(path: str | Path, model: SphericalAutoencoder,
@@ -29,6 +48,7 @@ def save_model(path: str | Path, model: SphericalAutoencoder,
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "format": "kalachakra-model-v1",
+        "projection_version": C.PROJECTION_VERSION,
         "config": asdict(cfg),
         "neighbors": np.asarray(neighbors, dtype=np.int64),
         "grid_xyz": None if grid_xyz is None else np.asarray(grid_xyz, dtype=np.float64),
@@ -47,6 +67,7 @@ def load_model(path: str | Path, device: str | torch.device = "cpu"):
     ckpt = torch.load(path, map_location=device, weights_only=False)
     if ckpt.get("format") != "kalachakra-model-v1":
         raise ValueError(f"not a kalachakra model checkpoint: {path}")
+    _warn_projection(ckpt, path)
     cfg = AutoencoderConfig(**ckpt["config"])
     neighbors = np.asarray(ckpt["neighbors"])
     model = SphericalAutoencoder(cfg, neighbors)
@@ -73,6 +94,7 @@ def save_quantized_model(path: str | Path, model, ae_cfg: AutoencoderConfig,
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
         "format": "kalachakra-qmodel-v1",
+        "projection_version": C.PROJECTION_VERSION,
         "ae_config": asdict(ae_cfg),
         "rvq_config": asdict(rvq_cfg),
         "neighbors": np.asarray(neighbors, dtype=np.int64),
@@ -89,6 +111,7 @@ def load_quantized_model(path: str | Path, device: str | torch.device = "cpu"):
     ckpt = torch.load(path, map_location=device, weights_only=False)
     if ckpt.get("format") != "kalachakra-qmodel-v1":
         raise ValueError(f"not a kalachakra quantized checkpoint: {path}")
+    _warn_projection(ckpt, path)
     ae_cfg = AutoencoderConfig(**ckpt["ae_config"])
     rvq_cfg = RVQConfig(**ckpt["rvq_config"])
     neighbors = np.asarray(ckpt["neighbors"])

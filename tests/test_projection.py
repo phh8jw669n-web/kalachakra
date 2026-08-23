@@ -89,3 +89,35 @@ def test_topocentric_parallax_localizes_the_2024_eclipse():
     i = int(sep.argmin())
     assert 10.0 < np.degrees(grid.lat[i]) < 40.0
     assert -120.0 < np.degrees(grid.lon[i]) < -90.0
+
+
+def test_parallax_masked_for_nodes_and_precession():
+    """Parallax must apply to physical bodies only. The lunar nodes (Rahu/Ketu)
+    and Ayanamsha are geometric directions at infinity — Swiss Ephemeris parks the
+    Moon's distance in the node distance slot, so an unmasked topocentric
+    correction would swing them ~1 deg across the globe. Guards that regression:
+    the Sun-node sky separation is observer-independent (only the Sun's own tiny
+    parallax leaks in) while the Sun-Moon separation varies by ~1 deg."""
+    import pytest
+
+    from kalachakra.ephemeris import bodies, global_state
+    from kalachakra.ephemeris.calendar import parse_datetime
+    if not global_state.ephemeris_available():
+        pytest.skip("pyswisseph not installed")
+
+    jd = parse_datetime("2024-04-08T18:17:00Z")
+    g = global_state.global_state_frame(jd)
+    grid = geodesic.fibonacci_sphere(4000)
+    field = spatial.project(g, jd, grid)
+
+    def spread(a, b):
+        d = np.sum(field[:, a, :3] * field[:, b, :3], axis=1)
+        s = np.degrees(np.arccos(np.clip(d, -1.0, 1.0)))
+        return float(s.max() - s.min())
+
+    sun = bodies.index_of("Sun")
+    # Moon is physical -> real parallax makes its separation from the Sun vary.
+    assert spread(sun, bodies.index_of("Moon")) > 0.3
+    # Nodes / precession carry no parallax -> observer-independent (< the Sun's own).
+    for name in ("Rahu", "Ketu", "Ayanamsha"):
+        assert spread(sun, bodies.index_of(name)) < 0.05

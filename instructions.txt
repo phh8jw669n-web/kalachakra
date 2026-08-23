@@ -421,7 +421,14 @@ surface, not the geocentre, so lunar parallax (~1 deg) is resolved. Concretely,
 the globe localizes an eclipse to its real ground track instead of glowing the
 same across the whole hemisphere — e.g. for 2024-04-08 the point of closest
 Sun-Moon alignment lands over northern Mexico, on the actual totality path
-(verified in tests/test_projection.py).
+(verified in tests/test_projection.py). Parallax is applied only to the seven
+physical bodies; the lunar nodes (Rahu/Ketu) and Ayanamsha are geometric
+directions at infinity and are kept geocentric (no spurious wobble).
+
+Because this changed the meaning of the local field, every model checkpoint and
+Parquet index is stamped with a projection_version (currently 2). Loading a model
+or serving an index built under a different version prints a loud warning; don't
+mix them — retrain / rebuild against the current projection.
 
 -------------------------------------------------------------------------------
  7.1 — WebGL cosmic-weather globe   (web/index.html)

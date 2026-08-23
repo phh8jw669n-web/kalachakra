@@ -148,6 +148,19 @@ def test_tier3_daily_rollups_written_and_routed(tmp_path):
     engine.close()
 
 
+def test_store_stamps_and_reads_projection_version(tmp_path):
+    from kalachakra import constants as C
+    from kalachakra.storage.parquet_store import ParquetTokenStore
+
+    store = ParquetTokenStore(tmp_path / "idx")
+    assert store.projection_version() == 1        # legacy default when unstamped
+    store.write_meta(nodes=256)
+    meta = store.read_meta()
+    assert meta["projection_version"] == C.PROJECTION_VERSION
+    assert meta["nodes"] == 256
+    assert ParquetTokenStore(tmp_path / "idx").projection_version() == C.PROJECTION_VERSION
+
+
 def test_sparse_streaming_build_keeps_only_rare_rows(tmp_path):
     """Full-scale path: --rarity-min streams a two-pass build whose fine tiers
     (tier1/tier2) are rarity-thresholded while tier3 stays dense — so the index
@@ -157,9 +170,13 @@ def test_sparse_streaming_build_keeps_only_rare_rows(tmp_path):
     if not global_state.ephemeris_available():
         pytest.skip("pyswisseph not installed")
 
+    import torch
     bi = _load_build_index()
     out = tmp_path / "sparse"
-    nodes, frames, rmin = 24, 200, 0.5
+    nodes, frames, rmin = 24, 200, 0.3
+    # Seed so the fresh (untrained) model's token distribution is deterministic;
+    # otherwise the fraction above a fixed rarity threshold varies run to run.
+    torch.manual_seed(0); np.random.seed(0)
     rc = bi.main(["--out", str(out), "--nodes", str(nodes), "--frames", str(frames),
                   "--rarity-min", str(rmin)])
     assert rc == 0
