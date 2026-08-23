@@ -61,6 +61,7 @@ if _HAS_FASTAPI:
         velocity: float = 1.0
         rarity_min: float = 0.0
         limit: int = Field(1000, ge=1, le=10000)
+        cluster_min_size: int = Field(0, ge=0)   # 0 -> auto from row count
 
     class InspectResponse(BaseModel):
         tier: str
@@ -70,6 +71,18 @@ if _HAS_FASTAPI:
         n_rows: int
         rows: list[dict[str, Any]]
         global_latent: list[float] | None = None   # mean latent -> SH topography
+        n_clusters: int | None = None              # HDBSCAN manifold clusters
+        cluster_method: str | None = None          # "hdbscan" | "fallback"
+
+    class NewsRequest(BaseModel):
+        min_lat: float = Field(-90, ge=-90, le=90)
+        min_lng: float = Field(-180, ge=-180, le=180)
+        max_lat: float = Field(90, ge=-90, le=90)
+        max_lng: float = Field(180, ge=-180, le=180)
+        start: str
+        end: str
+        rarity_min: float = 0.0
+        top: int = Field(12, ge=1, le=100)
 
     class MicrogridRequest(BaseModel):
         min_lat: float = Field(..., ge=-90, le=90)
@@ -83,6 +96,28 @@ if _HAS_FASTAPI:
         lat: float = Field(..., ge=-90, le=90)
         lng: float = Field(..., ge=-180, le=180)
         datetime: str
+
+
+def _cluster_rows(rows, latents, cluster_min_size):
+    """Cluster the returned latents (§6.2) and stamp ``cluster_id`` on each row.
+
+    Rows without a latent (e.g. tier-2/3 rollups) get ``cluster_id = -1`` (noise).
+    Returns ``(n_clusters, method)`` or ``(None, None)`` when there is nothing to
+    cluster.
+    """
+    for r in rows:
+        r["cluster_id"] = -1
+    if len(latents) < 2:
+        return None, None
+    from ..analysis.clustering import cluster_latents
+    mcs = cluster_min_size or max(2, len(latents) // 20)
+    res = cluster_latents(_np.asarray(latents, dtype=float), min_cluster_size=mcs)
+    li = 0
+    for r in rows:
+        if r.get("latent") is not None:
+            r["cluster_id"] = int(res.labels[li])
+            li += 1
+    return res.n_clusters, res.method
 
 
 def _applying_flag(lons, speeds, sig):
@@ -144,6 +179,9 @@ def create_app(store_root: str):
         latents = [r["latent"] for r in rows if r.get("latent") is not None]
         global_latent = (_np.mean(_np.asarray(latents, dtype=float), axis=0).tolist()
                          if latents else None)
+        # §6.2 density-based manifold clustering (HDBSCAN, or a dependency-free
+        # fallback) over the returned latents; attach a cluster id per row.
+        n_clusters, cluster_method = _cluster_rows(rows, latents, req.cluster_min_size)
         # Trim heavy latent vectors out of the JSON payload (they stream binary).
         light = [{k: v for k, v in r.items() if k != "latent"} for r in rows]
         return InspectResponse(
@@ -152,7 +190,34 @@ def create_app(store_root: str):
             band_gains=radar.band_gains(radar.temporal_stride(
                 int((q.end_jd - q.start_jd) * 86400 / 24))),
             n_rows=len(rows), rows=light, global_latent=global_latent,
+            n_clusters=n_clusters, cluster_method=cluster_method,
         )
+
+    @app.post("/news")
+    def news(req: NewsRequest) -> dict:
+        """§6 textless geometric news radar: the rarest events in a viewport as
+        pure-geometry news cards (body Cartesian vectors, applying/separating,
+        dominant aspect, rarity percentile — no interpreted text)."""
+        if not global_state.ephemeris_available():
+            return {"error": "pyswisseph not installed"}
+        j0, j1 = parse_datetime(req.start), parse_datetime(req.end)
+        q = ViewportQuery(req.min_lat, req.min_lng, req.max_lat, req.max_lng,
+                          j0, j1, rarity_min=req.rarity_min, limit=req.top)
+        rows = engine.query(q)                      # already ORDER BY rarity DESC
+        cards = []
+        for r in rows[:req.top]:
+            jd = float(r["jd"])
+            g = global_state.global_state_frame(jd)
+            rarity = float(r.get("rarity", 0.0))
+            card = radar.build_news_card(
+                jd, float(r["lat"]), float(r["lng"]), g,
+                int(r.get("macro", 0)), int(r.get("micro", 0)),
+                rarity, round(rarity * 100.0, 3))
+            cards.append(card.to_dict())
+        return {"n": len(cards), "span_years": max((j1 - j0) / 365.25, 1e-6),
+                "significance_percentile": radar.significance_percentile(
+                    max((j1 - j0) / 365.25, 1e-6)),
+                "cards": cards}
 
     @app.post("/microgrid")
     def microgrid(req: MicrogridRequest) -> dict:

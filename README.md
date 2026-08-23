@@ -89,7 +89,7 @@ python scripts/serve.py --date 2024-04-08T18:17 --nodes 8000
 
 `python scripts/demo_pipeline.py` runs the whole chain (real `G(t)` → store →
 ring buffer → projection → weather → real eclipse detection) in one script, and
-`pytest` runs 144 tests.
+`pytest` runs 151 tests.
 
 ### Isomorphic transducer (physics-based, losslessly invertible)
 
@@ -118,6 +118,18 @@ binary frames to a Three.js kinetic radar. See
 pip install -e ".[train,index,serve]"
 python scripts/build_index.py --out data/index --nodes 256 --frames 3000
 python scripts/serve_radar.py --index data/index --port 8000   # then open web/radar.html
+```
+
+`build_index.py` writes the full three-tier temporal mipmap (native / hourly /
+daily-epochal Parquet). The FastAPI control plane exposes `/inspect` (tier-routed
+rows + HDBSCAN manifold clusters), `/news` (rarest-first textless geometric news
+cards), `/microgrid` (§4 continuous-LOD field), `/telemetry` (§5 Sidebar
+Inspector), and `/stream` (binary WebSocket). A strongly typed **gRPC** control
+plane mirrors the same surfaces (`proto/kalachakra.proto`):
+
+```bash
+pip install -e ".[grpc]"
+python scripts/serve_grpc.py --index data/index --port 50051   # Health/Inspect/Telemetry
 ```
 
 ### Full 10,256-year scale (DE441 + M4 Max)
@@ -188,18 +200,22 @@ src/kalachakra/
   training/           Lion optimizer, trainer/checkpoints, testing daemon
   analysis/           weather engine, signatures, HDBSCAN clustering, singularities,
                       rarity index, token serialization, dynamic news radar
-  serving/            broadcast engine, binary framing, FastAPI + WebSocket app
+  serving/            broadcast engine, binary framing, FastAPI + WebSocket app,
+                      gRPC CosmicWeather service (grpc_server + generated stubs)
   transducer/         isomorphic transducer: SH topography, Planckian/Naka-Rushton
                       optics, orthonormal spectra, Helmholtz-Hodge + LIC (lossless)
 configs/default.yaml  operator knob board
 scripts/              setup_full_span.py, generate_ephemeris.py, train.py, analyze.py,
-                      build_index.py (tokenize->Parquet), serve.py, serve_radar.py
+                      build_index.py (tokenize->Parquet tier1/2/3), serve.py,
+                      serve_radar.py (REST+WS), serve_grpc.py (gRPC)
+proto/kalachakra.proto  gRPC CosmicWeather service contract
 web/index.html        WebGL cosmic-weather globe (loads real heatmap.json)
 web/heatmap.json      a real precomputed field (2024-04-08 eclipse) for the globe
 instructions.txt      full 10,256-year span (DE441) integration guide
 web/radar.html        isomorphic transducer client (physics-based, dual viewport)
-tests/                144 tests (numpy + real-ephemeris + torch + persistence + API
-                      + transducer lossless-invertibility to machine precision)
+tests/                151 tests (numpy + real-ephemeris + torch + persistence +
+                      REST/WebSocket + gRPC round trip + transducer lossless
+                      invertibility to machine precision)
 docs/                 per-phase notes (05 = tokenization/serving, 06 = transducer)
 ```
 

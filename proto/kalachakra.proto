@@ -1,0 +1,98 @@
+// Kalachakra Cosmic Weather Radar — gRPC service contract (blueprint §7.2).
+//
+// The dense control-plane counterpart to the REST/WebSocket app: the same
+// viewport-inspection and Sidebar-Inspector telemetry surfaces, expressed as a
+// strongly typed gRPC contract. Regenerate stubs with:
+//
+//   python -m grpc_tools.protoc -I proto \
+//       --python_out=src/kalachakra/serving/grpc_gen \
+//       --grpc_python_out=src/kalachakra/serving/grpc_gen \
+//       proto/kalachakra.proto
+//
+// (the generated *_pb2*.py are committed so no build step is required at install).
+
+syntax = "proto3";
+
+package kalachakra;
+
+service CosmicWeather {
+  // Liveness + which temporal-mipmap tiers are populated.
+  rpc Health(HealthRequest) returns (HealthReply);
+  // Viewport query -> tier-routed rows, band gains, mean latent, clusters.
+  rpc Inspect(InspectRequest) returns (InspectReply);
+  // Raw numerical constituents at one coordinate + time (Sidebar Inspector).
+  rpc Telemetry(TelemetryRequest) returns (TelemetryReply);
+}
+
+message HealthRequest {}
+
+message HealthReply {
+  string status = 1;
+  bool tier1 = 2;
+  bool tier2 = 3;
+  bool tier3 = 4;
+}
+
+message InspectRequest {
+  double min_lat = 1;
+  double min_lng = 2;
+  double max_lat = 3;
+  double max_lng = 4;
+  string start = 5;            // ISO datetime (UTC)
+  string end = 6;
+  double velocity = 7;
+  double rarity_min = 8;
+  int32 limit = 9;
+  int32 cluster_min_size = 10; // 0 -> auto from row count
+}
+
+message Row {
+  double jd = 1;
+  double lat = 2;
+  double lng = 3;
+  double potential = 4;
+  double shear = 5;
+  int32 macro = 6;
+  int32 micro = 7;
+  double rarity = 8;
+  int32 cluster_id = 9;
+}
+
+message InspectReply {
+  string tier = 1;
+  double span_years = 2;
+  double significance_percentile = 3;
+  map<string, double> band_gains = 4;
+  int32 n_rows = 5;
+  repeated Row rows = 6;
+  repeated double global_latent = 7;
+  int32 n_clusters = 8;
+  string cluster_method = 9;
+}
+
+message TelemetryRequest {
+  double lat = 1;
+  double lng = 2;
+  string datetime = 3;         // ISO datetime (UTC)
+}
+
+message Body {
+  string name = 1;
+  repeated double unit_vector = 2;             // Cartesian (x, y, z)
+  double radial_distance_au = 3;
+  double angular_velocity_deg_per_day = 4;
+  bool retrograde = 5;
+}
+
+message TelemetryReply {
+  string timestamp = 1;
+  double julian_day = 2;
+  double lat = 3;
+  double lng = 4;
+  map<string, double> band_energies = 5;
+  double resonance = 6;
+  double tension = 7;
+  double geometric_potential_r = 8;
+  bool is_eclipse = 9;
+  repeated Body entities = 10;
+}

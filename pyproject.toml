@@ -30,6 +30,9 @@ index = ["pyarrow>=14", "duckdb>=1.0", "h3>=4.0", "pandas>=2.0"]
 transducer = ["scipy>=1.10"]
 # REST broadcast API (Phase 4 serving).
 serve = ["fastapi>=0.110", "uvicorn>=0.29"]
+# Typed gRPC control plane (Phase 4 serving, §7.2). grpcio-tools only needed to
+# regenerate stubs from proto/kalachakra.proto; committed stubs run on grpcio alone.
+grpc = ["grpcio>=1.60", "grpcio-tools>=1.60"]
 # Everything, for a full workstation build.
 all = [
     "torch>=2.2",
@@ -42,6 +45,8 @@ all = [
     "scipy>=1.10",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "grpcio>=1.60",
+    "grpcio-tools>=1.60",
 ]
 dev = ["pytest>=8", "ruff>=0.4"]
 
@@ -59,3 +64,5 @@ addopts = "-q"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# Generated gRPC stubs (protoc output) are not hand-maintained — don't lint them.
+extend-exclude = ["src/kalachakra/serving/grpc_gen"]

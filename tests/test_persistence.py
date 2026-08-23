@@ -88,6 +88,66 @@ def _sample_columns(n=200, jd0=2451545.0):
     }
 
 
+def _grid_columns(n_frames, n_nodes, jd0=2451545.0):
+    """A regular (frame x node) block, reshapeable for tier-2/3 rollups."""
+    from kalachakra.grid import geodesic
+    grid = geodesic.fibonacci_sphere(n_nodes)
+    rng = np.random.default_rng(1)
+    frame = np.repeat(np.arange(n_frames), n_nodes)
+    node = np.tile(np.arange(n_nodes), n_frames)
+    jd = jd0 + frame * (24 / 86400)
+    lat = np.rad2deg(grid.lat[node]); lng = np.rad2deg(grid.lon[node])
+    macro = rng.integers(0, 64, n_frames * n_nodes)
+    micro = rng.integers(0, 64, n_frames * n_nodes)
+    return {
+        "jd": jd.astype(np.float64), "frame": frame.astype(np.int64),
+        "node": node.astype(np.int32),
+        "lat": lat.astype(np.float32), "lng": lng.astype(np.float32),
+        "h3": h3index.cells_for_grid(lat, lng, 4),
+        "macro": macro.astype(np.int16), "micro": micro.astype(np.int16),
+        "leaf": (macro * 64 + micro).astype(np.int32),
+        "rarity": rng.random(n_frames * n_nodes).astype(np.float32),
+        "potential": rng.random(n_frames * n_nodes).astype(np.float32),
+        "shear": rng.random(n_frames * n_nodes).astype(np.float32),
+    }
+
+
+def _load_build_index():
+    import importlib.util
+    from pathlib import Path
+    p = Path(__file__).resolve().parents[1] / "scripts" / "build_index.py"
+    spec = importlib.util.spec_from_file_location("build_index", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_tier3_daily_rollups_written_and_routed(tmp_path):
+    from kalachakra.storage.duckdb_engine import DuckDBEngine, ViewportQuery
+    from kalachakra.storage.parquet_store import ParquetTokenStore
+
+    n_nodes = 4
+    n_frames = mipmap.FRAMES_PER_DAY * 2 + 10   # 2 full daily buckets + a partial
+    cols = _grid_columns(n_frames, n_nodes)
+    store = ParquetTokenStore(tmp_path / "index")
+    store.write_frames(cols)
+
+    bi = _load_build_index()
+    bi._write_daily(store, cols, n_nodes)
+    assert store.has_tier("tier3")
+    assert list((tmp_path / "index" / "tier3").glob("century=*"))
+
+    engine = DuckDBEngine(store)
+    # A deep-time (epochal) span must route to tier3 and still return rows.
+    q = ViewportQuery(min_lat=-90, min_lng=-180, max_lat=90, max_lng=180,
+                      start_jd=cols["jd"][0], end_jd=cols["jd"][0] + 4_000_000.0,
+                      rarity_min=0.0, limit=50)
+    assert engine._tier_for(q) == "tier3"
+    rows = engine.query(q)
+    assert len(rows) > 0 and "anomaly_count" in rows[0]
+    engine.close()
+
+
 def test_parquet_write_and_duckdb_query(tmp_path):
     from kalachakra.storage.duckdb_engine import DuckDBEngine, ViewportQuery
     from kalachakra.storage.parquet_store import ParquetTokenStore

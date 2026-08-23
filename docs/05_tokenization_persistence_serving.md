@@ -9,7 +9,8 @@ E(t,s) --encoder--> z(64) --RVQ--> (macro,micro) tokens + quantized z
    --> rarity index (deep-time NLL)
    --> Parquet (century-partitioned, tier1/2/3) indexed by H3 + time
    --> DuckDB router (tier + partition prune + H3 + rarity)
-   --> FastAPI /inspect (JSON) + /stream (binary) --> WebGL kinetic radar
+   --> FastAPI /inspect,/news,/telemetry (JSON) + /stream (binary)  \
+       + gRPC CosmicWeather (Health/Inspect/Telemetry)  --> WebGL kinetic radar
 ```
 
 ## Unsupervised discretization (§2) — `kalachakra.models.rvq`
@@ -55,12 +56,27 @@ four-band spectral mixer (micro/fast/cyclic/macro); `significance_percentile`
 scales the alert threshold with span; `build_news_card` emits the textless,
 pure-geometry event payload.
 
+## Manifold clustering (§6.2) — `kalachakra.analysis.clustering`
+
+`cluster_latents` runs density-based clustering (HDBSCAN when installed, a
+deterministic dependency-free fallback otherwise) over the latents returned by a
+query, so recurring waveform-interference patterns fall into stable clusters with
+no predefined categories. It is wired into `serving.app` `/inspect` (and the gRPC
+`Inspect`), which stamp a `cluster_id` on each row and report `n_clusters` +
+`cluster_method`. `scripts/analyze.py` uses the same engine offline.
+
 ## Serving (§7) + client (§5) — `kalachakra.serving`, `web/radar.html`
 
 - **`serving.binary`** — little-endian `KCHR` field frames for zero-copy WebGL.
-- **`serving.app`** — FastAPI `/health`, `/inspect` (JSON control plane via the
-  DuckDB engine), and `/stream` (binary WebSocket). Run with
-  `scripts/serve_radar.py`.
+- **`serving.app`** — FastAPI control plane over the DuckDB engine: `/health`,
+  `/inspect` (tier-routed rows + band gains + mean latent + manifold clusters),
+  `/news` (rarest-first textless geometric news cards, §6), `/microgrid` (§4
+  continuous-LOD regional field), `/telemetry` (§5 Sidebar-Inspector raw
+  numerics), and `/stream` (binary WebSocket). Run with `scripts/serve_radar.py`.
+- **`serving.grpc_server`** — the strongly typed gRPC counterpart (§7.2):
+  `CosmicWeather` with `Health` / `Inspect` / `Telemetry` over the same engine,
+  contract in `proto/kalachakra.proto` (committed stubs in `serving.grpc_gen`).
+  Run with `scripts/serve_grpc.py`; needs `pip install "kalachakra[grpc]"`.
 - **`web/radar.html`** — Three.js multi-channel client: potential → luminance,
   VQ archetype → hue LUT (tension warm / harmony cool / singularity bright),
   particle advection from potential-gradient vorticity scaled by shear, and the
@@ -77,16 +93,25 @@ python scripts/serve_radar.py --index data/index --port 8000
 ```
 
 `build_index.py` streams real ephemeris → projects → quantizes → computes rarity
-→ writes tier-1 Parquet + hourly rollups. With a trained checkpoint the tokens
-are meaningful; without one the full data path still runs (untrained tokens).
+→ writes tier-1 Parquet + tier-2 hourly rollups + tier-3 daily/epochal rollups
+(the full three-tier temporal mipmap). With a trained checkpoint the tokens are
+meaningful; without one the full data path still runs (untrained tokens).
+
+Optional gRPC control plane over the same index:
+
+```bash
+pip install -e ".[grpc]"                        # grpcio (+ grpcio-tools to regen)
+python scripts/serve_grpc.py --index data/index --port 50051
+```
 
 ## Status
 
-Every module here is implemented and unit-tested (130 tests total). The RVQ,
-rarity, tokens, mipmap, H3, Parquet/DuckDB, binary framing, and FastAPI
-control-plane/WebSocket paths are exercised end to end in the sandbox
-(300 real frames × 64 nodes → queryable index; ~24 ms queries). The WebGL client
-is standard Three.js (not unit-testable here) and renders from the binary stream
-or a synthetic fallback. Training the codebook to convergence and running the
-full 13.4-billion-frame offline inference are the compute-bound steps that run on
-the target hardware.
+Every module here is implemented and unit-tested (151 tests total). The RVQ,
+rarity, tokens, mipmap (tier-1/2/3), H3, Parquet/DuckDB, manifold clustering,
+binary framing, the FastAPI control-plane/WebSocket paths, and the gRPC service
+are exercised end to end in the sandbox (real frames × nodes → queryable index;
+~24 ms queries; live in-process gRPC round trip). The WebGL client is standard
+Three.js (not unit-testable here) and renders from the binary stream or a
+synthetic fallback. Training the codebook to convergence and running the full
+13.4-billion-frame offline inference are the compute-bound steps that run on the
+target hardware.

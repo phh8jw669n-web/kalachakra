@@ -4,8 +4,9 @@ Phase 2/3 offline inference: build the tokenized, queryable index (blueprint §7
 
 Streams real ephemeris frames, projects each onto the geodesic mesh, encodes and
 quantizes with the hierarchical residual VQ, computes the deep-time Rarity Index,
-and serializes the per-(frame,node) descriptors to partitioned Parquet (tier 1)
-plus hourly rollups (tier 2) — the store the DuckDB engine and web client query.
+and serializes the per-(frame,node) descriptors to partitioned Parquet (tier 1),
+hourly rollups (tier 2), and daily/epochal rollups (tier 3) — the three-tier
+temporal mipmap the DuckDB engine routes across and the web client queries.
 
 Turn-key: with no store it generates a real window (Moshier or the configured
 full-span backend). A trained quantized checkpoint gives meaningful tokens; with
@@ -152,8 +153,9 @@ def main(argv=None) -> int:
     n = store.write_frames(cols)
     print(f"Wrote {n:,} tier-1 rows -> {store.tier1}")
 
-    # Tier-2 hourly rollups per node.
+    # Tier-2 hourly rollups + tier-3 daily (epochal) rollups per node.
     _write_hourly(store, cols, args.nodes)
+    _write_daily(store, cols, args.nodes)
 
     print(f"\nIndex ready at {args.out}. Query it with the DuckDB engine or "
           f"scripts/serve.py. Rarity spans [{cols['rarity'].min():.3f}, "
@@ -191,6 +193,49 @@ def _write_hourly(store: ParquetTokenStore, cols: dict, n_nodes: int) -> None:
     cols2["rarity"] = np.zeros(len(cols2["jd"]), dtype=np.float32)  # placeholder col
     store.write_hourly(cols2)
     print(f"Wrote {len(cols2['jd']):,} tier-2 hourly rollup rows -> {store.tier2}")
+
+
+def _write_daily(store: ParquetTokenStore, cols: dict, n_nodes: int) -> None:
+    """Aggregate tier-1 rows into per-node daily (3600-frame) rollups (tier 3).
+
+    Tier 3 carries statistical summaries plus a deep-time anomaly count (frames at
+    or above the rarity threshold), so an epochal viewport scan stays bounded while
+    still surfacing rare events. ``max_rarity`` is stored as the ``rarity`` column
+    the DuckDB router filters and orders on.
+    """
+    frames = np.unique(cols["frame"])
+    n_frames = frames.shape[0]
+    pot = cols["potential"].reshape(n_frames, n_nodes)
+    shear = cols["shear"].reshape(n_frames, n_nodes)
+    leaf = cols["leaf"].reshape(n_frames, n_nodes)
+    rar = cols["rarity"].reshape(n_frames, n_nodes)
+    jd = cols["jd"].reshape(n_frames, n_nodes)[:, 0]
+    lat = cols["lat"].reshape(n_frames, n_nodes)[0]
+    lng = cols["lng"].reshape(n_frames, n_nodes)[0]
+    h3c = cols["h3"].reshape(n_frames, n_nodes)[0]
+
+    starts = np.arange(0, n_frames, mipmap.FRAMES_PER_DAY)
+    out = {k: [] for k in ("jd", "node", "lat", "lng", "h3", "max_potential",
+                           "mean_potential", "peak_shear", "rarity",
+                           "anomaly_count", "archetype")}
+    for node in range(n_nodes):
+        roll = mipmap.daily_rollup(pot[:, node], shear[:, node],
+                                   rar[:, node], leaf[:, node])
+        nb = roll["max_potential"].shape[0]
+        out["jd"].append(jd[starts][:nb])
+        out["node"].append(np.full(nb, node, dtype=np.int32))
+        out["lat"].append(np.full(nb, lat[node], dtype=np.float32))
+        out["lng"].append(np.full(nb, lng[node], dtype=np.float32))
+        out["h3"].append(np.full(nb, h3c[node], dtype=np.int64))
+        out["max_potential"].append(roll["max_potential"].astype(np.float32))
+        out["mean_potential"].append(roll["mean_potential"].astype(np.float32))
+        out["peak_shear"].append(roll["peak_shear"].astype(np.float32))
+        out["rarity"].append(roll["max_rarity"].astype(np.float32))
+        out["anomaly_count"].append(roll["anomaly_count"].astype(np.float32))
+        out["archetype"].append(roll["archetype"].astype(np.int32))
+    cols3 = {k: np.concatenate(v) for k, v in out.items()}
+    store.write_daily(cols3)
+    print(f"Wrote {len(cols3['jd']):,} tier-3 daily rollup rows -> {store.tier3}")
 
 
 if __name__ == "__main__":

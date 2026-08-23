@@ -72,6 +72,73 @@ def _build_index(root):
     return store
 
 
+def _build_index_with_latents(root, n=60):
+    """Index whose latents form two well-separated blobs, so clustering finds them."""
+    from kalachakra.grid import geodesic
+    rng = np.random.default_rng(3)
+    frames = np.arange(n)
+    jd = 2451545.0 + frames * (24 / 86400)
+    grid = geodesic.fibonacci_sphere(8)
+    node = rng.integers(0, 8, n)
+    lat = np.rad2deg(grid.lat[node]); lng = np.rad2deg(grid.lon[node])
+    macro = rng.integers(0, 64, n); micro = rng.integers(0, 64, n)
+    half = n // 2
+    centers = np.zeros((n, 64), np.float32)
+    centers[:half] = 10.0                          # blob A
+    centers[half:] = -10.0                         # blob B
+    latent = (centers + rng.normal(scale=0.1, size=(n, 64))).astype(np.float32)
+    store = ParquetTokenStore(root)
+    store.write_frames({
+        "jd": jd, "frame": frames.astype(np.int64), "node": node.astype(np.int32),
+        "lat": lat.astype(np.float32), "lng": lng.astype(np.float32),
+        "h3": h3index.cells_for_grid(lat, lng, 4),
+        "macro": macro.astype(np.int16), "micro": micro.astype(np.int16),
+        "leaf": (macro * 64 + micro).astype(np.int32),
+        "rarity": rng.random(n).astype(np.float32),
+        "potential": rng.random(n).astype(np.float32),
+        "shear": rng.random(n).astype(np.float32),
+        "latent": latent,
+    })
+    return store
+
+
+def test_inspect_clusters_latents(tmp_path):
+    _build_index_with_latents(tmp_path / "idx")
+    client = TestClient(create_app(str(tmp_path / "idx")))
+    body = client.post("/inspect", json={
+        "min_lat": -90, "min_lng": -180, "max_lat": 90, "max_lng": 180,
+        "start": "2000-01-01T12:00:00Z", "end": "2000-01-01T13:00:00Z",
+        "limit": 100, "cluster_min_size": 3,
+    }).json()
+    assert body["cluster_method"] in ("hdbscan", "fallback")
+    assert body["n_clusters"] >= 1                       # two blobs are separable
+    assert all("cluster_id" in r for r in body["rows"])
+    assert body["global_latent"] is not None and len(body["global_latent"]) == 64
+    assert "latent" not in body["rows"][0]               # heavy field still excluded
+
+
+def test_news_cards(tmp_path):
+    from kalachakra.ephemeris import global_state
+    if not global_state.ephemeris_available():
+        pytest.skip("pyswisseph not installed")
+    _build_index(tmp_path / "idx")
+    client = TestClient(create_app(str(tmp_path / "idx")))
+    news = client.post("/news", json={
+        "min_lat": -90, "min_lng": -180, "max_lat": 90, "max_lng": 180,
+        "start": "2000-01-01T12:00:00Z", "end": "2000-01-01T15:00:00Z",
+        "rarity_min": 0.0, "top": 5,
+    }).json()
+    assert news["n"] >= 1 and len(news["cards"]) == news["n"]
+    card = news["cards"][0]
+    assert set(("jd", "lat", "lng", "macro", "micro", "rarity",
+                "rarity_percentile", "applying", "bodies")) <= set(card)
+    assert len(card["bodies"]) == 9                      # 9 weighted bodies
+    assert all("unit_vector" in b for b in card["bodies"])
+    # cards are ordered rarest-first
+    rar = [c["rarity"] for c in news["cards"]]
+    assert rar == sorted(rar, reverse=True)
+
+
 def test_health_and_inspect(tmp_path):
     _build_index(tmp_path / "idx")
     client = TestClient(create_app(str(tmp_path / "idx")))
