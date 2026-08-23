@@ -58,6 +58,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--modes", type=int, default=16, help="Fourier modes")
     p.add_argument("--blocks", type=int, default=2)
     p.add_argument("--knn", type=int, default=7)
+    p.add_argument("--quantize", action="store_true",
+                   help="train the AE + hierarchical residual VQ (tokenizer); "
+                        "saves a quantized checkpoint for build_index.py")
     # Optimization / schedule.
     p.add_argument("--window", type=int, default=48, help="temporal window frames")
     p.add_argument("--stride", type=int, default=24)
@@ -130,7 +133,13 @@ def main(argv=None) -> int:
     cfg = AutoencoderConfig(n_nodes=args.nodes, hidden=args.hidden,
                             latent=args.latent, fourier_modes=args.modes,
                             knn=args.knn, n_blocks=args.blocks)
-    model = SphericalAutoencoder(cfg, neighbors)
+    if args.quantize:
+        from kalachakra.models.quantized_autoencoder import QuantizedSphericalAutoencoder
+        from kalachakra.models.rvq import RVQConfig
+        rvq_cfg = RVQConfig(dim=args.latent)
+        model = QuantizedSphericalAutoencoder(cfg, neighbors, rvq_cfg)
+    else:
+        model = SphericalAutoencoder(cfg, neighbors)
     n_params = sum(p.numel() for p in model.parameters())
 
     stream = EphemerisStream(
@@ -157,9 +166,15 @@ def main(argv=None) -> int:
     def save_all(tag: str):
         trainer.save_micro()  # resumable (weights+optimizer+scheduler)
         for name in (f"model_{tag}.pt", "model_latest.pt"):
-            save_model(args.checkpoints / name, model, cfg, neighbors,
-                       grid_xyz=grid.xyz,
-                       extra={"step": trainer.step, "start_date": args.start_date})
+            if args.quantize:
+                from kalachakra.training.checkpoint import save_quantized_model
+                save_quantized_model(args.checkpoints / name, model, cfg, neighbors,
+                                     rvq_cfg, grid_xyz=grid.xyz,
+                                     extra={"step": trainer.step})
+            else:
+                save_model(args.checkpoints / name, model, cfg, neighbors,
+                           grid_xyz=grid.xyz,
+                           extra={"step": trainer.step, "start_date": args.start_date})
 
     t0 = time.time()
     stop = False
@@ -182,11 +197,12 @@ def main(argv=None) -> int:
                 stop = True
                 break
 
-    save_model(args.checkpoints / "model_final.pt", model, cfg, neighbors,
-               grid_xyz=grid.xyz, extra={"step": trainer.step})
+    save_all("final")
     trainer.save_micro()
     print(f"\nDone. {trainer.step} steps in {time.time() - t0:.1f}s.")
-    print(f"Final model saved: {args.checkpoints / 'model_final.pt'}")
+    print(f"Final model saved: {args.checkpoints / 'model_final.pt'}"
+          + ("  (quantized: use with build_index.py --quantized-checkpoint)"
+             if args.quantize else ""))
     print("Reload it with kalachakra.training.checkpoint.load_model(), or run "
           "`python scripts/analyze.py --checkpoint {}/model_final.pt --date now`"
           .format(args.checkpoints))

@@ -26,10 +26,14 @@ try:  # pragma: no cover - optional dependency
 except Exception:  # noqa: BLE001
     _HAS_FASTAPI = False
 
-from ..analysis import radar
-from ..analysis.rarity import RarityModel
-from ..ephemeris.calendar import parse_datetime
+import numpy as _np
+
+from ..analysis import radar, weather
+from ..ephemeris import bodies, global_state
+from ..ephemeris.calendar import format_jd, parse_datetime
 from . import binary
+from ..projection import spatial
+from ..projection.microgrid import bbox_microgrid, resolution_km
 from ..storage.duckdb_engine import DuckDBEngine, ViewportQuery
 from ..storage.parquet_store import ParquetTokenStore
 
@@ -66,14 +70,55 @@ if _HAS_FASTAPI:
         n_rows: int
         rows: list[dict[str, Any]]
 
+    class MicrogridRequest(BaseModel):
+        min_lat: float = Field(..., ge=-90, le=90)
+        min_lng: float = Field(..., ge=-180, le=180)
+        max_lat: float = Field(..., ge=-90, le=90)
+        max_lng: float = Field(..., ge=-180, le=180)
+        datetime: str
+        density: int = Field(48, ge=2, le=256)
+
+    class TelemetryRequest(BaseModel):
+        lat: float = Field(..., ge=-90, le=90)
+        lng: float = Field(..., ge=-180, le=180)
+        datetime: str
+
+
+def _applying_flag(lons, speeds, sig):
+    if not sig.dominant_aspects:
+        return None
+    top = sig.dominant_aspects[0]
+    ai = bodies.index_of(top["bodies"][0])
+    bi = bodies.index_of(top["bodies"][1])
+    return radar.is_applying(lons, speeds, ai, bi)
+
+
+def _lookup_stored(engine, store, jd: float, lat: float, lng: float) -> dict:
+    """Best-effort stored token/rarity for a coordinate+time from the index."""
+    if not store.has_tier("tier1"):
+        return {}
+    dt = 1.0 / 24.0  # +/- 1 hour window
+    q = ViewportQuery(lat - 1.0, lng - 1.0, lat + 1.0, lng + 1.0,
+                      jd - dt, jd + dt, rarity_min=0.0, limit=1)
+    rows = engine.query(q)
+    if not rows:
+        return {}
+    r = rows[0]
+    return {"rarity_percentile": round(float(r.get("rarity", 0.0)) * 100.0, 3),
+            "macro": int(r.get("macro", 0)), "micro": int(r.get("micro", 0))}
+
 
 def create_app(store_root: str):
     """Build the FastAPI app over a Parquet token store at ``store_root``."""
     _require()
 
-    app = FastAPI(title="Kalachakra Cosmic Weather Radar", version="0.2.0")
+    app = FastAPI(title="Kalachakra Cosmic Weather Radar", version="0.3.0")
     store = ParquetTokenStore(store_root)
     engine = DuckDBEngine(store)
+    # Honor a saved full-span backend so live micro-grid / telemetry queries reach
+    # the far past/future; falls back to Moshier otherwise.
+    if global_state.ephemeris_available():
+        global_state.auto_configure()
 
     def _query(req: "InspectRequest"):
         j0 = parse_datetime(req.start)
@@ -103,6 +148,77 @@ def create_app(store_root: str):
                 int((q.end_jd - q.start_jd) * 86400 / 24))),
             n_rows=len(rows), rows=light,
         )
+
+    @app.post("/microgrid")
+    def microgrid(req: MicrogridRequest) -> dict:
+        """§4 dynamic LOD: compute the real weather field over an on-the-fly
+        regional micro-grid via continuous analytical projection (no static mesh)."""
+        if not global_state.ephemeris_available():
+            return {"error": "pyswisseph not installed"}
+        jd = parse_datetime(req.datetime)
+        grid = bbox_microgrid(req.min_lat, req.min_lng, req.max_lat, req.max_lng,
+                              req.density)
+        wm = weather.weather_map(jd, grid)
+        sig = wm["signature"]
+        return {
+            "timestamp": format_jd(jd),
+            "density": req.density,
+            "n_nodes": grid.n_nodes,
+            "resolution_km": resolution_km(req.min_lat, req.min_lng,
+                                           req.max_lat, req.max_lng, req.density),
+            "lat": _np.rad2deg(grid.lat).round(5).tolist(),
+            "lng": _np.rad2deg(grid.lon).round(5).tolist(),
+            "potential": wm["potential"].round(5).tolist(),
+            "shear": wm["shear"].round(5).tolist(),
+            "summary": {"resonance": sig.resonance, "tension": sig.tension,
+                        "potential_R": sig.potential,
+                        "eclipse": sig.eclipse["is_eclipse"]},
+        }
+
+    @app.post("/telemetry")
+    def telemetry(req: TelemetryRequest) -> dict:
+        """§5 Sidebar Inspector: raw numerical constituents at a coordinate."""
+        if not global_state.ephemeris_available():
+            return {"error": "pyswisseph not installed"}
+        jd = parse_datetime(req.datetime)
+        g = global_state.global_state_frame(jd)
+        lons = _np.arctan2(g[:, 1], g[:, 0])
+        af = weather.aspect_field(lons)
+        sig = weather.frame_signature(jd)
+
+        # Local intensity (diurnal / Micro-band term) at the coordinate.
+        one = bbox_microgrid(req.lat - 0.01, req.lng - 0.01,
+                             req.lat + 0.01, req.lng + 0.01, 2)
+        field = spatial.project(g, jd, one)
+        local = float(weather.local_intensity(field, af["activation"]).mean())
+
+        entities = []
+        for i, name in enumerate(bodies.NAMES):
+            if weather.BODY_WEIGHTS[i] == 0:
+                continue
+            entities.append({
+                "name": name,
+                "unit_vector": g[i, :3].astype(float).round(6).tolist(),
+                "radial_distance_au": float(g[i, 5]),
+                "angular_velocity_deg_per_day": float(_np.rad2deg(g[i, 3])),
+                "retrograde": bool(g[i, 3] < 0),
+            })
+
+        # Stored token/rarity for this coordinate+time, if the index has it.
+        stored = _lookup_stored(engine, store, jd, req.lat, req.lng)
+        return {
+            "timestamp": format_jd(jd), "julian_day": jd,
+            "lat": req.lat, "lng": req.lng,
+            "rarity_percentile": stored.get("rarity_percentile"),
+            "archetype": {"macro": stored.get("macro"), "micro": stored.get("micro")},
+            "band_energies": radar.band_energies(af["activation"], diurnal=local),
+            "resonance": sig.resonance, "tension": sig.tension,
+            "geometric_potential_R": sig.potential,
+            "eclipse": sig.eclipse,
+            "dominant_aspect": sig.dominant_aspects[0] if sig.dominant_aspects else None,
+            "applying": _applying_flag(lons, g[:, 3], sig),
+            "entities": entities,
+        }
 
     @app.websocket("/stream")
     async def stream(ws: WebSocket) -> None:

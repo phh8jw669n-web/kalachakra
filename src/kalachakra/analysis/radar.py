@@ -37,6 +37,30 @@ BAND_PERIOD_FRAMES = {
 BAND_ORDER = ("micro", "fast", "cyclic", "macro")
 
 
+# Which entities drive each temporal band (blueprint §6). Ayanamsha (weight 0)
+# is excluded; the Micro band is the 24 s diurnal horizon term, supplied per
+# location rather than by a body.
+BAND_BODIES = {
+    "fast": ("Moon", "Mercury", "Venus"),
+    "cyclic": ("Mars", "Sun", "Rahu", "Ketu"),
+    "macro": ("Jupiter", "Saturn"),
+}
+
+
+def band_energies(activation: np.ndarray, diurnal: float = 0.0) -> dict[str, float]:
+    """Isolated energy per temporal band from a per-body activation vector.
+
+    ``activation`` is the length-``N_BODIES`` vector from
+    :func:`kalachakra.analysis.weather.aspect_field`; ``diurnal`` supplies the
+    Micro-band (24 s horizon) term for a specific location.
+    """
+    activation = np.asarray(activation, dtype=np.float64)
+    out = {"micro": float(diurnal)}
+    for band, names in BAND_BODIES.items():
+        out[band] = float(sum(activation[bodies.index_of(n)] for n in names))
+    return out
+
+
 def temporal_stride(span_frames: int, target_points: int = 1000) -> int:
     """Frame decimation stride so a span streams ~``target_points`` samples."""
     span_frames = max(1, int(span_frames))

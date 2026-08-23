@@ -102,8 +102,14 @@ class Trainer:
         lons = lons.to(self.device, non_blocking=True)
 
         self.optimizer.zero_grad(set_to_none=True)
+        vq_loss = None
         with torch.autocast(device_type=self.device.type, dtype=self._amp_dtype):
-            recon, _z = self.model(e)
+            out = self.model(e)
+            if len(out) == 4:            # quantized autoencoder: (recon, z, q, info)
+                recon, _z, _q, info = out
+                vq_loss = info["vq_loss"]
+            else:                        # plain autoencoder: (recon, z)
+                recon, _z = out
 
         # Compute the loss in float32, outside autocast: the geometric loss uses
         # FFTs and arccos, which are unsupported or imprecise in bf16/fp16 (and
@@ -111,6 +117,9 @@ class Trainer:
         recon_f = recon.float().unflatten(-1, (-1, 5))
         target_f = e.float().unflatten(-1, (-1, 5))
         total, parts = self.criterion(recon_f, target_f)
+        if vq_loss is not None:
+            total = total + vq_loss.float()
+            parts["vq"] = vq_loss
 
         total.backward()
         if self.cfg.grad_clip:

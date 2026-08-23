@@ -88,36 +88,41 @@ class HierarchicalResidualVQ(nn.Module):
         """
         c = self.cfg
         lead = z.shape[:-1]
-        flat = z.reshape(-1, c.dim)
+        in_dtype = z.dtype
+        # The codebooks/EMA buffers are float32; run all quantizer math in float32
+        # with autocast disabled (bf16 breaks index-assignment into the codebooks
+        # and mixes dtypes in the straight-through), then cast back to the caller.
+        with torch.autocast(device_type=z.device.type, enabled=False):
+            flat = z.reshape(-1, c.dim).float()
 
-        # --- macro level ---
-        macro_idx = _nearest(flat, self.macro_codebook)          # (N,)
-        q_macro = self.macro_codebook[macro_idx]                  # (N, D)
-        residual = flat - q_macro
+            # --- macro level ---
+            macro_idx = _nearest(flat, self.macro_codebook)          # (N,)
+            q_macro = self.macro_codebook[macro_idx]                  # (N, D)
+            residual = flat - q_macro
 
-        # --- micro level (codebook conditioned on macro index) ---
-        cond = self.micro_codebook[macro_idx]                    # (N, n_micro, D)
-        d = (residual.unsqueeze(1) - cond).pow(2).sum(-1)        # (N, n_micro)
-        micro_idx = d.argmin(1)                                  # (N,)
-        n = flat.shape[0]
-        q_micro = cond[torch.arange(n, device=flat.device), micro_idx]  # (N, D)
+            # --- micro level (codebook conditioned on macro index) ---
+            cond = self.micro_codebook[macro_idx]                    # (N, n_micro, D)
+            d = (residual.unsqueeze(1) - cond).pow(2).sum(-1)        # (N, n_micro)
+            micro_idx = d.argmin(1)                                  # (N,)
+            n = flat.shape[0]
+            q_micro = cond[torch.arange(n, device=flat.device), micro_idx]  # (N, D)
 
-        quantized = q_macro + q_micro
+            quantized = q_macro + q_micro
 
-        # --- losses ---
-        codebook_loss = (F.mse_loss(q_macro, flat.detach())
-                         + F.mse_loss(q_micro, residual.detach()))
-        commitment = (F.mse_loss(flat, q_macro.detach())
-                      + F.mse_loss(residual, q_micro.detach()))
-        vq_loss = c.beta * commitment
+            # --- losses ---
+            codebook_loss = (F.mse_loss(q_macro, flat.detach())
+                             + F.mse_loss(q_micro, residual.detach()))
+            commitment = (F.mse_loss(flat, q_macro.detach())
+                          + F.mse_loss(residual, q_micro.detach()))
+            vq_loss = c.beta * commitment
 
-        # --- EMA + dead-code (training only) ---
-        if self.training:
-            self._ema_update(flat, residual, macro_idx, micro_idx)
+            # --- EMA + dead-code (training only) ---
+            if self.training:
+                self._ema_update(flat, residual, macro_idx, micro_idx)
 
-        # --- straight-through ---
-        quantized_st = flat + (quantized - flat).detach()
-        quantized_st = quantized_st.reshape(*lead, c.dim)
+            # --- straight-through ---
+            quantized_st = flat + (quantized - flat).detach()
+            quantized_st = quantized_st.reshape(*lead, c.dim).to(in_dtype)
 
         leaf_idx = macro_idx * c.n_micro + micro_idx
         info = {

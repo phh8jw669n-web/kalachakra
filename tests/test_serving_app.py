@@ -91,6 +91,33 @@ def test_health_and_inspect(tmp_path):
     assert "latent" not in body["rows"][0]      # heavy field excluded from JSON
 
 
+def test_microgrid_and_telemetry(tmp_path):
+    from kalachakra.ephemeris import global_state
+    if not global_state.ephemeris_available():
+        pytest.skip("pyswisseph not installed")
+    _build_index(tmp_path / "idx")
+    client = TestClient(create_app(str(tmp_path / "idx")))
+
+    # §4 dynamic micro-grid over a region, at the 2024 eclipse instant.
+    mg = client.post("/microgrid", json={
+        "min_lat": 20, "min_lng": 70, "max_lat": 30, "max_lng": 80,
+        "datetime": "2024-04-08T18:17:00Z", "density": 12,
+    }).json()
+    assert mg["n_nodes"] == 144
+    assert len(mg["potential"]) == 144 and mg["resolution_km"] > 0
+    assert max(mg["potential"]) >= min(mg["potential"])
+
+    # §5 Sidebar Inspector telemetry at a coordinate.
+    tel = client.post("/telemetry", json={
+        "lat": 27.0, "lng": 78.0, "datetime": "2024-04-08T18:17:00Z",
+    }).json()
+    assert set(tel["band_energies"]) == {"micro", "fast", "cyclic", "macro"}
+    assert len(tel["entities"]) == 9              # 9 weighted bodies
+    assert tel["eclipse"]["is_eclipse"] is True   # real total solar eclipse
+    assert all("unit_vector" in b and "radial_distance_au" in b
+               for b in tel["entities"])
+
+
 def test_websocket_streams_binary(tmp_path):
     _build_index(tmp_path / "idx")
     client = TestClient(create_app(str(tmp_path / "idx")))

@@ -33,3 +33,30 @@ def test_save_load_roundtrip_preserves_outputs(tmp_path):
     with torch.no_grad():
         z_after = reloaded.encode(e)
     assert torch.allclose(z_before, z_after, atol=1e-6)
+
+
+def test_quantized_model_roundtrip(tmp_path):
+    from kalachakra.models.autoencoder import AutoencoderConfig
+    from kalachakra.models.quantized_autoencoder import QuantizedSphericalAutoencoder
+    from kalachakra.models.rvq import RVQConfig
+    from kalachakra.training.checkpoint import load_quantized_model, save_quantized_model
+
+    grid = geodesic.fibonacci_sphere(48)
+    neighbors = build_knn(grid, 6)
+    ae_cfg = AutoencoderConfig(n_nodes=48, hidden=16, latent=64,
+                               fourier_modes=4, knn=6, n_blocks=1)
+    rvq_cfg = RVQConfig(dim=64, n_macro=16, n_micro=16)
+    model = QuantizedSphericalAutoencoder(ae_cfg, neighbors, rvq_cfg).eval()
+
+    e = torch.randn(1, 8, 48, ae_cfg.in_features)
+    with torch.no_grad():
+        _m0, _mi0, leaf0, _q0 = model.tokenize(e)
+
+    path = save_quantized_model(tmp_path / "q.pt", model, ae_cfg, neighbors,
+                                rvq_cfg, grid_xyz=grid.xyz)
+    reloaded, ae2, rvq2, xyz = load_quantized_model(path)
+    assert rvq2.n_leaf == 256 and xyz.shape == (48, 3)
+    with torch.no_grad():
+        _m1, _mi1, leaf1, _q1 = reloaded.tokenize(e)
+    # deterministic tokenization survives the round trip
+    assert torch.equal(leaf0, leaf1)

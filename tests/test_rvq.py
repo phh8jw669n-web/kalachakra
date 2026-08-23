@@ -63,6 +63,16 @@ def test_ema_training_reduces_quantization_error():
     assert err1 < err0  # codebook adapted to the data
 
 
+def test_rvq_accepts_bfloat16_in_training():
+    # Regression: under autocast the latent arrives as bf16; the quantizer must
+    # run its codebook math in float32 and return the caller's dtype.
+    rvq = HierarchicalResidualVQ(RVQConfig(dim=16, n_macro=8, n_micro=8)).train()
+    z = torch.randn(32, 16, dtype=torch.bfloat16)
+    q, info = rvq(z)
+    assert q.dtype == torch.bfloat16
+    assert torch.isfinite(info["vq_loss"])
+
+
 def test_codebook_usage_spreads_after_training():
     torch.manual_seed(1)
     cfg = RVQConfig(dim=8, n_macro=16, n_micro=16, decay=0.9)

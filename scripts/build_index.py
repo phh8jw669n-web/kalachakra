@@ -45,6 +45,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--out", type=Path, default=Path("data/index"))
     p.add_argument("--checkpoint", type=Path, default=None,
                    help="trained plain-AE checkpoint (wrapped with a fresh RVQ)")
+    p.add_argument("--quantized-checkpoint", type=Path, default=None,
+                   help="trained quantized (AE+RVQ) checkpoint — meaningful tokens")
     p.add_argument("--nodes", type=int, default=256)
     p.add_argument("--start-date", default="2024-01-01")
     p.add_argument("--frames", type=int, default=3000)
@@ -67,19 +69,33 @@ def main(argv=None) -> int:
         return 2
     global_state.configure_from_args(ephe_path=args.ephe_path, jpl_file=args.jpl_file)
 
-    grid = geodesic.fibonacci_sphere(args.nodes)
-    neighbors = build_knn(grid, 7)
-    ae_cfg = AutoencoderConfig(n_nodes=args.nodes, hidden=64, latent=C.LATENT_DIM,
-                               fourier_modes=16, knn=7, n_blocks=2)
-    model = QuantizedSphericalAutoencoder(ae_cfg, neighbors, RVQConfig()).eval()
-    if args.checkpoint and args.checkpoint.exists():
-        from kalachakra.training.checkpoint import load_model
-        trained, _cfg, _xyz = load_model(args.checkpoint)
-        model.ae.load_state_dict(trained.state_dict())
-        print(f"Loaded trained encoder/decoder from {args.checkpoint}")
+    if args.quantized_checkpoint and args.quantized_checkpoint.exists():
+        from kalachakra.training.checkpoint import load_quantized_model
+        model, ae_cfg, _rvq, grid_xyz = load_quantized_model(args.quantized_checkpoint)
+        if grid_xyz is not None:
+            grid = geodesic.Grid(
+                xyz=np.asarray(grid_xyz),
+                lat=np.arcsin(np.clip(np.asarray(grid_xyz)[:, 2], -1, 1)),
+                lon=np.arctan2(np.asarray(grid_xyz)[:, 1], np.asarray(grid_xyz)[:, 0]))
+            args.nodes = grid.n_nodes
+        else:
+            grid = geodesic.fibonacci_sphere(ae_cfg.n_nodes); args.nodes = ae_cfg.n_nodes
+        print(f"Loaded trained quantized model from {args.quantized_checkpoint} "
+              f"({args.nodes} nodes) — tokens are meaningful.")
     else:
-        print("No checkpoint: using a fresh (untrained) model — the data path is "
-              "real; tokens become meaningful once trained.")
+        grid = geodesic.fibonacci_sphere(args.nodes)
+        neighbors = build_knn(grid, 7)
+        ae_cfg = AutoencoderConfig(n_nodes=args.nodes, hidden=64, latent=C.LATENT_DIM,
+                                   fourier_modes=16, knn=7, n_blocks=2)
+        model = QuantizedSphericalAutoencoder(ae_cfg, neighbors, RVQConfig()).eval()
+        if args.checkpoint and args.checkpoint.exists():
+            from kalachakra.training.checkpoint import load_model
+            trained, _cfg, _xyz = load_model(args.checkpoint)
+            model.ae.load_state_dict(trained.state_dict())
+            print(f"Loaded trained encoder/decoder from {args.checkpoint}")
+        else:
+            print("No checkpoint: using a fresh (untrained) model — the data path "
+                  "is real; tokens become meaningful once trained.")
 
     lat_deg = np.rad2deg(grid.lat)
     lng_deg = np.rad2deg(grid.lon)
