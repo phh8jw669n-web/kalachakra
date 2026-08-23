@@ -1,319 +1,629 @@
 ===============================================================================
- KALACHAKRA — integrating the FULL 10,256-year span (DE441) + running training
+ KALACHAKRA — the complete run
+ From install to a trained model over all 10,256 years, to every visual
 ===============================================================================
 
-By default Kalachakra computes real planetary positions with the Swiss
-Ephemeris "Moshier" backend, which needs NO data files but is only valid from
-about 1900 BCE to 4650 CE. The full Kalachakra timeline runs from the Kali Yuga
-epoch (3102 BCE, Julian Day 588465.5) to 7154 CE — 10,256 years — and the far
-past and far future fall OUTSIDE the Moshier window. To cover the whole span you
-plug a long-range ephemeris into the Swiss Ephemeris.
+This is the end-to-end operator's guide. Follow it top to bottom for a full
+production run, or jump to a part with the table of contents. Every command here
+is real and runnable; nothing is a placeholder.
 
-You can do this two ways:
-  * OPTION A — Swiss Ephemeris ".se1" files   (recommended: small, fast)
-  * OPTION B — JPL DE441 ".bsp" files          (the raw NASA kernels; large)
+Kalachakra computes the solar system's geometry over an exact 10,256-year
+timeline (Kali Yuga epoch 3102 BCE -> 7154 CE), projects it onto a geodesic
+Earth mesh, compresses it with a Spherical Autoencoder + Spatio-Temporal Fourier
+Neural Operator into a 64-d latent manifold, tokenizes and indexes it for
+deep-time queries, and renders it through a losslessly-invertible isomorphic
+transducer. The outputs are objective geometry (angular separations, resonance /
+tension, latent norms, rarity, cluster labels) — never interpreted text.
+
+-------------------------------------------------------------------------------
+ CONTENTS
+-------------------------------------------------------------------------------
+  PART 0  Two scales, and what you get at each
+  PART 1  Install
+  PART 2  60 seconds: real output with no data files and no training
+  PART 3  Integrate the FULL 10,256-year span (the ephemeris)
+            3.1 One-command setup (recommended)
+            3.2 OPTION A — Swiss .se1 files (the practical full span)
+            3.3 OPTION B — JPL DE441 .bsp kernels (the literal DE441)
+            3.4 Verify the backend reaches 3102 BCE
+            3.5 Timeline anchors
+  PART 4  Generate the ephemeris matrix G(t)  (~300 GB, segmented)
+  PART 5  Train and SAVE the model  (turn-key + full-scale on M4 Max)
+  PART 6  Build the tokenized deep-time index (tier1/2/3 + rarity)
+  PART 7  USE EVERY VISUAL
+            7.1 WebGL cosmic-weather globe            (web/index.html)
+            7.2 Isomorphic transducer radar           (web/radar.html)
+            7.3 The isomorphic transducer itself      (Python, lossless)
+            7.4 gRPC control plane                    (serve_grpc.py)
+  PART 8  Query and analyze without a browser
+  PART 9  Full-scale checklist (disk, MPS, the ~90-day cycle)
+  COMMAND REFERENCE
+  APPENDIX  Outputs, ports, checkpoints, troubleshooting
+
+
+===============================================================================
+ PART 0 — Two scales, and what you get at each
+===============================================================================
+There are two ways to run everything. The pipeline, the models, and all the
+visuals are identical; only the data span and the compute differ.
+
+  (Q) QUICK SCALE — Moshier backend, NO data files.
+      The Swiss Ephemeris "Moshier" analytic backend ships inside pyswisseph and
+      needs no downloads, but is only valid ~1900 BCE .. 4650 CE. That already
+      covers all of recorded history and the present. Trains in minutes on a
+      laptop CPU. Use this to learn the whole flow and see every visual today.
+
+  (F) FULL SCALE — the entire 10,256-year timeline.
+      3102 BCE and the far future fall OUTSIDE Moshier, so you plug a long-range
+      ephemeris (Swiss .se1 / DE431, or raw JPL DE441) into the Swiss Ephemeris
+      (Part 3). The full G(t) matrix is ~13.4 billion 24-second frames (~300 GB)
+      and the full macro-harmonic training cycle is a ~90-day run on an M4 Max.
+
+Everything below is written so the SAME commands work at both scales: add
+`--ephe-path` / `--jpl-file` (or run the one-command setup in 3.1, after which no
+flags are needed) to go full scale.
+
+
+===============================================================================
+ PART 1 — Install
+===============================================================================
+Python 3.11+ and this repo checked out.
+
+  pip install -e .                 # core: numpy + pyswisseph (Moshier, no files)
+
+Optional extras (install what you need; ".[all]" gets everything):
+
+  pip install -e ".[train]"        # + torch                 (Parts 5, 6, 7.1)
+  pip install -e ".[index]"        # + pyarrow duckdb h3 pandas (Part 6, 8)
+  pip install -e ".[serve]"        # + fastapi uvicorn       (Parts 7.1, 7.2, 8)
+  pip install -e ".[transducer]"   # + scipy (SH topography) (Part 7.3)
+  pip install -e ".[grpc]"         # + grpcio (grpcio-tools) (Part 7.4)
+  pip install -e ".[cluster]"      # + hdbscan scikit-learn  (manifold clusters)
+  pip install -e ".[all]"          # all of the above
+
+For a full production run you will typically want:
+
+  pip install -e ".[train,index,serve,transducer,cluster,grpc]"
+
+Verify the install (runs the whole test suite — 153 tests):
+
+  pytest -q
+
+
+===============================================================================
+ PART 2 — 60 seconds: real output with no data files and no training
+===============================================================================
+These run on real planetary positions via the Moshier backend. No downloads, no
+model.
+
+  # Cosmic weather for a place and time, from real geometry:
+  kalachakra reading --date now --lat 51.5 --lon -0.12
+
+  # The real 2024-04-08 total solar eclipse (sun-moon separation ~0.04 deg):
+  kalachakra reading --date 2024-04-08T18:17
+
+  # Scan a year for real geometric singularities (finds the real eclipses):
+  kalachakra scan --start 2024-01-01 --end 2025-01-01 --step-hours 24 --top 8
+
+  # Compute a real per-node field and write it for the WebGL globe:
+  kalachakra map --date 2024-04-08T18:17 --nodes 8000 --out web/heatmap.json
+
+You can open the globe on that field right now (see Part 7.1). And the whole
+data chain in one script:
+
+  python scripts/demo_pipeline.py   # G(t) -> store -> projection -> weather -> eclipse
+
+
+===============================================================================
+ PART 3 — Integrate the FULL 10,256-year span (the ephemeris)
+===============================================================================
+Skip this part for a QUICK-scale run. Do it once for FULL scale.
 
 A note on DE431 vs DE441: the ready-made Swiss ".se1" files (OPTION A) are built
 from JPL DE431, which spans ~13000 BCE .. 16800 CE and therefore already covers
 Kalachakra's entire 3102 BCE .. 7154 CE timeline. DE441 is JPL's newer long
-integration (nearly identical over this span, agreeing far below the arc-second
-level — immaterial for a topological simulation); it ships only as raw ".bsp"
-kernels, which is OPTION B. The blueprint names DE441; OPTION A (DE431 .se1) is
-the practical way to get the full span, OPTION B is the literal DE441 route.
-
-The code supports both. Follow ONE option, then continue to Part 3.
-
+integration; over this span the two agree far below the arc-second level
+(immaterial for a topological simulation). DE441 ships only as raw ".bsp"
+kernels (OPTION B). OPTION A is the practical full span; OPTION B is the literal
+DE441 route. The code supports both.
 
 -------------------------------------------------------------------------------
- QUICK SETUP (recommended) — one command does everything
+ 3.1 — One-command setup (recommended)
 -------------------------------------------------------------------------------
-A single script downloads exactly the right files, verifies them, and writes a
-config so every other command uses the full span automatically (no flags):
+A single script downloads exactly the right files, verifies it can compute the
+3102 BCE epoch, and writes a config so EVERY later command uses the full span
+automatically — no flags to remember:
 
-    pip install -e ".[train]"
-    python scripts/setup_full_span.py
+  python scripts/setup_full_span.py
 
-That downloads the 36 needed Swiss .se1 files (~40 MB) to ~/.kalachakra/ephe from
-the official Swiss Ephemeris GitHub mirror (aloistr/swisseph), verifies it can
-compute the 3102 BCE Kali Yuga epoch, and writes ./.kalachakra.json. After it
-finishes you can go straight to training:
+That fetches the 36 needed Swiss .se1 files (~40 MB) to ~/.kalachakra/ephe from
+the official Swiss Ephemeris GitHub mirror (aloistr/swisseph), and writes
+./.kalachakra.json. After it finishes, go straight to generation/training with
+no backend flags:
 
-    python scripts/train.py --store data/full     # generates + trains, full span
+  python scripts/train.py --store data/full     # picks up the full span from config
 
 Useful flags:
-    python scripts/setup_full_span.py --dry-run    # show the file list, download nothing
-    python scripts/setup_full_span.py --jpl        # fetch raw JPL DE441 .bsp instead
-    python scripts/setup_full_span.py --dest DIR --config-path PATH
-    python scripts/setup_full_span.py --mirror-all # every block, not just the needed set
-    python scripts/setup_full_span.py --base-url https://www.astro.com/ftp/swisseph/ephe
-                                                   # alternative source (astro.com)
+  --dry-run           show the exact file list, download nothing
+  --dest DIR          download location (default ~/.kalachakra/ephe)
+  --config-path PATH  where to write the config (default ./.kalachakra.json)
+  --configure-only    do not download; just verify + configure an existing DIR
+  --mirror-all        fetch every .se1 block, not only the needed set
+  --base-url URL      alternative source (e.g. https://www.astro.com/ftp/swisseph/ephe)
+  --jpl               fetch the raw JPL DE441 .bsp kernels instead (OPTION B)
+  --no-verify         skip the epoch-computation check
+  --no-config         download only; do not write the config file
 
-MANUAL DOWNLOAD, then automatic setup:
-If you prefer to download the files yourself (see OPTION A for the exact list),
-put them all in one folder and let the script verify + configure it — no download:
+MANUAL DOWNLOAD, then automatic setup — the reliable fallback if any download is
+blocked on your network: download the files yourself (see 3.2 for the exact
+list), put them all in one folder, and let the script verify + configure it:
 
-    python scripts/setup_full_span.py --dest /path/to/your/folder --configure-only
-
-That is the recommended fallback if any automatic download is blocked on your
-network. OPTION A / OPTION B below explain the file list and sources in full.
-
-
-Timeline anchors you will need:
-  * Start frame 0        = JD 588465.5   = 3102-02-18 BCE 00:00 UTC (Kali Yuga)
-  * Astronomical date    = -3101-02-18   (year 0 == 1 BCE, so 3102 BCE == -3101)
-  * End                  = 7154 CE       (10,256 years later)
-  * Step                 = 24 s (1 Vighatika); total ~13.4 billion frames
-
+  python scripts/setup_full_span.py --dest /path/to/your/folder --configure-only
 
 -------------------------------------------------------------------------------
- PART 0 — Prerequisites
+ 3.2 — OPTION A: Swiss Ephemeris .se1 files  (the practical full span)
 -------------------------------------------------------------------------------
-1. Python 3.11+ and this repo checked out.
-2. Install the package with the training extra:
+How the filenames work (verified against the official docs):
+  * Each .se1 file covers exactly 600 years.
+  * Prefix = body group:  sepl = planets (Mercury..Pluto),  semo = Moon.
+    (seas = asteroids — NOT needed. Kalachakra uses Sun/Moon/planets + the lunar
+    nodes Rahu/Ketu only, so you need sepl* and semo* and nothing else.)
+  * Suffix = 600-year block. "_NN" = CE, "mNN" = BCE, number x 100 = century:
+        sepl_00 = 1 BCE .. 599 CE     seplm06 = 601 BCE .. 2 BCE
+        sepl_18 = 1800 .. 2399 CE     seplm36 = 3601 BCE .. 3002 BCE
 
-       pip install -e ".[train]"
+You need 18 planet blocks + the matching 18 Moon blocks = 36 files, ~40 MB:
 
-   This installs numpy, pyswisseph, and torch. (pyswisseph is the Swiss
-   Ephemeris; it reads both .se1 and .bsp files.)
+  base=https://raw.githubusercontent.com/aloistr/swisseph/master/ephe
+  blocks="m36 m30 m24 m18 m12 m06 _00 _06 _12 _18 _24 _30 _36 _42 _48 _54 _60 _66"
+  mkdir -p ~/ephe/se1 && cd ~/ephe/se1
+  for b in $blocks; do
+      wget "$base/sepl$b.se1"   # planets
+      wget "$base/semo$b.se1"   # Moon
+  done
 
-3. Decide where the big files and outputs will live. You need free disk for:
-       - ephemeris data files      : ~40 MB (needed .se1)  or  ~3 GB (DE441 .bsp)
-       - generated G(t) matrix     : up to ~300 GB for the full timeline
-       - checkpoints               : a few GB
-   Put them on a fast SSD.
+Block -> year coverage (sepl* and semo* share these blocks):
+    m36 : 3601 BCE .. 3002 BCE   <- contains the 3102 BCE Kali Yuga epoch
+    m30 : 3001 BCE .. 2402 BCE       m06 :  601 BCE ..    2 BCE
+    m24 : 2401 BCE .. 1802 BCE       _00 :    1 BCE ..  599 CE
+    m18 : 1801 BCE .. 1202 BCE       _06 ..  _60 : 600 .. 6599 CE (600-yr steps)
+    m12 : 1201 BCE ..  602 BCE       _66 : 6600 CE .. 7199 CE  <- contains 7154 CE end
 
+Alternative sources:
+  * Sparse-clone the whole ephe/ folder (contains the complete long-range set):
+        git clone --depth 1 --filter=blob:none --sparse https://github.com/aloistr/swisseph
+        cd swisseph && git sparse-checkout set ephe
+    then use --ephe-path .../swisseph/ephe
+  * astro.com FTP: https://www.astro.com/ftp/swisseph/ephe/  (set base= to it in
+    the loop above; if a file 404s there, use the GitHub mirror).
 
--------------------------------------------------------------------------------
- OPTION A — Swiss Ephemeris .se1 files  (recommended)
--------------------------------------------------------------------------------
-The Swiss Ephemeris ships DE431-based ".se1" files spanning ~13000 BCE .. 16800
-CE, which fully covers Kalachakra's 3102 BCE .. 7154 CE timeline. They are far
-smaller than the raw JPL kernels.
-
-How the filenames work (from the official docs, verified):
-    * Each .se1 file covers exactly 600 years.
-    * Prefix = body group:  sepl = planets (Mercury..Pluto),
-                            semo = Moon,  seas = main asteroids (NOT needed here).
-    * Suffix = 600-year block.  "_NN" = CE, "mNN" = BCE, number x 100 = century:
-          sepl_00.se1 = 1 BCE .. 599 CE      seplm06.se1 = 601 BCE .. 2 BCE
-          sepl_18.se1 = 1800 .. 2399 CE      seplm36.se1 = 3601 BCE .. 3002 BCE
-    * Kalachakra uses only the Sun/Moon/planets and the lunar nodes (Rahu/Ketu),
-      so you need sepl* (planets) and semo* (Moon). You do NOT need seas*
-      (asteroids) or any other files.
-
-A1. Create a directory for them, e.g.:
-
-        mkdir -p ~/ephe/se1
-        cd ~/ephe/se1
-
-A2. Download the EXACT files covering 3102 BCE .. 7154 CE. That is 18 planet
-    blocks (m36..m06, _00.._66) and the matching 18 Moon blocks — 36 files,
-    ~40 MB total.
-
-    RECOMMENDED source — the official Swiss Ephemeris GitHub mirror
-    (aloistr/swisseph). This has been verified to host the complete file set and
-    to be reliably reachable (the astro.com FTP path 404'd on some networks):
-
-        base=https://raw.githubusercontent.com/aloistr/swisseph/master/ephe
-        blocks="m36 m30 m24 m18 m12 m06 _00 _06 _12 _18 _24 _30 _36 _42 _48 _54 _60 _66"
-        for b in $blocks; do
-            wget "$base/sepl$b.se1"   # planets
-            wget "$base/semo$b.se1"   # Moon
-        done
-
-    ALTERNATIVE source — astro.com FTP (browse the directory to confirm names):
-        https://www.astro.com/ftp/swisseph/ephe/
-        Download page: https://www.astro.com/swisseph/swedownload_e.htm
-    (Use base=https://www.astro.com/ftp/swisseph/ephe in the loop above. If a
-    file 404s here, use the GitHub mirror instead.)
-
-    Block -> year coverage (planets sepl* and Moon semo* share these blocks):
-        m36 : 3601 BCE .. 3002 BCE   <- contains the 3102 BCE Kali Yuga epoch
-        m30 : 3001 BCE .. 2402 BCE
-        m24 : 2401 BCE .. 1802 BCE
-        m18 : 1801 BCE .. 1202 BCE
-        m12 : 1201 BCE ..  602 BCE
-        m06 :  601 BCE ..    2 BCE
-        _00 :    1 BCE ..  599 CE
-        _06 :  600 CE .. 1199 CE
-        _12 : 1200 CE .. 1799 CE
-        _18 : 1800 CE .. 2399 CE
-        _24 : 2400 CE .. 2999 CE
-        _30 : 3000 CE .. 3599 CE
-        _36 : 3600 CE .. 4199 CE
-        _42 : 4200 CE .. 4799 CE
-        _48 : 4800 CE .. 5399 CE
-        _54 : 5400 CE .. 5999 CE
-        _60 : 6000 CE .. 6599 CE
-        _66 : 6600 CE .. 7199 CE   <- contains the 7154 CE timeline end
-
-    Alternatives if fetching individual files is inconvenient:
-      * Sparse-clone the whole ephe/ folder from the GitHub mirror (it contains
-        the COMPLETE long-range sepl*/semo* set, verified), then point at it:
-            git clone --depth 1 --filter=blob:none --sparse \
-                https://github.com/aloistr/swisseph
-            cd swisseph && git sparse-checkout set ephe
-        (--ephe-path .../swisseph/ephe then covers the full span.)
-      * Mirror every .se1 block from astro.com (~90 MB), then keep what you need:
-            wget -r -np -nH --cut-dirs=3 -A 'sepl*.se1,semo*.se1' \
-                 https://www.astro.com/ftp/swisseph/ephe/
-
-A3. Point Kalachakra at that directory with --ephe-path (see Part 3). No other
-    configuration is needed. (The QUICK SETUP script automates A1-A3.)
-
+Point Kalachakra at the directory with --ephe-path (Part 3.4 onward), or let
+setup_full_span.py --dest ~/ephe/se1 --configure-only record it once.
 
 -------------------------------------------------------------------------------
- OPTION B — JPL DE441 .bsp files  (raw NASA kernels)
+ 3.3 — OPTION B: JPL DE441 .bsp kernels  (the literal DE441)
 -------------------------------------------------------------------------------
-Use this if you specifically want the raw JPL DE441 integration.
+Use this only if you specifically want the raw JPL DE441 integration.
 
-B1. Download DE441 from NASA JPL NAIF. DE441 is split into two files because of
-    its size (covering -13200 .. +17191):
-        https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/
-            de441_part-1.bsp   (~1.3 GB, 13201 BCE .. 1969 CE)
-            de441_part-2.bsp   (~1.3 GB, 1969 CE .. 17191 CE)
+  mkdir -p ~/ephe/jpl && cd ~/ephe/jpl
+  base=https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets
+  curl -O $base/de441_part-1.bsp   # ~1.3 GB, 13201 BCE .. 1969 CE
+  curl -O $base/de441_part-2.bsp   # ~1.3 GB, 1969 CE .. 17191 CE
 
-    Example:
-        mkdir -p ~/ephe/jpl && cd ~/ephe/jpl
-        curl -O https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de441_part-1.bsp
-        curl -O https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de441_part-2.bsp
-
-B2. The Swiss Ephemeris reads ONE JPL file at a time. Because our timeline
-    straddles both parts, either:
-      (i)  generate the pre-1969 CE portion with part-1 and the post-1969 CE
-           portion with part-2 (two runs, different --jpl-file), or
-      (ii) obtain a merged DE441 .bsp if you have SPICE tooling to concatenate.
-    For most work OPTION A avoids this split entirely.
-
-B3. Point Kalachakra at the file with --jpl-file (see Part 3).
-
+The Swiss Ephemeris reads ONE JPL file at a time and our timeline straddles both
+parts, so generate the pre-1969 CE portion with part-1 and the post-1969 CE
+portion with part-2 (two runs, different --jpl-file), or concatenate them with
+SPICE tooling if you have it. OPTION A avoids this split entirely.
+(`python scripts/setup_full_span.py --jpl` downloads both parts for you.)
 
 -------------------------------------------------------------------------------
- PART 3 — Verify the backend reaches the far past
+ 3.4 — Verify the backend reaches 3102 BCE
 -------------------------------------------------------------------------------
-Confirm you can compute a date Moshier cannot (the Kali Yuga epoch). Pick the
-flag matching your option:
+Confirm you can compute a date Moshier cannot — the Kali Yuga epoch:
 
-    # Option A (.se1):
-    kalachakra --ephe-path ~/ephe/se1 reading --date -3101-02-18
+  # If you ran setup_full_span.py, no flags are needed (config is picked up):
+  kalachakra reading --date -3101-02-18
 
-    # Option B (.bsp), pre-1969 CE dates use part-1:
-    kalachakra --jpl-file ~/ephe/jpl/de441_part-1.bsp reading --date -3101-02-18
+  # Option A, explicit path:
+  kalachakra --ephe-path ~/ephe/se1 reading --date -3101-02-18
 
-If this prints real planet positions (no "outside range" error), the full span
-is integrated. Without the data files the same command errors, which is the
-proof you were previously limited to the Moshier window.
+  # Option B, pre-1969 CE dates use part-1:
+  kalachakra --jpl-file ~/ephe/jpl/de441_part-1.bsp reading --date -3101-02-18
 
-Quick programmatic check (optional):
+Real planet positions (no "outside range" error) prove the full span is live.
+(Astronomical year numbering: year 0 == 1 BCE, so 3102 BCE == the year -3101.)
 
-    python - <<'PY'
-    from kalachakra.ephemeris import global_state as gs
-    gs.configure(mode="swiss", ephe_path="~/ephe/se1".replace("~", __import__("os").path.expanduser("~")))
-    print(gs.global_state_frame(588465.5))   # Kali Yuga epoch, shape (10,7)
-    PY
+Programmatic check:
 
+  python - <<'PY'
+  import os
+  from kalachakra.ephemeris import global_state as gs
+  gs.configure(mode="swiss", ephe_path=os.path.expanduser("~/ephe/se1"))
+  print(gs.global_state_frame(588465.5).shape)   # Kali Yuga epoch -> (10, 7)
+  PY
 
 -------------------------------------------------------------------------------
- PART 4 — Generate the ephemeris matrix G(t)
+ 3.5 — Timeline anchors you will use
 -------------------------------------------------------------------------------
-The generator writes BF16 + delta-encoded, memory-mapped chunk files. The FULL
-timeline is ~13.4 billion frames (~300 GB) — generate it in segments so you can
-checkpoint progress and parallelize.
+  * Frame 0            = JD 588465.5 = 3102-02-18 BCE 00:00 UTC (Kali Yuga epoch)
+  * Astronomical date  = -3101-02-18
+  * End                = 7154 CE  (10,256 years later)
+  * Step               = 24 s (1 Vighatika)
+  * Total frames       = ~13.49 billion  (~300 GB as BF16 + delta)
+
+
+===============================================================================
+ PART 4 — Generate the ephemeris matrix G(t)   (~300 GB, segmented)
+===============================================================================
+The generator writes BF16 + delta-encoded, memory-mapped chunk files. At QUICK
+scale you can skip this — train.py auto-generates a small store for you. For FULL
+scale, pre-generate G(t) in segments so you can checkpoint and parallelize.
 
 4a. A bounded real segment starting at the Kali Yuga epoch (frame 0):
 
-        python scripts/generate_ephemeris.py \
-            --out data/full --ephe-path ~/ephe/se1 \
-            --start-frame 0 --max-frames 100000000 --chunk-frames 1000000
+    python scripts/generate_ephemeris.py \
+        --out data/full --ephe-path ~/ephe/se1 \
+        --start-frame 0 --max-frames 100000000 --chunk-frames 1000000
 
-    (--jpl-file ~/ephe/jpl/de441_part-1.bsp instead of --ephe-path for Option B.)
+    (Use --jpl-file ~/ephe/jpl/de441_part-1.bsp instead of --ephe-path for
+     Option B; if you ran setup_full_span.py, both flags are optional.)
 
-4b. Start a segment at a specific date instead of a frame index:
+4b. Start a segment at a date instead of a frame index:
 
-        python scripts/generate_ephemeris.py \
-            --out data/full --ephe-path ~/ephe/se1 \
-            --start-date -3101-02-18 --max-frames 100000000
+    python scripts/generate_ephemeris.py --out data/full \
+        --start-date -3101-02-18 --max-frames 100000000
 
-4c. The WHOLE timeline (very large — expect ~300 GB and a long run; do this in
-    many segments, e.g. one 600-year block at a time, and/or on the M4 Max):
+4c. The WHOLE timeline (very large — do it in many segments, e.g. one 600-year
+    block at a time, on fast SSD). Omit --max-frames to run to the end:
 
-        # omit --max-frames to run to the end of the 10,256-year timeline
-        python scripts/generate_ephemeris.py \
-            --out data/full --ephe-path ~/ephe/se1 \
-            --start-frame 0 --chunk-frames 1000000
+    python scripts/generate_ephemeris.py --out data/full \
+        --start-frame 0 --chunk-frames 1000000
 
-    Tip: resume a partial generation by setting --start-frame to the next frame
-    after the last chunk already written (chunk dirs are named by start frame).
+    Resume a partial generation by setting --start-frame to the next frame after
+    the last chunk already written (chunk dirs are named by their start frame).
 
 
--------------------------------------------------------------------------------
- PART 5 — Train the model (this actually trains and SAVES models)
--------------------------------------------------------------------------------
-The training script is turn-key. With NO store present it auto-generates a real
-one and trains immediately:
+===============================================================================
+ PART 5 — Train and SAVE the model
+===============================================================================
+The training script is turn-key. With NO store present it generates a real one
+and trains immediately, then SAVES reloadable models.
 
-    python scripts/train.py
+QUICK scale — one command, no data files, no arguments:
 
-That command (defaults) will:
-    1. generate a real ephemeris store under data/store (Moshier, no files),
-    2. build the geodesic mesh + STFNO spherical autoencoder,
-    3. train with Lion + cosine-annealing warm restarts in BF16, printing the
-       composite geodesic loss as it falls, and
-    4. SAVE checkpoints under ./checkpoints/:
-           step_XXXXXX.pt   resumable (weights + optimizer + scheduler)
-           model_latest.pt  latest self-contained model (reloadable)
-           model_final.pt   final self-contained model
+  python scripts/train.py
 
-To train against the FULL-span store you generated in Part 4 (and, if the store
-is missing, generate it with DE441 rather than Moshier):
+That will: (1) generate a real store under data/store (Moshier), (2) build the
+geodesic mesh + STFNO spherical autoencoder, (3) train with Lion + cosine-
+annealing warm restarts in BF16, printing the composite geodesic loss as it
+falls, and (4) write checkpoints under ./checkpoints/ (see APPENDIX for the exact
+filenames):
+    micro_latest.pt     resumable (weights + optimizer + scheduler)
+    model_latest.pt     latest self-contained model (reload for inference)
+    model_final.pt      final self-contained model
 
-    python scripts/train.py \
-        --store data/full --ephe-path ~/ephe/se1 \
-        --nodes 122880 --window 64 --stride 32 --batch 4 \
-        --hidden 128 --blocks 3 --modes 32 \
-        --epochs 1 --save-every 500 --checkpoints checkpoints/full
+Add the tokenizer (needed for the deep-time index in Part 6) with --quantize;
+this trains the Autoencoder + hierarchical residual VQ together and saves a
+quantized checkpoint:
+
+  python scripts/train.py --quantize
+
+FULL scale — train against the store you generated in Part 4, on the full mesh.
+(If --store is missing it will be generated first; pass --ephe-path / --jpl-file
+so that generation uses the full span, or rely on the saved config from 3.1.)
+
+  python scripts/train.py \
+      --store data/full --ephe-path ~/ephe/se1 \
+      --nodes 122880 --window 64 --stride 32 --batch 4 \
+      --hidden 128 --blocks 3 --modes 32 \
+      --quantize --epochs 1 --save-every 500 --checkpoints checkpoints/full
 
 Resume an interrupted run from the newest resumable checkpoint:
 
-    python scripts/train.py --store data/full \
-        --resume checkpoints/full/micro_latest.pt
+  python scripts/train.py --store data/full \
+      --resume checkpoints/full/micro_latest.pt
 
 Apple M4 Max full-scale notes (blueprint §1.4):
-    - Training auto-selects the MPS device on Apple Silicon.
-    - Use the full mesh: --nodes 122880.
-    - Keep BF16 mixed precision (the default) to fit the 80 GB MPS budget.
-    - The complete macro-harmonic cycle over the full timeline is a ~90-day run;
-      the two-tier checkpointing (step checkpoints here; era snapshots every 500
-      simulated years in the Trainer) makes it restartable.
+  * Training auto-selects the MPS device on Apple Silicon.
+  * Use the full mesh: --nodes 122880.
+  * Keep BF16 mixed precision (default) to fit the ~80 GB unified-memory budget.
+  * The complete macro-harmonic cycle over the full timeline is a ~90-day run;
+    step checkpoints here plus the Trainer's era snapshots make it restartable.
 
+
+===============================================================================
+ PART 6 — Build the tokenized deep-time index  (tier1/2/3 + rarity)
+===============================================================================
+build_index.py streams real ephemeris -> projects -> encodes -> quantizes to
+discrete geometric tokens (64 macro x 64 micro = 4096 leaves) -> computes the
+deep-time Rarity Index -> writes the full three-tier temporal mipmap to
+century-partitioned Parquet indexed by Uber H3:
+    tier1 = native 24 s frames
+    tier2 = hourly (150-frame) rollups
+    tier3 = daily / epochal (3600-frame) rollups + anomaly counts
+
+Requires:  pip install -e ".[train,index]"
+
+Best tokens — from the quantized model you trained in Part 5:
+
+  python scripts/build_index.py \
+      --out data/index --quantized-checkpoint checkpoints/full/model_final.pt \
+      --nodes 256 --frames 3000
+
+Other modes:
+  --checkpoint model_final.pt   a plain-AE checkpoint wrapped with a fresh RVQ
+  (neither flag)                a fresh untrained model — the full data path still
+                                runs so you can exercise indexing end to end
+
+Add --ephe-path / --jpl-file (or use the 3.1 config) to index far-past/future
+windows. The DuckDB router then routes any viewport query across tier1/2/3 by
+span and velocity (Parts 7.2, 8).
+
+
+===============================================================================
+ PART 7 — USE EVERY VISUAL
+===============================================================================
+Two browser clients and two headless surfaces. Both browser clients are served
+SAME-ORIGIN by their server (mounted at /ui/...), so there are no CORS problems
+and nothing else to host.
 
 -------------------------------------------------------------------------------
- PART 6 — Use the trained model
+ 7.1 — WebGL cosmic-weather globe   (web/index.html)
 -------------------------------------------------------------------------------
-Encode a real window into the 64-d latent manifold and emit potential/shear:
+A rotating point-cloud globe coloured by per-node geometric potential/shear.
 
-    python scripts/analyze.py \
-        --checkpoint checkpoints/full/model_final.pt \
-        --date -3101-02-18 --ephe-path ~/ephe/se1 \
-        --out web/heatmap.json
+Requires:  pip install -e ".[serve]"
 
-Serve the real field and open the WebGL globe:
+  # Serve the REAL weather field for an instant + the globe page, same origin:
+  python scripts/serve.py --date 2024-04-08T18:17 --nodes 8000 --port 8000
+  #   -> open  http://127.0.0.1:8000/ui/index.html
 
-    python scripts/serve.py --date 2024-04-08T18:17 --nodes 8000
-    # then open web/index.html  (it loads web/heatmap.json / the API)
+The page pulls its field in this order: (1) a precomputed ./heatmap.json if
+present, else (2) the live broadcast API (/heatmap, /potential), else (3) a
+synthetic fallback. So you have two ways to feed it:
 
-Any-date, any-place reading straight from geometry (no model needed):
+  A) Live from geometry (no model), as above with serve.py. Point queries too:
+       curl 'http://127.0.0.1:8000/potential?lat=48.85&lon=2.35'
 
-    kalachakra --ephe-path ~/ephe/se1 reading --date -3101-02-18 --lat 27.0 --lon 78.0
+  B) From a precomputed field written next to the page:
+       kalachakra map --date 2024-04-08T18:17 --nodes 8000 --out web/heatmap.json
+     then open http://127.0.0.1:8000/ui/index.html (served by any serve.py), or
+     open web/index.html directly from disk.
 
+  C) From the TRAINED latent model (potential/shear from the 64-d manifold):
+       python scripts/analyze.py --checkpoint checkpoints/full/model_final.pt \
+           --date 2024-04-08T18:17 --ephe-path ~/ephe/se1 --out web/heatmap.json
+     (analyze.py loads a plain, non-quantized checkpoint. Reuse the plain
+      model_final.pt from a `train.py` run without --quantize, or train once
+      without --quantize specifically for analysis/globe fields.)
+
+FULL scale: serve.py honors the saved full-span config, so a far-past date works:
+  python scripts/serve.py --date -3101-02-18 --nodes 8000 --ephe-path ~/ephe/se1
 
 -------------------------------------------------------------------------------
- COMMAND REFERENCE (backend selection)
+ 7.2 — Isomorphic transducer radar   (web/radar.html)
 -------------------------------------------------------------------------------
-  default (no flags)           Moshier backend, ~1900 BCE .. 4650 CE, no files
-  --ephe-path DIR              Swiss .se1 files in DIR (full span)      [Option A]
-  --jpl-file FILE.bsp          JPL DE441 kernel (full span)            [Option B]
+The physics-based client: a global sphere whose surface is spherical-harmonic
+topography from the latent, lit by Planckian colour temperature (rarity),
+Naka-Rushton radiant flux (magnitude), an orthonormal visible-spectrum mix (the
+four temporal bands), and a Helmholtz-Hodge + Line-Integral-Convolution flow
+shell (the vector field), with a diurnal terminator sweep. Dual viewport +
+Sidebar Inspector.
 
-  These flags are accepted by:  kalachakra (CLI),  scripts/generate_ephemeris.py,
-  scripts/train.py,  scripts/analyze.py.
+Requires:  pip install -e ".[index,serve]"   (+ ".[cluster]" for HDBSCAN labels)
+
+  # 1) Build an index (Part 6). 2) Serve the radar API + page, same origin:
+  python scripts/serve_radar.py --index data/index --port 8000
+  #   -> open  http://127.0.0.1:8000/ui/radar.html
+
+Inside the page:
+  * It streams binary field frames over the WebSocket (ws://HOST:PORT/stream);
+    if the socket is down it renders a synthetic field so the page always draws.
+  * DOUBLE-CLICK any point -> Sidebar Inspector: it calls /telemetry and shows
+    the raw numerics (timestamp, rarity percentile, VQ archetype, the four band
+    energies, each body's Cartesian unit vector + radial distance + angular
+    velocity, applying/separating, eclipse state).
+  * SHIFT + DOUBLE-CLICK -> the regional micro-canvas: it calls /microgrid and
+    computes a continuous-LOD weather field over just that bounding box (§4).
+
+The same server also answers, for scripting or a custom UI:
+  * POST /inspect   tier-routed rows + band gains + mean latent + manifold
+                    clusters (cluster_id per row, n_clusters, method)
+  * POST /news      the rarest events in a viewport as textless geometric news
+                    cards (body vectors, applying/separating, dominant aspect,
+                    rarity percentile — no interpreted text)
+  * GET  /health    which tiers are populated
+See Part 8 for curl examples.
+
+-------------------------------------------------------------------------------
+ 7.3 — The isomorphic transducer itself   (Python, losslessly invertible)
+-------------------------------------------------------------------------------
+The rendering is an objective sensory converter, not decoration: the optical
+state is a lossless storage medium for the latent field. You can round-trip it in
+Python to machine precision.
+
+Requires:  pip install -e ".[transducer]"   (scipy, for the SH topography)
+
+  python - <<'PY'
+  import numpy as np
+  from kalachakra.transducer.state import IsomorphicTransducer
+  t = IsomorphicTransducer()
+  latent = np.random.default_rng(0).normal(size=64)          # a 64-d latent
+  bands  = np.abs(np.random.default_rng(1).normal(size=4))   # 4 temporal bands
+  optical = t.transduce(latent=latent, band_energies=bands, rarity=0.7, potential=1.3)
+  back    = t.invert(optical)
+  print("latent recovered to:", np.max(np.abs(back["latent"] - latent)))  # ~1e-15
+  PY
+
+The web radar (7.2) mirrors this exact math in GLSL/JS; the Python transducer is
+its oracle. See docs/06_isomorphic_transducer.md for the full mapping table and
+the invertibility bounds.
+
+-------------------------------------------------------------------------------
+ 7.4 — gRPC control plane   (serve_grpc.py)
+-------------------------------------------------------------------------------
+The strongly typed counterpart to the REST/WebSocket app — the same engine, the
+CosmicWeather service (Health / Inspect / Telemetry). Contract:
+proto/kalachakra.proto (committed stubs in kalachakra.serving.grpc_gen).
+
+Requires:  pip install -e ".[grpc,index]"
+
+  python scripts/serve_grpc.py --index data/index --port 50051
+
+  python - <<'PY'
+  import grpc
+  from kalachakra.serving.grpc_gen import kalachakra_pb2 as pb, kalachakra_pb2_grpc as pbg
+  stub = pbg.CosmicWeatherStub(grpc.insecure_channel("127.0.0.1:50051"))
+  print(stub.Health(pb.HealthRequest()))
+  r = stub.Inspect(pb.InspectRequest(min_lat=-90, min_lng=-180, max_lat=90,
+      max_lng=180, start="2000-01-01T12:00:00Z", end="2000-01-01T15:00:00Z", limit=20))
+  print(r.tier, r.n_rows, dict(r.band_gains))
+  PY
+
+(To change the contract, edit proto/kalachakra.proto and regenerate the stubs —
+the command is in that file's header. grpcio-tools is in the [grpc] extra.)
+
+
+===============================================================================
+ PART 8 — Query and analyze without a browser
+===============================================================================
+Trained-model window analysis (latent potential/shear + singularity scan; writes
+a globe field with --out):
+
+  python scripts/analyze.py --checkpoint checkpoints/full/model_final.pt \
+      --date 2024-04-08T18:17 --window 64 --top 8 --out web/heatmap.json
+
+REST viewport queries over the index (serve_radar.py running on :8000):
+
+  # rarest events in a viewport as textless news cards:
+  curl -s http://127.0.0.1:8000/news -H 'Content-Type: application/json' -d '{
+    "min_lat":-90,"min_lng":-180,"max_lat":90,"max_lng":180,
+    "start":"2024-01-01T00:00:00Z","end":"2024-02-01T00:00:00Z","top":8}'
+
+  # tier-routed rows + manifold clusters:
+  curl -s http://127.0.0.1:8000/inspect -H 'Content-Type: application/json' -d '{
+    "min_lat":20,"min_lng":70,"max_lat":30,"max_lng":80,
+    "start":"2024-01-01T00:00:00Z","end":"2024-01-02T00:00:00Z","limit":50}'
+
+  # raw constituents at one coordinate (the Sidebar Inspector payload):
+  curl -s http://127.0.0.1:8000/telemetry -H 'Content-Type: application/json' -d '{
+    "lat":27.0,"lng":78.0,"datetime":"2024-04-08T18:17:00Z"}'
+
+Direct DuckDB access to the Parquet index (no server):
+
+  python - <<'PY'
+  from kalachakra.storage.parquet_store import ParquetTokenStore
+  from kalachakra.storage.duckdb_engine import DuckDBEngine, ViewportQuery
+  eng = DuckDBEngine(ParquetTokenStore("data/index"))
+  q = ViewportQuery(-90,-180,90,180, 2460310.5, 2460320.5, rarity_min=0.9, limit=20)
+  for r in eng.query(q): print(r["jd"], r["lat"], r["lng"], r.get("rarity"))
+  PY
+
+
+===============================================================================
+ PART 9 — Full-scale checklist (disk, MPS, the ~90-day cycle)
+===============================================================================
+Disk budget (put it all on a fast SSD):
+    ephemeris data files      ~40 MB (.se1)      or  ~2.6 GB (DE441 .bsp)
+    generated G(t) matrix      up to ~300 GB for the full timeline
+    checkpoints                a few GB
+    tokenized Parquet index    depends on nodes x frames indexed
+
+Recommended full-scale sequence:
+    1.  python scripts/setup_full_span.py                     # Part 3.1
+    2.  kalachakra reading --date -3101-02-18                 # Part 3.4 verify
+    3.  python scripts/generate_ephemeris.py --out data/full \
+            --start-frame 0 --chunk-frames 1000000           # Part 4c (segmented)
+    4.  python scripts/train.py --store data/full --quantize \
+            --nodes 122880 --hidden 128 --blocks 3 --modes 32 \
+            --window 64 --stride 32 --save-every 500 \
+            --checkpoints checkpoints/full                    # Part 5 (MPS, ~90 d)
+    5.  python scripts/build_index.py --out data/index \
+            --quantized-checkpoint checkpoints/full/model_final.pt \
+            --nodes 122880                                    # Part 6
+    6.  python scripts/serve_radar.py --index data/index      # Part 7.2 radar
+        python scripts/serve.py --date -3101-02-18 --nodes 8000   # Part 7.1 globe
+        python scripts/serve_grpc.py --index data/index          # Part 7.4 gRPC
+
+Interrupted? Resume training from checkpoints/full/micro_latest.pt (Part 5).
+Generation resumes by advancing --start-frame (Part 4c).
+
+
+===============================================================================
+ COMMAND REFERENCE
+===============================================================================
+Backend selection (accepted by kalachakra, generate_ephemeris, train, analyze,
+build_index, serve; setup_full_span writes a config that makes them automatic):
+    (no flags)              Moshier backend, ~1900 BCE .. 4650 CE, no files
+    --ephe-path DIR         Swiss .se1 files in DIR (full span)      [Option A]
+    --jpl-file FILE.bsp     JPL DE441 kernel      (full span)        [Option B]
+
+kalachakra <cmd>            reading | map | scan   (real geometry, no model)
+    reading  --date --lat --lon --orb --json
+    map      --date --nodes --orb --out
+    scan     --start --end --step-hours --orb --top
+
+scripts/setup_full_span.py  --dry-run --dest --config-path --configure-only
+                            --mirror-all --base-url --jpl --no-verify --no-config
+scripts/generate_ephemeris.py --out --start-date|--start-frame --chunk-frames
+                            --max-frames --ephe-path --jpl-file
+scripts/train.py            --store --checkpoints --start-date --frames --quantize
+                            --nodes --hidden --latent --modes --blocks --knn
+                            --window --stride --batch --workers --epochs
+                            --max-steps --lr --log-every --save-every --resume
+                            --ephe-path --jpl-file
+scripts/build_index.py      --out --quantized-checkpoint --checkpoint --nodes
+                            --start-date --frames --window --ephe-path --jpl-file
+scripts/analyze.py          --checkpoint --date --window --top --sigma --out
+                            --ephe-path --jpl-file
+scripts/serve.py            --date --nodes --frame --fields --demo --host --port
+                            --ephe-path --jpl-file     (globe API + /ui/index.html)
+scripts/serve_radar.py      --index --host --port      (radar API + /ui/radar.html)
+scripts/serve_grpc.py       --index --host --port      (gRPC CosmicWeather)
+scripts/demo_pipeline.py    (no args) the full data chain end to end
+
+
+===============================================================================
+ APPENDIX
+===============================================================================
+Outputs and where they land
+    data/store, data/full      G(t) BF16+delta memmap chunks (generate/train)
+    checkpoints/               model checkpoints (below)
+    data/index/tier{1,2,3}/    century-partitioned Parquet token index
+    web/heatmap.json           precomputed globe field (kalachakra map / analyze)
+    ~/.kalachakra/ephe         downloaded .se1 (setup default --dest)
+    ./.kalachakra.json         saved backend config (setup writes it)
+
+Checkpoint filenames (under --checkpoints)
+    micro_latest.pt            newest RESUMABLE (weights+optimizer+scheduler)
+    micro_<step>.pt            periodic resumable snapshots
+    model_latest.pt            newest self-contained model (for inference)
+    model_final.pt             final self-contained model
+    model_step_<step>.pt       periodic self-contained snapshots
+    (with --quantize these self-contained files hold the AE + trained RVQ; pass
+     model_final.pt to build_index.py --quantized-checkpoint)
+    Use micro_latest.pt for --resume; use model_final.pt for analyze/build_index.
+
+Default ports
+    serve.py        8000   (globe: /ui/index.html, /potential, /heatmap)
+    serve_radar.py  8000   (radar: /ui/radar.html, /inspect, /news, /microgrid,
+                            /telemetry, /health, /stream WebSocket)
+    serve_grpc.py  50051   (gRPC CosmicWeather: Health, Inspect, Telemetry)
+    serve.py and serve_radar.py both default to 8000 — run them on different
+    ports if you want both up at once (--port).
+
+Troubleshooting
+    "outside range" / far dates fail  -> the backend is Moshier; do Part 3.
+    setup download 404 / blocked      -> download manually (3.2), then
+                                         setup_full_span.py --dest DIR --configure-only
+    globe/radar shows "synthetic"     -> the API/WebSocket isn't reachable; open
+                                         the page from the SAME server (/ui/...)
+                                         and check the API/WS boxes match the port.
+    analyze.py can't load a checkpoint-> it wants a PLAIN (non-quantized) model;
+                                         use a model_final.pt from train.py run
+                                         WITHOUT --quantize, or use build_index.py
+                                         for quantized checkpoints.
+    no HDBSCAN clusters in /inspect   -> pip install -e ".[cluster]" (a
+                                         dependency-free fallback runs otherwise).
+    verify everything                 -> pytest -q   (153 tests)
 ===============================================================================

@@ -185,6 +185,30 @@ def test_microgrid_and_telemetry(tmp_path):
                for b in tel["entities"])
 
 
+def test_cors_enabled(tmp_path):
+    _build_index(tmp_path / "idx")
+    client = TestClient(create_app(str(tmp_path / "idx")))
+    r = client.get("/health", headers={"Origin": "http://example.com"})
+    assert r.headers.get("access-control-allow-origin") == "*"
+
+
+def test_web_ui_mounts_and_serves_visuals(tmp_path):
+    from pathlib import Path
+
+    from kalachakra.serving.webui import default_web_dir, mount_web_ui
+    web = default_web_dir()
+    if not web.is_dir():                       # pragma: no cover
+        pytest.skip("repo web/ dir not present")
+    _build_index(tmp_path / "idx")
+    app = create_app(str(tmp_path / "idx"))
+    assert mount_web_ui(app, web) == web
+    client = TestClient(app)
+    # Both visuals are served same-origin, so the browser needs no CORS at all.
+    assert client.get("/ui/radar.html").status_code == 200
+    assert client.get("/ui/index.html").status_code == 200
+    assert Path(web, "radar.html").exists()
+
+
 def test_websocket_streams_binary(tmp_path):
     _build_index(tmp_path / "idx")
     client = TestClient(create_app(str(tmp_path / "idx")))

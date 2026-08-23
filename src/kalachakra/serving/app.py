@@ -149,6 +149,8 @@ def create_app(store_root: str):
     _require()
 
     app = FastAPI(title="Kalachakra Cosmic Weather Radar", version="0.3.0")
+    from .webui import enable_cors
+    enable_cors(app)
     store = ParquetTokenStore(store_root)
     engine = DuckDBEngine(store)
     # Honor a saved full-span backend so live micro-grid / telemetry queries reach
@@ -168,7 +170,8 @@ def create_app(store_root: str):
     def health() -> dict:
         return {"status": "ok",
                 "tier1": store.has_tier("tier1"),
-                "tier2": store.has_tier("tier2")}
+                "tier2": store.has_tier("tier2"),
+                "tier3": store.has_tier("tier3")}
 
     @app.post("/inspect", response_model=InspectResponse)
     def inspect(req: InspectRequest) -> "InspectResponse":

@@ -52,6 +52,8 @@ def create_app(engine: BroadcastEngine, frame: int = 0):
         raise RuntimeError("fastapi is required for the REST broadcast app") from exc
 
     app = FastAPI(title="Kalachakra Cosmic Weather Broadcast", version="0.1.0")
+    from .webui import enable_cors
+    enable_cors(app)
 
     @app.get("/potential")
     def potential(lat: float, lon: float) -> dict:

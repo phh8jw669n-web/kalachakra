@@ -51,8 +51,13 @@ def main(argv=None) -> int:
               file=sys.stderr)
 
     app = create_app(str(args.index))
+    from kalachakra.serving.webui import mount_web_ui
+    web = mount_web_ui(app, Path(__file__).resolve().parents[1] / "web")
     print(f"Kalachakra radar on http://{args.host}:{args.port}  "
           f"(ws://{args.host}:{args.port}/stream)")
+    if web is not None:
+        print(f"Open the isomorphic radar at  "
+              f"http://{args.host}:{args.port}/ui/radar.html")
     uvicorn.run(app, host=args.host, port=args.port)
     return 0
 

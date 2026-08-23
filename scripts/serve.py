@@ -23,7 +23,6 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from kalachakra import constants as C                              # noqa: E402
 from kalachakra.grid.geodesic import fibonacci_sphere             # noqa: E402
 from kalachakra.serving.api import create_app                     # noqa: E402
 from kalachakra.serving.broadcast import BroadcastEngine          # noqa: E402
@@ -89,7 +88,11 @@ def main(argv=None) -> int:
         return 2
 
     app = create_app(engine, frame=args.frame)
+    from kalachakra.serving.webui import mount_web_ui
+    web = mount_web_ui(app, Path(__file__).resolve().parents[1] / "web")
     print(f"Serving Kalachakra broadcast on http://{args.host}:{args.port}")
+    if web is not None:
+        print(f"Open the WebGL globe at  http://{args.host}:{args.port}/ui/index.html")
     uvicorn.run(app, host=args.host, port=args.port)
     return 0
 
