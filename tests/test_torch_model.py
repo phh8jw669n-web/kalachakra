@@ -75,6 +75,22 @@ def test_backward_and_lion_step_change_weights():
     assert set(parts) >= {"geodesic", "spectral", "total"}
 
 
+def test_spectral_loss_accepts_bfloat16():
+    # Regression: under autocast the loss receives bf16 tensors; rfft must not be
+    # called on bf16 (errors on MPS). The loss casts to float32 internally.
+    from kalachakra.losses.geometric import spectral_harmonic_loss
+    seq = torch.randn(1, 16, 8, 5, dtype=torch.bfloat16)
+    out = spectral_harmonic_loss(seq, seq)
+    assert torch.isfinite(out) and out.dtype == torch.float32
+
+
+def test_composite_loss_accepts_bfloat16():
+    crit = CompositeGeodesicLoss()
+    field = torch.randn(1, 16, 8, 10, 5, dtype=torch.bfloat16)
+    total, parts = crit(field, field)
+    assert torch.isfinite(total)
+
+
 def test_composite_loss_zero_floor_for_identical():
     crit = CompositeGeodesicLoss()
     # Build a valid field with unit sub-vectors.

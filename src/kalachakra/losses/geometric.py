@@ -43,11 +43,16 @@ def geodesic_reconstruction_loss(recon: torch.Tensor, target: torch.Tensor,
 
 def spectral_harmonic_loss(recon_seq: torch.Tensor, target_seq: torch.Tensor,
                            time_dim: int = 1) -> torch.Tensor:
-    """Amplitude + phase divergence of the temporal spectrum (via rfft)."""
-    r = torch.fft.rfft(recon_seq, dim=time_dim)
-    t = torch.fft.rfft(target_seq, dim=time_dim)
-    amp = (r.abs() - t.abs()).abs().mean()
-    phase = _wrap(r.angle() - t.angle()).abs().mean()
+    """Amplitude + phase divergence of the temporal spectrum (via rfft).
+
+    FFT is unsupported in bf16/fp16 (and errors on MPS), so the transform runs in
+    float32 with autocast disabled, then the result flows back to the caller.
+    """
+    with torch.autocast(device_type=recon_seq.device.type, enabled=False):
+        r = torch.fft.rfft(recon_seq.float(), dim=time_dim)
+        t = torch.fft.rfft(target_seq.float(), dim=time_dim)
+        amp = (r.abs() - t.abs()).abs().mean()
+        phase = _wrap(r.angle() - t.angle()).abs().mean()
     return amp + phase
 
 

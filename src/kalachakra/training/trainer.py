@@ -104,10 +104,13 @@ class Trainer:
         self.optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=self.device.type, dtype=self._amp_dtype):
             recon, _z = self.model(e)
-            # Reshape channel axis back to (..., B, 5) for the geometric loss.
-            recon_f = recon.unflatten(-1, (-1, 5))
-            target_f = e.unflatten(-1, (-1, 5))
-            total, parts = self.criterion(recon_f, target_f)
+
+        # Compute the loss in float32, outside autocast: the geometric loss uses
+        # FFTs and arccos, which are unsupported or imprecise in bf16/fp16 (and
+        # error on MPS). This is the standard mixed-precision pattern.
+        recon_f = recon.float().unflatten(-1, (-1, 5))
+        target_f = e.float().unflatten(-1, (-1, 5))
+        total, parts = self.criterion(recon_f, target_f)
 
         total.backward()
         if self.cfg.grad_clip:
