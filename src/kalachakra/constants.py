@@ -53,6 +53,12 @@ HORIZON_ADVANCE_DEG_PER_FRAME: float = 360.0 / SIDEREAL_DAY_SECONDS * VIGHATIKA_
 #: (Level-5 hierarchical spatial index, blueprint §2.2).
 N_SPATIAL_NODES: int = 122_880
 
+#: Mean Earth radius in astronomical units (6371.0088 km / 149597870.7 km/AU).
+#: Sets the observer's offset from geocentre for the topocentric parallax
+#: correction in the projection (§3.1). A spherical Earth is used — the ~0.3 %
+#: polar flattening is far below the field's other approximations.
+EARTH_RADIUS_AU: float = 6_371.0088 / 149_597_870.7
+
 # ---------------------------------------------------------------------------
 # 2.3  Global state vector definition
 # ---------------------------------------------------------------------------

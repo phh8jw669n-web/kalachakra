@@ -57,3 +57,35 @@ def test_projection_is_deterministic():
     a = spatial.project(frame, 2451545.0, grid)
     b = spatial.project(frame, 2451545.0, grid)
     assert np.array_equal(a, b)
+
+
+def test_topocentric_parallax_localizes_the_2024_eclipse():
+    """The projection is topocentric: lunar parallax makes the Sun-Moon sky
+    separation vary by ~1 deg across the globe (it would be constant if the field
+    were geocentric), and the point of closest alignment falls on the real
+    2024-04-08 totality track over northern Mexico."""
+    import pytest
+
+    from kalachakra.ephemeris import global_state
+    from kalachakra.ephemeris.calendar import parse_datetime
+    if not global_state.ephemeris_available():
+        pytest.skip("pyswisseph not installed")
+
+    jd = parse_datetime("2024-04-08T18:17:00Z")
+    g = global_state.global_state_frame(jd)
+    grid = geodesic.fibonacci_sphere(6000)
+    field = spatial.project(g, jd, grid)
+
+    # Sun (row 0) vs Moon (row 1) local sky directions -> angular separation.
+    sun, moon = field[:, 0, :3], field[:, 1, :3]
+    sep = np.degrees(np.arccos(np.clip(np.sum(sun * moon, axis=1), -1.0, 1.0)))
+
+    # Geocentrically this separation is identical for every observer; only
+    # topocentric parallax makes it vary. ~0.95 deg lunar parallax -> ~1 deg range.
+    assert sep.max() - sep.min() > 0.5
+    # Somewhere on Earth the disks align to near-zero (the totality track).
+    assert sep.min() < 0.05
+    # ...and that somewhere is over the Americas in daylight (real 2024 track).
+    i = int(sep.argmin())
+    assert 10.0 < np.degrees(grid.lat[i]) < 40.0
+    assert -120.0 < np.degrees(grid.lon[i]) < -90.0

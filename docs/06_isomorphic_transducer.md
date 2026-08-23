@@ -53,11 +53,24 @@ advection speed is bound to the temporal derivative (stations → stagnation).
 
 ## Tensor → topography (Page 4)
 
-The 64 latent dims are exactly degrees l=0..7 of the real spherical harmonics
-((7+1)²=64). The Earth mesh height is `Σ cᵢ Yᵢ(θ,φ)`; because the basis is
-orthonormal, quadrature analysis inverts the extrusion back to the exact
-coefficients. Crests, trenches, and nodal zero-crossings emerge only from the
-wave equations — no templates.
+The 64 latent dims are mapped onto the first 64 real spherical harmonics
+(degrees l=0..7, since (7+1)²=64). The Earth mesh height is `Σ cᵢ Yᵢ(θ,φ)`;
+because the basis is orthonormal, quadrature analysis inverts the extrusion back
+to the exact coefficients. Crests, trenches, and nodal zero-crossings emerge only
+from the wave equations — no templates.
+
+**What this claim is, and is not.** The mapping (latent index i → SH mode
+(l,m), in order) is a **linear bijection**, which is why the round trip is exact
+to machine precision — and lossless invertibility is the only property Page 4
+requires. It is *not* a claim that latent coordinate i is physically a degree-l
+harmonic: the autoencoder's axes are learned and opaque, so the topography is a
+faithful, invertible **encoding** of the latent, not a physical map of the field.
+(A natural future variant is to define the latent *as* the SH coefficients of the
+real field E(t,s) — that would make the axes interpretable and invertibility
+free. We deliberately keep the learned 64-d manifold here, because the rest of
+the system — energy signatures, HDBSCAN manifold clustering, the residual-VQ
+tokenizer, and the deep-time Rarity Index — is built on that learned latent per
+the architecture, not on a fixed transform.)
 
 ## Gestalt + Sidebar Inspector (Page 5)
 

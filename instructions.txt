@@ -27,7 +27,7 @@ tension, latent norms, rarity, cluster labels) — never interpreted text.
             3.3 OPTION B — JPL DE441 .bsp kernels (the literal DE441)
             3.4 Verify the backend reaches 3102 BCE
             3.5 Timeline anchors
-  PART 4  Generate the ephemeris matrix G(t)  (~300 GB, segmented)
+  PART 4  Generate the ephemeris matrix G(t)  (~1.9 TB, segmented)
   PART 5  Train and SAVE the model  (turn-key + full-scale on M4 Max)
   PART 6  Build the tokenized deep-time index (tier1/2/3 + rarity)
   PART 7  USE EVERY VISUAL
@@ -36,7 +36,7 @@ tension, latent norms, rarity, cluster labels) — never interpreted text.
             7.3 The isomorphic transducer itself      (Python, lossless)
             7.4 gRPC control plane                    (serve_grpc.py)
   PART 8  Query and analyze without a browser
-  PART 9  Full-scale checklist (disk, MPS, the ~90-day cycle)
+  PART 9  Full-scale checklist (disk, memory, the honest compute story)
   COMMAND REFERENCE
   APPENDIX  Outputs, ports, checkpoints, troubleshooting
 
@@ -49,15 +49,19 @@ visuals are identical; only the data span and the compute differ.
 
   (Q) QUICK SCALE — Moshier backend, NO data files.
       The Swiss Ephemeris "Moshier" analytic backend ships inside pyswisseph and
-      needs no downloads, but is only valid ~1900 BCE .. 4650 CE. That already
-      covers all of recorded history and the present. Trains in minutes on a
-      laptop CPU. Use this to learn the whole flow and see every visual today.
+      needs no downloads. Its real valid range (measured, not guessed) is JD
+      625000.5 .. 2818000.5, i.e. ~3000 BCE .. ~3000 CE — all of recorded history
+      and the present. Trains in minutes on a laptop CPU. Use this to learn the
+      whole flow and see every visual today.
 
   (F) FULL SCALE — the entire 10,256-year timeline.
       3102 BCE and the far future fall OUTSIDE Moshier, so you plug a long-range
       ephemeris (Swiss .se1 / DE431, or raw JPL DE441) into the Swiss Ephemeris
-      (Part 3). The full G(t) matrix is ~13.4 billion 24-second frames (~300 GB)
-      and the full macro-harmonic training cycle is a ~90-day run on an M4 Max.
+      (Part 3). The full G(t) matrix is ~13.4 billion 24-second frames — about
+      1.9 TB as written (raw BF16 + delta; entropy coding, not yet enabled, would
+      shrink it severalfold toward the ~300 GB target). The full training cycle
+      is a very long run on an M4 Max — the heaviest, least-tested part of the
+      project; budget accordingly and see the honest notes in Part 9.
 
 Everything below is written so the SAME commands work at both scales: add
 `--ephe-path` / `--jpl-file` (or run the one-command setup in 3.1, after which no
@@ -245,15 +249,25 @@ Programmatic check:
 -------------------------------------------------------------------------------
  3.5 — Timeline anchors you will use
 -------------------------------------------------------------------------------
-  * Frame 0            = JD 588465.5 = 3102-02-18 BCE 00:00 UTC (Kali Yuga epoch)
+  * Frame 0            = JD 588465.5 = 3102-02-18 BCE 00:00 UT (Kali Yuga epoch)
   * Astronomical date  = -3101-02-18
   * End                = 7154 CE  (10,256 years later)
   * Step               = 24 s (1 Vighatika)
-  * Total frames       = ~13.49 billion  (~300 GB as BF16 + delta)
+  * Total frames       = ~13.49 billion  (~1.9 TB as BF16 + delta, uncompressed)
+
+  A note on the deep past (honest limitation): the frame time is UT, and
+  pyswisseph applies its own Delta-T model to place bodies. But how much the
+  Earth had rotated that long ago (Delta-T itself) is only known to ~1-2 hours
+  around 3102 BCE. Geocentric quantities (where bodies are in the sky relative to
+  each other, eclipses, conjunctions) stay accurate across all 10,256 years;
+  quantities tied to a SPECIFIC point on Earth's surface (which node sees a body
+  on its horizon) inherit that rotation uncertainty and can smear by tens of
+  degrees of longitude in the far past. This is physics, not a bug — treat deep
+  past node-localization as approximate.
 
 
 ===============================================================================
- PART 4 — Generate the ephemeris matrix G(t)   (~300 GB, segmented)
+ PART 4 — Generate the ephemeris matrix G(t)   (~1.9 TB, segmented)
 ===============================================================================
 The generator writes BF16 + delta-encoded, memory-mapped chunk files. At QUICK
 scale you can skip this — train.py auto-generates a small store for you. For FULL
@@ -323,12 +337,27 @@ Resume an interrupted run from the newest resumable checkpoint:
   python scripts/train.py --store data/full \
       --resume checkpoints/full/micro_latest.pt
 
-Apple M4 Max full-scale notes (blueprint §1.4):
-  * Training auto-selects the MPS device on Apple Silicon.
-  * Use the full mesh: --nodes 122880.
-  * Keep BF16 mixed precision (default) to fit the ~80 GB unified-memory budget.
-  * The complete macro-harmonic cycle over the full timeline is a ~90-day run;
-    step checkpoints here plus the Trainer's era snapshots make it restartable.
+Apple M4 Max full-scale notes (blueprint §1.4) — read the honest caveats:
+  * Training auto-selects the MPS device on Apple Silicon. Master weights and the
+    Lion optimizer state are FP32; only the forward pass runs in BF16 (autocast),
+    which is the correct pattern (no precision stall over long runs).
+  * The full mesh (--nodes 122880) with a wide window and hidden=128 produces
+    very large activation tensors — on the order of gigabytes EACH, several per
+    FNO block, retained through backprop. The config above can exceed the unified
+    memory budget and OOM. If it does, reduce first: smaller --window, fewer
+    --blocks, smaller --hidden, or train on a node subsample per step. Treat the
+    exact knobs as something you tune to your machine, not a guaranteed recipe.
+  * Time: iterating every 24 s frame sequentially is ~10^8 optimizer steps per
+    epoch. At realistic MPS step times that is far longer than a casual estimate
+    suggests (think seasons-to-years for a full sequential pass, not weeks).
+    Adjacent 24 s frames are nearly identical, so uniform sequential sampling is
+    wasteful. The practical approach is to KEEP the ~1.9 TB archive as the
+    queryable product and TRAIN on a representative sample of it (stratify over
+    orbital phase / time rather than walking every frame). The docs deliberately
+    stop short of quoting a single wall-clock number, because an honest one
+    depends entirely on your sampling strategy and hardware.
+  * Restartable: step checkpoints here plus the Trainer's era snapshots let you
+    stop and resume at any point.
 
 
 ===============================================================================
@@ -355,6 +384,26 @@ Other modes:
   (neither flag)                a fresh untrained model — the full data path still
                                 runs so you can exercise indexing end to end
 
+The command above is the DENSE build: it writes every (frame, node) to tier1 and
+holds the run in memory. That is fine for bounded windows (the example is
+3000 frames x 256 nodes), but it does NOT scale — a dense tier1 over the full
+122,880-node mesh and 13.4 billion frames is ~10^15 rows and is not storable.
+
+FULL-SCALE build — sparse + streaming (this is the path that actually scales):
+
+  python scripts/build_index.py \
+      --out data/index --quantized-checkpoint checkpoints/full/model_final.pt \
+      --nodes 122880 --frames 1000000 --rarity-min 0.9
+
+--rarity-min > 0 switches on a two-pass, bounded-memory build: pass 1 accumulates
+the deep-time token distribution, pass 2 scores every frame's rarity and STREAMS
+writes, keeping only the rare rows (rarity >= the threshold) in the fine tiers
+(tier1 native, tier2 hourly) while tier3 (daily) stays dense as the always-there
+base layer. That is exactly the premise of the Rarity Index — the rare moments
+are the payload — so the index stays storable at any scale. Memory is bounded by
+one rollup block (--block-days), not by the timeline length. Tune --rarity-min up
+for a smaller, rarer index; down for a fuller one.
+
 Add --ephe-path / --jpl-file (or use the 3.1 config) to index far-past/future
 windows. The DuckDB router then routes any viewport query across tier1/2/3 by
 span and velocity (Parts 7.2, 8).
@@ -366,6 +415,13 @@ span and velocity (Parts 7.2, 8).
 Two browser clients and two headless surfaces. Both browser clients are served
 SAME-ORIGIN by their server (mounted at /ui/...), so there are no CORS problems
 and nothing else to host.
+
+The per-node field is TOPOCENTRIC: each observer sees each body from Earth's
+surface, not the geocentre, so lunar parallax (~1 deg) is resolved. Concretely,
+the globe localizes an eclipse to its real ground track instead of glowing the
+same across the whole hemisphere — e.g. for 2024-04-08 the point of closest
+Sun-Moon alignment lands over northern Mexico, on the actual totality path
+(verified in tests/test_projection.py).
 
 -------------------------------------------------------------------------------
  7.1 — WebGL cosmic-weather globe   (web/index.html)
@@ -521,13 +577,15 @@ Direct DuckDB access to the Parquet index (no server):
 
 
 ===============================================================================
- PART 9 — Full-scale checklist (disk, MPS, the ~90-day cycle)
+ PART 9 — Full-scale checklist (disk, memory, and the honest compute story)
 ===============================================================================
 Disk budget (put it all on a fast SSD):
     ephemeris data files      ~40 MB (.se1)      or  ~2.6 GB (DE441 .bsp)
-    generated G(t) matrix      up to ~300 GB for the full timeline
+    generated G(t) matrix      ~1.9 TB for the full timeline (uncompressed
+                               BF16+delta; less if you generate only segments)
     checkpoints                a few GB
-    tokenized Parquet index    depends on nodes x frames indexed
+    tokenized Parquet index    small if you use --rarity-min (sparse); the dense
+                               build does NOT scale to the full mesh (Part 6)
 
 Recommended full-scale sequence:
     1.  python scripts/setup_full_span.py                     # Part 3.1
@@ -537,13 +595,21 @@ Recommended full-scale sequence:
     4.  python scripts/train.py --store data/full --quantize \
             --nodes 122880 --hidden 128 --blocks 3 --modes 32 \
             --window 64 --stride 32 --save-every 500 \
-            --checkpoints checkpoints/full                    # Part 5 (MPS, ~90 d)
+            --checkpoints checkpoints/full                    # Part 5 (tune to fit)
     5.  python scripts/build_index.py --out data/index \
             --quantized-checkpoint checkpoints/full/model_final.pt \
-            --nodes 122880                                    # Part 6
+            --nodes 122880 --rarity-min 0.9                   # Part 6 (SPARSE!)
     6.  python scripts/serve_radar.py --index data/index      # Part 7.2 radar
         python scripts/serve.py --date -3101-02-18 --nodes 8000   # Part 7.1 globe
         python scripts/serve_grpc.py --index data/index          # Part 7.4 gRPC
+
+Honest expectations at full scale (do not skip):
+  * Step 4 (train) can OOM at these knobs — reduce --window/--blocks/--hidden or
+    subsample nodes to fit your memory, and expect a long run; there is no single
+    honest wall-clock number (Part 5). Consider training on a stratified SAMPLE
+    of the archive rather than every sequential frame.
+  * Step 5 MUST use --rarity-min at the full mesh; a dense build is unstorable.
+  * Deep-past node-localization is approximate (Delta-T uncertainty, Part 3.5).
 
 Interrupted? Resume training from checkpoints/full/micro_latest.pt (Part 5).
 Generation resumes by advancing --start-frame (Part 4c).
@@ -554,7 +620,7 @@ Generation resumes by advancing --start-frame (Part 4c).
 ===============================================================================
 Backend selection (accepted by kalachakra, generate_ephemeris, train, analyze,
 build_index, serve; setup_full_span writes a config that makes them automatic):
-    (no flags)              Moshier backend, ~1900 BCE .. 4650 CE, no files
+    (no flags)              Moshier backend, ~3000 BCE .. 3000 CE, no files
     --ephe-path DIR         Swiss .se1 files in DIR (full span)      [Option A]
     --jpl-file FILE.bsp     JPL DE441 kernel      (full span)        [Option B]
 
@@ -573,7 +639,9 @@ scripts/train.py            --store --checkpoints --start-date --frames --quanti
                             --max-steps --lr --log-every --save-every --resume
                             --ephe-path --jpl-file
 scripts/build_index.py      --out --quantized-checkpoint --checkpoint --nodes
-                            --start-date --frames --window --ephe-path --jpl-file
+                            --start-date --frames --window --rarity-min
+                            --block-days --ephe-path --jpl-file
+                            (--rarity-min > 0 = sparse streaming full-scale build)
 scripts/analyze.py          --checkpoint --date --window --top --sigma --out
                             --ephe-path --jpl-file
 scripts/serve.py            --date --nodes --frame --fields --demo --host --port

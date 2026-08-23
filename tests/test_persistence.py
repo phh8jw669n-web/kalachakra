@@ -148,6 +148,43 @@ def test_tier3_daily_rollups_written_and_routed(tmp_path):
     engine.close()
 
 
+def test_sparse_streaming_build_keeps_only_rare_rows(tmp_path):
+    """Full-scale path: --rarity-min streams a two-pass build whose fine tiers
+    (tier1/tier2) are rarity-thresholded while tier3 stays dense — so the index
+    stays storable at scale instead of writing every frame x node."""
+    pytest.importorskip("torch")
+    from kalachakra.ephemeris import global_state
+    if not global_state.ephemeris_available():
+        pytest.skip("pyswisseph not installed")
+
+    bi = _load_build_index()
+    out = tmp_path / "sparse"
+    nodes, frames, rmin = 24, 200, 0.5
+    rc = bi.main(["--out", str(out), "--nodes", str(nodes), "--frames", str(frames),
+                  "--rarity-min", str(rmin)])
+    assert rc == 0
+
+    import glob
+
+    import duckdb
+
+    from kalachakra.storage.parquet_store import ParquetTokenStore
+    store = ParquetTokenStore(out)
+    assert store.has_tier("tier1") and store.has_tier("tier3")
+
+    dense = frames * nodes
+    t1 = glob.glob(str(store._tier_dir("tier1")) + "/**/*.parquet", recursive=True)
+    n_t1, min_rar = duckdb.sql(
+        f"SELECT count(*), min(rarity) FROM read_parquet({t1!r})").fetchone()
+    # tier1 is sparse (far below dense frames x nodes) and every row clears the bar.
+    assert 0 < n_t1 < dense
+    assert min_rar >= rmin - 1e-6
+    # tier3 is the dense base layer: one daily bucket per node here.
+    t3 = glob.glob(str(store._tier_dir("tier3")) + "/**/*.parquet", recursive=True)
+    n_t3 = duckdb.sql(f"SELECT count(*) FROM read_parquet({t3!r})").fetchone()[0]
+    assert n_t3 == nodes
+
+
 def test_parquet_write_and_duckdb_query(tmp_path):
     from kalachakra.storage.duckdb_engine import DuckDBEngine, ViewportQuery
     from kalachakra.storage.parquet_store import ParquetTokenStore

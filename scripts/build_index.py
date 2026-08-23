@@ -29,7 +29,6 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from kalachakra import constants as C                              # noqa: E402
-from kalachakra.analysis import tokens as tk                       # noqa: E402
 from kalachakra.analysis.rarity import RarityModel                 # noqa: E402
 from kalachakra.ephemeris import global_state, timeline           # noqa: E402
 from kalachakra.ephemeris.calendar import format_jd, parse_datetime  # noqa: E402
@@ -52,14 +51,41 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--start-date", default="2024-01-01")
     p.add_argument("--frames", type=int, default=3000)
     p.add_argument("--window", type=int, default=128, help="frames per inference batch")
+    p.add_argument("--rarity-min", type=float, default=0.0,
+                   help="sparse full-scale mode: keep only tier-1/tier-2 rows with "
+                        "rarity >= this (0 = dense in-memory build, the default). "
+                        ">0 streams a two-pass build with bounded memory so the "
+                        "fine tiers stay storable at full scale; tier-3 stays dense.")
+    p.add_argument("--block-days", type=int, default=1,
+                   help="sparse mode: days of frames held in memory per rollup flush")
     p.add_argument("--ephe-path", default=None)
     p.add_argument("--jpl-file", default=None)
     return p.parse_args(argv)
 
 
+def _infer_window(model, grid, idx):
+    """Run one contiguous window of frames through projection + tokenization.
+
+    Returns (jds, macro, micro, leaf, z, potential, shear); all arrays are
+    (T, n_nodes[, ...]). Shared by the dense and sparse build paths.
+    """
+    import torch
+    jds = timeline.frame_to_jd(idx)
+    fields = [spatial.project(global_state.global_state_frame(float(j)), float(j), grid)
+              for j in jds]
+    e = np.stack(fields, 0).reshape(len(idx), grid.n_nodes, -1)     # (T,N,F)
+    e_t = torch.from_numpy(e.astype(np.float32)).unsqueeze(0)       # (1,T,N,F)
+    macro, micro, leaf, quant = model.tokenize(e_t)
+    macro = macro[0].cpu().numpy(); micro = micro[0].cpu().numpy()
+    leaf = leaf[0].cpu().numpy(); z = quant[0].cpu().numpy()        # (T,N,64)
+    potential = np.linalg.norm(z, axis=-1)                          # (T,N)
+    shear = (np.abs(np.gradient(potential, axis=0)) if len(idx) > 1
+             else np.zeros_like(potential))                         # (T,N)
+    return jds, macro, micro, leaf, z, potential, shear
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
-    import torch
     from kalachakra.models.autoencoder import AutoencoderConfig
     from kalachakra.models.quantized_autoencoder import QuantizedSphericalAutoencoder
     from kalachakra.models.rvq import RVQConfig
@@ -104,7 +130,12 @@ def main(argv=None) -> int:
 
     start_frame = int(timeline.jd_to_frame(parse_datetime(args.start_date)))
     print(f"Indexing {args.frames} frames x {args.nodes} nodes from "
-          f"{format_jd(timeline.frame_to_jd(start_frame))}")
+          f"{format_jd(timeline.frame_to_jd(start_frame))}"
+          + (f"  [sparse: rarity >= {args.rarity_min}]" if args.rarity_min > 0 else ""))
+
+    if args.rarity_min > 0:
+        return _build_sparse_streaming(args, model, grid, h3cells, lat_deg, lng_deg,
+                                       start_frame)
 
     all_cols: dict[str, list] = {k: [] for k in
         ("jd", "frame", "node", "lat", "lng", "h3", "macro", "micro",
@@ -115,18 +146,7 @@ def main(argv=None) -> int:
     while processed < args.frames:
         w = min(args.window, args.frames - processed)
         idx = np.arange(start_frame + processed, start_frame + processed + w)
-        jds = timeline.frame_to_jd(idx)
-        fields = [spatial.project(global_state.global_state_frame(float(j)), float(j), grid)
-                  for j in jds]
-        e = np.stack(fields, 0).reshape(w, args.nodes, -1)          # (T,N,F)
-        e_t = torch.from_numpy(e.astype(np.float32)).unsqueeze(0)   # (1,T,N,F)
-
-        macro, micro, leaf, quant = model.tokenize(e_t)
-        macro = macro[0].cpu().numpy(); micro = micro[0].cpu().numpy()
-        leaf = leaf[0].cpu().numpy(); z = quant[0].cpu().numpy()    # (T,N,64)
-
-        potential = np.linalg.norm(z, axis=-1)                     # (T,N)
-        shear = np.abs(np.gradient(potential, axis=0))             # (T,N)
+        jds, macro, micro, leaf, z, potential, shear = _infer_window(model, grid, idx)
 
         for ti in range(w):
             all_cols["jd"].append(np.full(args.nodes, jds[ti]))
@@ -236,6 +256,163 @@ def _write_daily(store: ParquetTokenStore, cols: dict, n_nodes: int) -> None:
     cols3 = {k: np.concatenate(v) for k, v in out.items()}
     store.write_daily(cols3)
     print(f"Wrote {len(cols3['jd']):,} tier-3 daily rollup rows -> {store.tier3}")
+
+
+def _flush_rollups(store, jd, pot, shear, leaf, rar, n_nodes,
+                   lat_deg, lng_deg, h3cells, rarity_min, stats):
+    """Write tier-2 (hourly, sparse by bucket max rarity) + tier-3 (daily, dense)
+    for one in-memory block of frames. Reuses the exact mipmap reductions."""
+    n_frames = jd.shape[0]
+    FPH = mipmap.FRAMES_PER_HOUR
+    starts_h = np.arange(0, n_frames, FPH)
+    starts_d = np.arange(0, n_frames, mipmap.FRAMES_PER_DAY)
+    out_h = {k: [] for k in ("jd", "node", "lat", "lng", "h3",
+                             "max_potential", "peak_shear", "archetype", "rarity")}
+    out_d = {k: [] for k in ("jd", "node", "lat", "lng", "h3", "max_potential",
+                             "mean_potential", "peak_shear", "rarity",
+                             "anomaly_count", "archetype")}
+    for node in range(n_nodes):
+        # -- tier 2: hourly, kept only where the bucket's max rarity clears the bar
+        roll = mipmap.hourly_rollup(pot[:, node], shear[:, node], leaf[:, node])
+        hr = mipmap.bucket_max(rar[:, node], FPH)
+        keep = hr >= rarity_min
+        k = int(keep.sum())
+        if k:
+            nb = roll["max_potential"].shape[0]
+            hj = jd[starts_h][:nb]
+            out_h["jd"].append(hj[keep])
+            out_h["node"].append(np.full(k, node, np.int32))
+            out_h["lat"].append(np.full(k, lat_deg[node], np.float32))
+            out_h["lng"].append(np.full(k, lng_deg[node], np.float32))
+            out_h["h3"].append(np.full(k, h3cells[node], np.int64))
+            out_h["max_potential"].append(roll["max_potential"][keep].astype(np.float32))
+            out_h["peak_shear"].append(roll["peak_shear"][keep].astype(np.float32))
+            out_h["archetype"].append(roll["archetype"][keep].astype(np.int32))
+            out_h["rarity"].append(hr[keep].astype(np.float32))
+        # -- tier 3: daily, dense base layer (always kept)
+        rd = mipmap.daily_rollup(pot[:, node], shear[:, node], rar[:, node], leaf[:, node])
+        nbd = rd["max_potential"].shape[0]
+        out_d["jd"].append(jd[starts_d][:nbd])
+        out_d["node"].append(np.full(nbd, node, np.int32))
+        out_d["lat"].append(np.full(nbd, lat_deg[node], np.float32))
+        out_d["lng"].append(np.full(nbd, lng_deg[node], np.float32))
+        out_d["h3"].append(np.full(nbd, h3cells[node], np.int64))
+        out_d["max_potential"].append(rd["max_potential"].astype(np.float32))
+        out_d["mean_potential"].append(rd["mean_potential"].astype(np.float32))
+        out_d["peak_shear"].append(rd["peak_shear"].astype(np.float32))
+        out_d["rarity"].append(rd["max_rarity"].astype(np.float32))
+        out_d["anomaly_count"].append(rd["anomaly_count"].astype(np.float32))
+        out_d["archetype"].append(rd["archetype"].astype(np.int32))
+    if out_h["jd"]:
+        colsh = {kk: np.concatenate(v) for kk, v in out_h.items()}
+        store.write_hourly(colsh); stats["t2"] += len(colsh["jd"])
+    colsd = {kk: np.concatenate(v) for kk, v in out_d.items()}
+    store.write_daily(colsd); stats["t3"] += len(colsd["jd"])
+
+
+def _build_sparse_streaming(args, model, grid, h3cells, lat_deg, lng_deg, start_frame):
+    """Full-scale build with bounded memory (blueprint §3-4, rarity premise §2/§6).
+
+    Two passes: (1) accumulate the deep-time token PMF; (2) score each frame's
+    rarity and STREAM writes. The fine tiers (tier-1 native, tier-2 hourly) keep
+    only rows at/above ``--rarity-min`` — the rare configurations that are the
+    entire point of the Rarity Index — while tier-3 (daily) stays dense as the
+    always-available base layer. Memory is bounded by one rollup block, not the
+    timeline length, so this is the path that actually reaches full scale.
+    """
+    from kalachakra.models.rvq import RVQConfig
+    n_nodes = args.nodes
+    n_leaf = RVQConfig().n_leaf
+    block_len = max(1, args.block_days) * mipmap.FRAMES_PER_DAY
+    rarity_min = args.rarity_min
+
+    def windows():
+        processed = 0
+        while processed < args.frames:
+            w = min(args.window, args.frames - processed)
+            idx = np.arange(start_frame + processed, start_frame + processed + w)
+            yield idx, _infer_window(model, grid, idx)
+            processed += w
+
+    # -- PASS 1: global token distribution (bounded: one window at a time) -----
+    print("  pass 1/2: accumulating deep-time token distribution...")
+    rarity_model = RarityModel(n_leaf)
+    seen = 0
+    for idx, out in windows():
+        rarity_model.update(out[3].ravel())      # out[3] == leaf
+        seen += len(idx)
+    print(f"    counted {seen:,} frames over {int(rarity_model.total):,} tokens")
+
+    # -- PASS 2: score + stream-write -----------------------------------------
+    print("  pass 2/2: scoring + streaming writes...")
+    store = ParquetTokenStore(args.out)
+    stats = {"t1": 0, "t2": 0, "t3": 0, "total": 0}
+    buf = {k: [] for k in ("jd", "potential", "shear", "leaf", "rarity")}
+    buf_n = [0]
+    t1 = {k: [] for k in ("jd", "frame", "node", "lat", "lng", "h3", "macro",
+                          "micro", "leaf", "potential", "shear", "latent", "rarity")}
+
+    def flush_t1(force=False):
+        if not t1["jd"] or (not force and sum(len(a) for a in t1["node"]) < 200_000):
+            return
+        cols = {k: (np.concatenate(v) if k != "latent" else np.concatenate(v, axis=0))
+                for k, v in t1.items()}
+        store.write_frames(cols); stats["t1"] += len(cols["jd"])
+        for v in t1.values():
+            v.clear()
+
+    def flush_block():
+        if not buf["jd"]:
+            return
+        _flush_rollups(store, np.concatenate(buf["jd"]),
+                       np.concatenate(buf["potential"], axis=0),
+                       np.concatenate(buf["shear"], axis=0),
+                       np.concatenate(buf["leaf"], axis=0),
+                       np.concatenate(buf["rarity"], axis=0),
+                       n_nodes, lat_deg, lng_deg, h3cells, rarity_min, stats)
+        for v in buf.values():
+            v.clear()
+        buf_n[0] = 0
+
+    for idx, (jds, macro, micro, leaf, z, potential, shear) in windows():
+        w = len(idx)
+        rar = rarity_model.rarity(leaf).astype(np.float32)     # (w, N)
+        stats["total"] += w * n_nodes
+        # tier-1 sparse (per window, so latent never accumulates over the timeline)
+        ti_idx, node_idx = np.nonzero(rar >= rarity_min)
+        if ti_idx.size:
+            t1["jd"].append(jds[ti_idx])
+            t1["frame"].append(idx[ti_idx].astype(np.int64))
+            t1["node"].append(node_idx.astype(np.int32))
+            t1["lat"].append(lat_deg[node_idx].astype(np.float32))
+            t1["lng"].append(lng_deg[node_idx].astype(np.float32))
+            t1["h3"].append(h3cells[node_idx])
+            t1["macro"].append(macro[ti_idx, node_idx].astype(np.int16))
+            t1["micro"].append(micro[ti_idx, node_idx].astype(np.int16))
+            t1["leaf"].append(leaf[ti_idx, node_idx].astype(np.int32))
+            t1["potential"].append(potential[ti_idx, node_idx].astype(np.float32))
+            t1["shear"].append(shear[ti_idx, node_idx].astype(np.float32))
+            t1["latent"].append(z[ti_idx, node_idx].astype(np.float32))
+            t1["rarity"].append(rar[ti_idx, node_idx])
+        flush_t1()
+        # reduced arrays for the rollups (no latent -> bounded to one block)
+        buf["jd"].append(jds); buf["potential"].append(potential.astype(np.float32))
+        buf["shear"].append(shear.astype(np.float32))
+        buf["leaf"].append(leaf.astype(np.int32)); buf["rarity"].append(rar)
+        buf_n[0] += w
+        if buf_n[0] >= block_len:
+            flush_block()
+        print(f"  scored {min(stats['total'] // n_nodes, args.frames):,}/"
+              f"{args.frames} frames")
+
+    flush_t1(force=True)
+    flush_block()
+    pct = 100.0 * stats["t1"] / max(stats["total"], 1)
+    print(f"\nSparse index ready at {args.out}. "
+          f"tier-1: {stats['t1']:,} rows ({pct:.3f}% of {stats['total']:,} "
+          f"frame-nodes, rarity >= {rarity_min}); tier-2: {stats['t2']:,}; "
+          f"tier-3 (dense): {stats['t3']:,}.")
+    return 0
 
 
 if __name__ == "__main__":

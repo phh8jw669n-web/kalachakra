@@ -45,7 +45,8 @@ except Exception:  # noqa: BLE001 - any import failure means "not available"
 # values match pyswisseph's public constants).
 _FLG_JPLEPH = 1       # JPL DE441: needs the DE441 .bsp file(s)
 _FLG_SWIEPH = 2       # Swiss ephemeris: needs .se1 data files
-_FLG_MOSEPH = 4       # Moshier: analytical, no data files, ~1900 BCE - 4650 CE
+_FLG_MOSEPH = 4       # Moshier: analytical, no data files, ~3000 BCE - 3000 CE
+#                      (empirical pyswisseph range: JD 625000.5 .. 2818000.5)
 _FLG_SPEED = 256      # also return instantaneous speeds
 
 _FLAG_BY_MODE = {"moshier": _FLG_MOSEPH, "swiss": _FLG_SWIEPH, "jpl": _FLG_JPLEPH}
@@ -62,7 +63,7 @@ def configure(mode: str = "moshier", ephe_path: str | None = None,
     Parameters
     ----------
     mode : {"moshier", "swiss", "jpl"}
-        "moshier" (default) needs no data files (~1900 BCE - 4650 CE). "swiss"
+        "moshier" (default) needs no data files (~3000 BCE - 3000 CE). "swiss"
         uses the Swiss Ephemeris ``.se1`` files (DE431-based, ~13000 BCE-16800 CE;
         small, recommended). "jpl" reads the NASA JPL DE441 ``.bsp`` file(s).
     ephe_path : str, optional

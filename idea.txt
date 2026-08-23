@@ -97,18 +97,20 @@ This matters, because it decides how much time and disk you need.
 
   EASY WAY (start here — minutes, on a normal laptop, no downloads):
     The astronomy engine has a built-in mode that needs zero data files and
-    covers roughly 1900 BCE to 4650 CE — i.e. all of history and today. You can
-    immediately get real readings, scan a year for real eclipses, train a small
-    model, build an index, and open every visual. This is the "see it work today"
-    path. Most people live here.
+    covers roughly 3000 BCE to 3000 CE — i.e. all of recorded history and today.
+    You can immediately get real readings, scan a year for real eclipses, train a
+    small model, build an index, and open every visual. This is the "see it work
+    today" path. Most people live here.
 
   EPIC WAY (the full 10,256 years — serious hardware):
     To reach 3102 BCE and the far future you download a long-range planetary data
     set (a ~40 MB set of files — one command does it and configures everything).
-    Generating the entire 13.4-billion-frame movie is around 300 GB on disk, and
-    training the model over the full cycle is roughly a 90-day run on a powerful
-    machine (an Apple M4 Max is the reference). Same exact commands as the easy
-    way — you just point them at the full data and let it run for a long time.
+    Generating the entire 13.4-billion-frame movie is about 1.9 TB on disk as
+    written (there's a clear path to shrink that severalfold with compression,
+    not yet enabled), and training the model over the full cycle is a very long
+    run on a powerful machine (an Apple M4 Max is the reference) — realistically
+    the heaviest, least-tested part of the project. Same exact commands as the
+    easy way — you just point them at the full data and let it run.
 
 The beautiful bit: **you learn everything on the easy path, and the epic path is
 the identical workflow scaled up.** Nothing is different except the size and the
@@ -143,9 +145,13 @@ There are two things you open in a web browser.
                                            surface (mountains and trenches that ARE
                                            the math)
 
-     Because every translation is exact and reversible, you could literally read
-     the picture back into the original 64 numbers with no loss. The image isn't a
-     summary of the data — it IS the data, in a form your eyes understand.
+     Because every translation is exact and reversible, the optical state can be
+     read back into the original 64 numbers with no loss (verified to machine
+     precision in the tests). One honest nuance: the surface shape is a faithful,
+     lossless *encoding* of those 64 numbers — a container your eyes can read —
+     not a claim that "this mountain is caused by that planet." The math is
+     preserved perfectly; the artistic-looking terrain is how it's stored, not a
+     physical map of the sky.
 
      You can double-click any point to pop open a "Sidebar Inspector" that shows
      the raw numbers behind that spot: which bodies, their positions and speeds,
@@ -193,10 +199,17 @@ system's geometry across ten thousand years" — and every number in it is hones
   * It makes NO predictions and tells NO fortunes. It reports geometry. Meaning
     is yours to add or not.
   * The easy path runs today on a laptop. The full 10,256-year path is a real,
-    heavy compute job — hundreds of GB and a months-long train — and the project
-    is upfront about that instead of pretending it's instant.
+    heavy compute job — terabytes of data and a very long train that is the
+    least-tested part of the system — and the project is upfront about that
+    instead of pretending it's instant. Two honest caveats about the deep past:
+    (a) how far back Earth's exact rotation is known is uncertain by an hour or
+    two around 3102 BCE, so the *where-on-Earth* part of very old maps is fuzzy
+    even though the sky geometry stays precise; (b) the full-scale index only
+    keeps the statistically rare moments in fine detail (that's the whole point
+    of the rarity score) with coarse daily summaries everywhere else.
   * You can verify it yourself: it ships with 150+ automated tests, and every
-    command in the instructions has been run for real.
+    quick-scale command here has been run for real. The full-scale run is a
+    scaling exercise on your own hardware, not something that fits in a test.
 
 Next stop: open instructions.txt and follow it top to bottom. Have fun. Look up.
 ===============================================================================

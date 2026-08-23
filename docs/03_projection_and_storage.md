@@ -40,8 +40,11 @@ The global-state timeline is serialized to contiguous `.mmap` chunks:
   round-to-nearest-even (numpy has no native bf16). Exact for
   powers-of-two-ish values; ~2–3 significant decimal digits otherwise.
 - **Delta encoding** — `delta_encode` stores frame 0 absolutely and successive
-  frame-to-frame differences; the smooth planetary trajectories make these tiny,
-  which is what takes the raw ~1.9 TB down to ~300 GB.
+  frame-to-frame differences; the smooth planetary trajectories make these tiny.
+  This does not shrink the file on its own (deltas are still BF16), so the store
+  is ~1.9 TB as written; the point is that the delta stream is highly
+  compressible, so entropy coding (not yet enabled) is the path to the ~300 GB
+  target.
 - **`EphemerisStore`** — chunk files + `manifest.json`; `write_chunk` /
   `read_chunk` round-trip through `numpy.memmap`.
 - **`RingBuffer`** — a background thread prefetches upcoming chunks with bounded

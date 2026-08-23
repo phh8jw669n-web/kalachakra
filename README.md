@@ -33,7 +33,7 @@ kalachakra map --date 2024-04-08T18:17 --nodes 8000 --out web/heatmap.json
 ```
 
 Everything above runs on **real planetary positions** via the Swiss Ephemeris's
-built-in Moshier backend (valid ~1900 BCE – 4650 CE, so all of history and the
+built-in Moshier backend (valid ~3000 BCE – 3000 CE, so all of history and the
 present — **no external data files required**). Example — the real total solar
 eclipse of 2024-04-08:
 
@@ -134,9 +134,10 @@ python scripts/serve_grpc.py --index data/index --port 50051   # Health/Inspect/
 
 ### Full 10,256-year scale (DE441 + M4 Max)
 
-The Kali-Yuga epoch (3102 BCE) and the far future (past 4650 CE) fall outside
-Moshier's range, and the complete matrix is ~300 GB / ~13.4B frames trained over
-~90 days. **One command sets it all up** — it downloads exactly the 36 Swiss
+The Kali-Yuga epoch (3102 BCE) and the far future (past 3000 CE) fall outside
+Moshier's range, and the complete matrix is ~1.9 TB / ~13.4B frames (uncompressed
+BF16+delta) trained over a very long, hardware-dependent run. **One command sets
+it all up** — it downloads exactly the 36 Swiss
 `.se1` files (DE431, ~40 MB, which cover the whole span), verifies it can compute
 the 3102 BCE Kali Yuga epoch, and writes a config so every command uses the full
 span automatically:
@@ -242,9 +243,14 @@ astronomy/geometry, and any meaning attached to them is the reader's.
 What is real and runs today: the ephemeris, the projection, the cosmic-weather
 signatures (validated against real eclipses and conjunctions), the per-node map,
 the singularity scan, and a genuinely trainable autoencoder (loss verified to
-decrease on real data). What is a scaling exercise on the user's own hardware:
-generating the full ~300 GB / 13.4B-frame matrix over the entire 10,256-year span
-(needs DE441) and running the ~90-day training cycle on an M4 Max.
+decrease on real data), and a topocentric (parallax-correct) per-node field that
+localizes an eclipse to its real ground track. What is a scaling exercise on the
+user's own hardware: generating the full ~1.9 TB / 13.4B-frame matrix over the
+entire 10,256-year span (needs DE441), building a sparse rarity-thresholded index
+at the full mesh (`build_index.py --rarity-min`), and running the long training
+cycle. Two honest limits at full scale: deep-past node-localization inherits
+Delta-T (Earth-rotation) uncertainty of hours around 3102 BCE, and the full
+sequential-frame training time is hardware/sampling dependent (no single number).
 
 ## License
 

@@ -51,7 +51,10 @@ Phase 4 (API)  potential & shear metrics -> gRPC/REST -> WebGL heatmap
 ### 1.4 Hardware budget (Apple Silicon M4 Max, zero cloud)
 128 GB unified memory @ 546 GB/s, partitioned **80 / 20 / 20 / 8 GB** across the
 MPS tensor pool, the async ring buffer, the parallel testing daemon, and macOS.
-Sustains ~150,000 frames/s; full macro-harmonic cycle in ~90 days. →
+The blueprint's target throughput is ~150,000 frames/s (a ~90-day full cycle);
+in practice wall-clock is hardware- and sampling-dependent — a uniform
+sequential pass over all ~13.4B frames is far longer, so train on a stratified
+sample rather than every frame (see instructions.txt Part 5/9). →
 `constants.memory_partition_gb`.
 
 ---
@@ -109,7 +112,9 @@ kernel.
 
 ### 3.2 Memory-mapped binary storage
 `G(t)` is serialized to contiguous `.mmap` chunks in **BF16** with **temporal
-delta encoding**, compressing ~1.9 TB raw to ~**300 GB**. A 20 GB async **ring
+delta encoding**. BF16 halves the raw float32 footprint to **~1.9 TB** for the
+full timeline; the delta stream is smooth and highly compressible, so adding
+entropy coding (not yet enabled) is the path toward the ~300 GB target. A 20 GB async **ring
 buffer** anticipates the training horizon, evicting processed chunks and
 streaming upcoming epochs ahead of the GPU. → `storage.binary_store`,
 `storage.ring_buffer`.
@@ -194,7 +199,7 @@ With the decoder severed, analysis runs on `z(t, s)`:
 ## Status
 
 **This runs on real astronomical data today.** `G(t)` is computed from the Swiss
-Ephemeris (default Moshier backend, no data files, ~1900 BCE – 4650 CE); the
+Ephemeris (default Moshier backend, no data files, ~3000 BCE – 3000 CE); the
 `kalachakra` CLI produces real cosmic-weather readings, per-node maps, and
 singularity scans, validated against real eclipses (e.g. 2024-04-08: Sun–Moon
 0.04°) and conjunctions. The `analysis.weather` engine derives the objective
@@ -208,6 +213,8 @@ checkpoint is saved). 88 tests cover the numpy core, the real ephemeris, and the
 torch model/trainer.
 
 What remains a **scaling exercise on the target hardware**: the full 10,256-year
-span reaches outside the Moshier window (the 3102 BCE epoch and post-4650 CE need
-DE441 `.se1` files), and the complete ~300 GB / 13.4B-frame matrix plus the
-~90-day training cycle assume the M4 Max unified-memory pipeline of §1.4.
+span reaches outside the Moshier window (the 3102 BCE epoch and post-3000 CE need
+DE441/DE431 `.se1` files), and the complete ~1.9 TB / 13.4B-frame matrix, the
+sparse rarity-thresholded full-mesh index, plus the long training cycle assume
+the M4 Max unified-memory pipeline of §1.4 (memory-tuned; wall-clock depends on
+sampling — see instructions.txt Part 5/9).

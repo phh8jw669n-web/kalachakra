@@ -32,7 +32,7 @@ global_state.global_state_frame(jd)     # (10, 7) real positions — works today
 ```
 
 `pyswisseph` is a core dependency and its default **Moshier** backend needs no
-data files (valid ~1900 BCE – 4650 CE), so real `G(t)` is available out of the
+data files (valid ~3000 BCE – 3000 CE), so real `G(t)` is available out of the
 box. The encoding itself (`encode_body`) is pure and unit-tested; the *values*
 come from pyswisseph.
 
@@ -44,7 +44,7 @@ global_state.configure(mode="swiss", ephe_path="/de441")   # full 10,256-yr rang
 ```
 
 Moshier covers all of recorded history and the present. To reach the Kali-Yuga
-epoch (3102 BCE) and the far future (past 4650 CE) — i.e. the full timeline —
+epoch (3102 BCE) and the far future (past 3000 CE) — i.e. the full timeline —
 download the DE441 `.se1` files from the Swiss Ephemeris distribution and pass
 `--ephe-path`:
 

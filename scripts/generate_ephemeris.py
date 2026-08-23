@@ -4,7 +4,8 @@ Phase 1 — generate the memory-mapped global-state matrix (blueprint §1.3, §2
 
 Computes G(t) frame-by-frame from DE441 via pyswisseph and serializes it to a
 chunked, BF16, delta-encoded :class:`EphemerisStore`. The full run produces
-~13.4 billion frames (~300 GB); use ``--max-frames`` for a bounded slice.
+~13.4 billion frames (~1.9 TB uncompressed BF16+delta); use ``--max-frames`` for
+a bounded slice.
 
 Requires:  pip install "kalachakra[ephemeris]"   (pyswisseph + DE441 data files)
 
@@ -43,7 +44,7 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="number of frames to generate from the start")
     p.add_argument("--ephe-path", type=str, default=None,
                    help="directory holding the Swiss .se1 files, DE431 (enables full range; "
-                        "without it the Moshier backend covers ~1900 BCE - 4650 CE)")
+                        "without it the Moshier backend covers ~3000 BCE - 3000 CE)")
     p.add_argument("--jpl-file", type=str, default=None,
                    help="DE441 .bsp file for the JPL backend (full range)")
     return p.parse_args(argv)
