@@ -137,10 +137,22 @@ def main(argv=None) -> int:
                             latent=args.latent, fourier_modes=args.modes,
                             knn=args.knn, n_blocks=args.blocks)
     if args.quantize:
-        from kalachakra.models.quantized_autoencoder_v2 import (
-            QuantizedSphericalAutoencoderV2,
-        )
-        from kalachakra.models.rvq import RVQConfig
+        # The tokenizer (hierarchical residual VQ) is a later-phase module. On a
+        # checkout that only has the base autoencoder it will be absent; fail with
+        # a clear message rather than a cryptic import error. Plain training (the
+        # default) never touches these modules.
+        try:
+            from kalachakra.models.quantized_autoencoder_v2 import (
+                QuantizedSphericalAutoencoderV2,
+            )
+            from kalachakra.models.rvq import RVQConfig
+        except ModuleNotFoundError as exc:
+            print(f"ERROR: --quantize needs the tokenizer modules "
+                  f"(kalachakra.models.rvq / quantized_autoencoder), which are not "
+                  f"present in this checkout ({exc.name}). Drop --quantize to train "
+                  f"the plain autoencoder, or add the tokenizer modules first.",
+                  file=sys.stderr)
+            return 2
         rvq_cfg = RVQConfig(dim=args.latent)
         model = QuantizedSphericalAutoencoderV2(cfg, neighbors, rvq_cfg,
                                                 node_chunk=args.node_chunk)
