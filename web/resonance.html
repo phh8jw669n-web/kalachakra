@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kalachakra — Geo-Resonance Globe</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #050508; overflow: hidden;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: #cfd3dc; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+  .panel { position: fixed; background: rgba(10,12,18,0.72); border: 1px solid #1b1f2a;
+    border-radius: 10px; padding: 12px 14px; backdrop-filter: blur(8px); font-size: 12px; }
+  #controls { top: 14px; left: 14px; width: 250px; }
+  #controls h1 { font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: #9aa3b2; margin: 0 0 10px; font-weight: 600; }
+  .row { display: flex; gap: 6px; margin: 6px 0; align-items: center; }
+  .row label { width: 34px; color: #7c8598; }
+  input { flex: 1; background: #0b0e15; border: 1px solid #232838; color: #e8ecf4;
+    border-radius: 6px; padding: 5px 7px; font: inherit; width: 100%; box-sizing: border-box; }
+  button { background: #14304a; border: 1px solid #244a6e; color: #dfe8f5; cursor: pointer;
+    border-radius: 6px; padding: 6px 9px; font: inherit; }
+  button:hover { background: #1b3f60; }
+  button.primary { background: #b8860b; border-color: #d4a017; color: #1a1204; font-weight: 700; }
+  button.primary:hover { background: #d4a017; }
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .presets button { padding: 4px 8px; font-size: 11px; }
+  .hint { color: #5c6577; font-size: 11px; margin-top: 8px; line-height: 1.5; }
+  #stats { bottom: 14px; left: 50%; transform: translateX(-50%); display: flex;
+    gap: 18px; text-align: center; }
+  #stats .k { color: #6b7488; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
+  #stats .v { color: #e8ecf4; font-size: 15px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  #legend { top: 14px; right: 14px; width: 172px; }
+  #legend .bar { height: 10px; border-radius: 5px; margin: 8px 0 4px;
+    background: linear-gradient(90deg,#001122,#0A2540 22%,#111116 40%,#050508 55%,#FF8C00 78%,#FFD700 90%,#FFFFFF); }
+  #legend .lab { display: flex; justify-content: space-between; color: #6b7488; font-size: 10px; }
+  #err { position: fixed; bottom: 14px; right: 14px; color: #d98c8c; font-size: 11px; max-width: 320px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="controls" class="panel">
+  <h1>Geo-Resonance Anchor</h1>
+  <div class="row"><label>Lat</label><input id="lat" type="number" step="0.1" value="26.9" /></div>
+  <div class="row"><label>Lon</label><input id="lon" type="number" step="0.1" value="75.7" /></div>
+  <div class="row"><button id="go" class="primary" style="flex:1">Illuminate ▸</button></div>
+  <div class="presets">
+    <button data-lat="26.9" data-lon="75.7">Rajasthan</button>
+    <button data-lat="51.5" data-lon="-0.12">London</button>
+    <button data-lat="35.7" data-lon="139.7">Tokyo</button>
+    <button data-lat="-33.9" data-lon="18.4">Cape Town</button>
+    <button data-lat="0" data-lon="0">Null Island</button>
+  </div>
+  <div class="hint">Click the globe to set an anchor. Drag to orbit, scroll to zoom.</div>
+  <div class="row" style="margin-top:8px"><label style="width:auto">Elev</label>
+    <input id="elev" type="range" min="0" max="0.6" step="0.01" value="0.28" /></div>
+</div>
+
+<div id="legend" class="panel">
+  <div class="k" style="color:#9aa3b2;letter-spacing:0.14em;text-transform:uppercase;font-size:11px">Cosine resonance</div>
+  <div class="bar"></div>
+  <div class="lab"><span>−1 shear</span><span>0</span><span>+1</span></div>
+</div>
+
+<div id="stats" class="panel">
+  <div><div class="k">Node</div><div class="v" id="s-node">—</div></div>
+  <div><div class="k">Anchor ‖z‖</div><div class="v" id="s-norm">—</div></div>
+  <div><div class="k">Cos min</div><div class="v" id="s-min">—</div></div>
+  <div><div class="k">Cos max</div><div class="v" id="s-max">—</div></div>
+</div>
+<div id="err"></div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const API = location.origin;                 // served same-origin by serve_resonance.py
+const $ = (id) => document.getElementById(id);
+const err = (m) => { $('err').textContent = m || ''; };
+
+// ---- scene ----------------------------------------------------------------
+const app = $('app');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.setClearColor(0x050508, 1);
+app.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 100);
+camera.position.set(0, 0.6, 2.8);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.08;
+controls.minDistance = 1.3; controls.maxDistance = 8; controls.autoRotate = true;
+controls.autoRotateSpeed = 0.35;
+
+// faint reference sphere + invisible raycast target
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(0.994, 64, 48),
+  new THREE.MeshBasicMaterial({ color: 0x0a0e16, wireframe: true, transparent: true, opacity: 0.12 })));
+const pickSphere = new THREE.Mesh(new THREE.SphereGeometry(1.0, 48, 32),
+  new THREE.MeshBasicMaterial({ visible: false }));
+scene.add(pickSphere);
+
+// ---- point cloud + shader -------------------------------------------------
+const uniforms = { uElevation: { value: 0.28 }, uPointSize: { value: 2.4 } };
+const material = new THREE.ShaderMaterial({
+  uniforms, transparent: true, depthTest: true, depthWrite: true,
+  vertexShader: `
+    attribute float aMagnitude; attribute float aSimilarity;
+    uniform float uElevation; uniform float uPointSize;
+    varying float vSim;
+    void main(){
+      vSim = aSimilarity;
+      vec3 disp = position * (1.0 + aMagnitude * uElevation);
+      vec4 mv = modelViewMatrix * vec4(disp, 1.0);
+      gl_PointSize = uPointSize * (320.0 / max(-mv.z, 0.001));
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: `
+    precision highp float; varying float vSim;
+    vec3 palette(float s){
+      vec3 abyssDeep=vec3(0.0,0.066,0.133), abyss=vec3(0.039,0.145,0.251);
+      vec3 charLo=vec3(0.020,0.020,0.031),  charHi=vec3(0.067,0.067,0.086);
+      vec3 amber=vec3(1.0,0.549,0.0),       gold=vec3(1.0,0.843,0.0);
+      vec3 warm=vec3(1.0,0.973,0.906),      white=vec3(1.0);
+      if(s<0.0)   return mix(abyssDeep, abyss, clamp(s+1.0,0.0,1.0));
+      if(s<0.70)  return mix(charHi, charLo, s/0.70);
+      if(s<0.90)  return mix(amber, gold, (s-0.70)/0.20);
+      return mix(warm, white, clamp((s-0.90)/0.10,0.0,1.0));
+    }
+    void main(){
+      vec2 d = gl_PointCoord - vec2(0.5);
+      float r = length(d);
+      if(r > 0.5) discard;
+      float a = smoothstep(0.5, 0.12, r);
+      vec3 col = palette(vSim);
+      col *= 1.0 + smoothstep(0.7, 1.0, vSim) * 1.6;    // glow high resonance
+      gl_FragColor = vec4(col, a);
+    }`,
+});
+
+let points = null, N = 0, aMag = null, aSim = null;
+
+async function loadMesh(){
+  err('');
+  const res = await fetch(API + '/api/mesh');
+  if(!res.ok) throw new Error('mesh fetch failed: ' + res.status);
+  const verts = new Float32Array(await res.arrayBuffer());
+  N = verts.length / 3;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+  aMag = new Float32Array(N); aSim = new Float32Array(N);
+  geo.setAttribute('aMagnitude', new THREE.BufferAttribute(aMag, 1));
+  geo.setAttribute('aSimilarity', new THREE.BufferAttribute(aSim, 1));
+  points = new THREE.Points(geo, material);
+  points.frustumCulled = false;
+  scene.add(points);
+}
+
+async function resonate(lat, lon){
+  err('');
+  try{
+    const res = await fetch(API + '/api/resonance', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anchor_lat: lat, anchor_lon: lon }),
+    });
+    if(!res.ok) throw new Error('resonance failed: ' + res.status);
+    const buf = new Float32Array(await res.arrayBuffer());
+    aMag.set(buf.subarray(0, N));
+    aSim.set(buf.subarray(N, 2 * N));
+    points.geometry.attributes.aMagnitude.needsUpdate = true;
+    points.geometry.attributes.aSimilarity.needsUpdate = true;
+    $('s-node').textContent = res.headers.get('X-Node-Id') ?? '—';
+    $('s-norm').textContent = (+res.headers.get('X-Anchor-Norm')).toFixed(2);
+    $('s-min').textContent  = (+res.headers.get('X-Sim-Min')).toFixed(3);
+    $('s-max').textContent  = (+res.headers.get('X-Sim-Max')).toFixed(3);
+    const rl = res.headers.get('X-Anchor-Lat'), ro = res.headers.get('X-Anchor-Lon');
+    if(rl) $('lat').value = (+rl).toFixed(1);
+    if(ro) $('lon').value = (+ro).toFixed(1);
+  } catch(e){ err(String(e.message || e)); }
+}
+
+// ---- interaction ----------------------------------------------------------
+$('go').onclick = () => resonate(+$('lat').value, +$('lon').value);
+[$('lat'), $('lon')].forEach(el => el.addEventListener('keydown',
+  e => { if(e.key === 'Enter') $('go').click(); }));
+document.querySelectorAll('.presets button').forEach(b => b.onclick = () => {
+  $('lat').value = b.dataset.lat; $('lon').value = b.dataset.lon; $('go').click();
+});
+$('elev').addEventListener('input', e => uniforms.uElevation.value = +e.target.value);
+
+const ray = new THREE.Raycaster();
+let downXY = null;
+renderer.domElement.addEventListener('pointerdown', e => downXY = [e.clientX, e.clientY]);
+renderer.domElement.addEventListener('pointerup', e => {
+  if(!downXY) return;
+  const moved = Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]);
+  downXY = null;
+  if(moved > 6) return;                       // it was a drag, not a click
+  const m = new THREE.Vector2((e.clientX / innerWidth) * 2 - 1,
+                              -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(m, camera);
+  const hit = ray.intersectObject(pickSphere, false)[0];
+  if(!hit) return;
+  const p = hit.point.clone().normalize();
+  const lat = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(p.z, -1, 1)));
+  const lon = THREE.MathUtils.radToDeg(Math.atan2(p.y, p.x));
+  $('lat').value = lat.toFixed(1); $('lon').value = lon.toFixed(1);
+  controls.autoRotate = false;
+  resonate(lat, lon);
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+(function loop(){
+  requestAnimationFrame(loop);
+  controls.update();
+  renderer.render(scene, camera);
+})();
+
+// ---- boot -----------------------------------------------------------------
+loadMesh()
+  .then(() => resonate(+$('lat').value, +$('lon').value))   // start on Rajasthan
+  .catch(e => err('Could not reach backend at ' + API + ' — is serve_resonance.py running? (' + e.message + ')'));
+</script>
+</body>
+</html>
