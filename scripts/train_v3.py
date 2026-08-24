@@ -87,6 +87,11 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--grad-clip", type=float, default=1.0)
     p.add_argument("--log-every", type=int, default=10)
     p.add_argument("--save-every", type=int, default=25)
+    p.add_argument("--empty-cache-every", type=int, default=-1,
+                   help="release the accelerator's cached memory pool every N "
+                        "steps to fight allocator fragmentation (the usual cause "
+                        "of creeping step times on MPS). -1 = auto (10 on MPS, "
+                        "off elsewhere); 0 = never.")
     p.add_argument("--resume", type=Path, default=None)
     return p.parse_args(argv)
 
@@ -205,6 +210,23 @@ def main(argv=None) -> int:
         torch.save(payload, args.checkpoints / "model_latest.pt")
         torch.save(payload, args.checkpoints / "micro_latest.pt")
 
+    # Periodic accelerator cache release — the usual cure for creeping step times
+    # on MPS (cached-allocator fragmentation), a no-op on CPU.
+    ec_every = args.empty_cache_every
+    if ec_every < 0:
+        ec_every = 10 if device.type == "mps" else 0
+    if device.type not in ("mps", "cuda"):
+        ec_every = 0                                  # nothing to release on CPU
+
+    def _empty_cache():
+        if device.type == "mps" and hasattr(torch, "mps"):
+            torch.mps.empty_cache()
+        elif device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    if ec_every:
+        print(f"  (releasing {device.type} cache every {ec_every} steps)")
+
     t0 = time.time()
     stop = False
     for epoch in range(args.epochs):
@@ -227,6 +249,8 @@ def main(argv=None) -> int:
             optimizer.step()
             scheduler.step(step)
             step += 1
+            if ec_every and step % ec_every == 0:
+                _empty_cache()
 
             if step % args.log_every == 0 or step == 1:
                 lr = scheduler.get_last_lr()[0]
@@ -238,7 +262,7 @@ def main(argv=None) -> int:
                       f"geo={float(parts['geodesic'].detach()):.4f}  "
                       f"spec={float(parts['spectral'].detach()):.4f}  "
                       f"vq={float(vq_loss.detach()):.4f}  "
-                      f"ppl={model.last_perplexity:.1f}  "
+                      f"ppl={float(model.last_perplexity):.1f}  "
                       f"lr={lr:.2e}  ({rate:.5f} steps/s, {sps:.1f}s/step)")
             if step % args.save_every == 0:
                 save(f"step_{step:06d}")

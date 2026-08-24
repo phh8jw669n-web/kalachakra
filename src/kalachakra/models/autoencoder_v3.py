@@ -261,7 +261,9 @@ class VectorQuantizer(nn.Module):
             perplexity = torch.exp(-(probs * (probs + 1e-10).log()).sum())
 
             if self.training:
-                self._ema_update(z_norm, idx, counts)
+                # Detach so the EMA/restart update is provably outside the autograd
+                # graph on every backend (belt-and-suspenders with @torch.no_grad).
+                self._ema_update(z_norm.detach(), idx, counts)
 
         z_q_ste = z_q_ste.reshape(*lead, self.dim).to(z_e.dtype)
         indices = idx.reshape(*lead)
@@ -284,10 +286,10 @@ class VectorQuantizer(nn.Module):
         self.codebook.copy_(F.normalize(self.embed_avg / smoothed.unsqueeze(1), dim=1))
 
         # Dead-code restart: reseed codes unused for `restart_after` steps from a
-        # random slice of this batch's normalized latents.
+        # random slice of this batch's normalized latents. All in-place on the
+        # fixed-size buffers (no per-step reallocation).
         used = counts > 0
-        self.unused_steps = torch.where(
-            used, torch.zeros_like(self.unused_steps), self.unused_steps + 1.0)
+        self.unused_steps.add_(1.0).masked_fill_(used, 0.0)
         dead = self.unused_steps >= self.restart_after
         n_dead = int(dead.sum())
         if n_dead > 0 and z_norm.shape[0] > 0:
@@ -362,7 +364,9 @@ class VQAutoencoderV3(nn.Module):
         z_e = self.encode(e)
         z_q, indices, vq_loss, perplexity = self.vq(z_e)
         recon = self.decode(z_q)
-        self.last_perplexity = float(perplexity.detach())
+        # Keep as a (detached) device tensor — converting to a Python float here
+        # forces a CPU<->GPU sync every step; the trainer converts only at log time.
+        self.last_perplexity = perplexity.detach()
         return recon, z_q, indices, vq_loss
 
     @torch.no_grad()
