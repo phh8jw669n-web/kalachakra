@@ -71,6 +71,26 @@ def test_v2_quantized_tokens_identical_to_v1():
     assert torch.equal(m1, m2) and torch.equal(mi1, mi2)
 
 
+def test_grad_checkpoint_is_exact_forward_and_backward():
+    """Activation checkpointing (memory fix for the full mesh) must not change the
+    result OR the gradients — otherwise it would alter the training trajectory."""
+    torch.manual_seed(0)
+    grid = geodesic.fibonacci_sphere(400)
+    nb = build_knn(grid, 7)
+    cfg = AutoencoderConfig(n_nodes=400, hidden=32, latent=64,
+                            fourier_modes=8, knn=7, n_blocks=3)
+    m0 = SphericalAutoencoderV2(cfg, nb, node_chunk=128, grad_checkpoint=False).train()
+    m1 = SphericalAutoencoderV2(cfg, nb, node_chunk=128, grad_checkpoint=True).train()
+    m1.load_state_dict(m0.state_dict())
+
+    e = torch.randn(2, 16, 400, cfg.in_features)
+    r0, z0 = m0(e); (r0.pow(2).mean() + z0.pow(2).mean()).backward()
+    r1, z1 = m1(e); (r1.pow(2).mean() + z1.pow(2).mean()).backward()
+    assert torch.equal(r0, r1) and torch.equal(z0, z1)
+    for p0, p1 in zip(m0.parameters(), m1.parameters()):
+        assert torch.equal(p0.grad, p1.grad)
+
+
 def test_v2_chunk_size_does_not_change_output():
     """Any node_chunk must give the same result (it's a pure tiling knob)."""
     torch.manual_seed(1)

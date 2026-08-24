@@ -99,14 +99,47 @@ class STBlockV2(STBlock):
 
 class SphericalAutoencoderV2(SphericalAutoencoder):
     """Autoencoder whose STBlocks apply their ops in node slices (MPS/large-mesh
-    safe). Weights and state_dict are identical to :class:`SphericalAutoencoder`."""
+    safe). Weights and state_dict are identical to :class:`SphericalAutoencoder`.
+
+    Node-chunking bounds each *op's* peak tensor, but autograd still retains every
+    block's full-mesh activations for the backward pass; at the full 122,880-node
+    mesh those accumulate past the unified-memory budget. ``grad_checkpoint=True``
+    turns on activation checkpointing: each block's internals are dropped after the
+    forward and recomputed during backward, cutting retained memory by roughly the
+    block count (~30 % extra compute, exact same gradients and result). Combine
+    with a smaller ``--batch`` / ``--node-chunk`` if memory is still tight.
+    """
 
     def __init__(self, cfg: AutoencoderConfig, neighbors: np.ndarray,
-                 node_chunk: int = DEFAULT_NODE_CHUNK):
+                 node_chunk: int = DEFAULT_NODE_CHUNK,
+                 grad_checkpoint: bool = False):
         super().__init__(cfg, neighbors)
+        self._grad_checkpoint = grad_checkpoint
         # Retarget the already-built blocks to the chunked forward. Reassigning
         # __class__ keeps every parameter/buffer (and thus every state_dict key)
         # exactly as v1 built it — only the forward computation changes.
         for blk in list(self.enc_blocks) + list(self.dec_blocks):
             blk.__class__ = STBlockV2
             blk.node_chunk = node_chunk
+
+    def _run_blocks(self, blocks, x):
+        # Checkpoint only while training (backward needed) and requested. Inference
+        # (tokenize / analyze) runs under no_grad, where checkpointing is a no-op.
+        if getattr(self, "_grad_checkpoint", False) and self.training:
+            from torch.utils.checkpoint import checkpoint
+            for block in blocks:
+                x = checkpoint(block, x, use_reentrant=False)
+            return x
+        for block in blocks:
+            x = block(x)
+        return x
+
+    def encode(self, e: torch.Tensor) -> torch.Tensor:
+        x = self.lift(e)
+        x = self._run_blocks(self.enc_blocks, x)
+        return self.to_latent(x)
+
+    def decode(self, z: torch.Tensor) -> torch.Tensor:
+        x = self.from_latent(z)
+        x = self._run_blocks(self.dec_blocks, x)
+        return self.project(x)

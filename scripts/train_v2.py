@@ -18,10 +18,10 @@ unchanged, so:
 
 Requires:  pip install "kalachakra[train]"
 
-Example (full mesh on an M4 Max):
+Example (full mesh on an M4 Max — grad checkpoint + batch 1 to fit memory):
     python scripts/train_v2.py --store data/full \
-        --nodes 122880 --window 64 --stride 32 --batch 2 \
-        --hidden 128 --blocks 3 --modes 32 --node-chunk 4096 \
+        --nodes 122880 --window 64 --stride 32 --batch 1 \
+        --hidden 128 --blocks 3 --modes 32 --node-chunk 4096 --grad-checkpoint \
         --epochs 1 --save-every 500 --checkpoints checkpoints/full
 """
 
@@ -63,6 +63,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="nodes processed per slice in the spatial/temporal ops. "
                         "Exact (result-invariant) memory/indexing knob: lower if "
                         "you hit OOM, raise for speed. Does not change the model.")
+    p.add_argument("--grad-checkpoint", action="store_true",
+                   help="recompute block activations in backward instead of "
+                        "storing them (~30%% more compute, big memory cut, exact "
+                        "same result). Needed for the full 122,880-node mesh.")
     p.add_argument("--quantize", action="store_true",
                    help="train the AE + hierarchical residual VQ (tokenizer)")
     p.add_argument("--window", type=int, default=48, help="temporal window frames")
@@ -155,9 +159,11 @@ def main(argv=None) -> int:
             return 2
         rvq_cfg = RVQConfig(dim=args.latent)
         model = QuantizedSphericalAutoencoderV2(cfg, neighbors, rvq_cfg,
-                                                node_chunk=args.node_chunk)
+                                                node_chunk=args.node_chunk,
+                                                grad_checkpoint=args.grad_checkpoint)
     else:
-        model = SphericalAutoencoderV2(cfg, neighbors, node_chunk=args.node_chunk)
+        model = SphericalAutoencoderV2(cfg, neighbors, node_chunk=args.node_chunk,
+                                       grad_checkpoint=args.grad_checkpoint)
     n_params = sum(p.numel() for p in model.parameters())
 
     stream = EphemerisStream(
@@ -176,7 +182,8 @@ def main(argv=None) -> int:
         trainer.load(args.resume)
         print(f"Resumed from {args.resume} at step {trainer.step}")
 
-    print(f"\nTraining (v2, node-chunk={args.node_chunk}) on {trainer.device} | "
+    print(f"\nTraining (v2, node-chunk={args.node_chunk}, "
+          f"grad_checkpoint={args.grad_checkpoint}) on {trainer.device} | "
           f"{n_params:,} params | nodes={args.nodes} latent={args.latent} "
           f"window={args.window} blocks={args.blocks}")
     print(f"Saving to {args.checkpoints}/  (every {args.save_every} steps)\n")
