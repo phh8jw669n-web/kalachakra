@@ -94,16 +94,28 @@ def build_topology(grid):
     Delaunay triangulation on a sphere). Returns (verts_f32[N*3], indices_u32[M*3]).
 
     The raw k-NN graph cannot form a valid manifold, so the hull is what actually
-    yields a solid, non-overlapping mesh (the PRD's "blob" fix)."""
+    yields a solid, non-overlapping mesh (the PRD's "blob" fix).
+
+    Every triangle is oriented so its winding gives an **outward-facing** normal
+    (``cross(b-a, c-a) . centroid > 0``). scipy's ``ConvexHull.simplices`` are not
+    consistently wound, so this is what lets the client cull back faces
+    (``THREE.FrontSide``) and hide the rear hemisphere cleanly."""
     try:
         from scipy.spatial import ConvexHull
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError("scipy is required for the mesh triangulation "
                            '(`pip install "kalachakra[transducer]"`).') from exc
-    hull = ConvexHull(grid.xyz)
-    tris = np.asarray(hull.simplices, dtype=np.uint32)      # (M, 3)
-    verts = grid.xyz.astype("<f4").ravel()                  # (N*3,)
-    return verts, tris.ravel()
+    pts = grid.xyz
+    tris = np.asarray(ConvexHull(pts).simplices, dtype=np.int64)     # (M, 3)
+    a, b, c = pts[tris[:, 0]], pts[tris[:, 1]], pts[tris[:, 2]]
+    normal = np.cross(b - a, c - a)
+    centroid = (a + b + c) / 3.0
+    inward = np.einsum("ij,ij->i", normal, centroid) < 0.0          # normal points in
+    swap = tris[inward, 1].copy()                                   # -> reverse winding
+    tris[inward, 1] = tris[inward, 2]
+    tris[inward, 2] = swap
+    verts = pts.astype("<f4").ravel()                              # (N*3,)
+    return verts, tris.astype(np.uint32).ravel()
 
 
 def _lonlat_to_xyz(lon_deg, lat_deg, radius):

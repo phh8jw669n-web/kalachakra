@@ -135,7 +135,11 @@ $('app').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 100);
-camera.position.set(0.4, 0.7, 3.0);
+// The backend builds geometry with +Z as the North Pole (z = sin(lat)); align the
+// camera's up-axis to Z so OrbitControls spins around the poles (natural equatorial
+// rotation) instead of tumbling. Start in the equatorial plane looking at 0N.
+camera.up.set(0, 0, 1);
+camera.position.set(2.7, 1.5, 0.65);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true; controls.dampingFactor = 0.08;
 controls.minDistance = 1.25; controls.maxDistance = 8;
@@ -180,7 +184,10 @@ function buildEarth() {
   };
   cx.fillStyle = '#0a0f18'; cx.fillRect(0, 0, cw, ch); paintGrid();
   const tex = new THREE.CanvasTexture(cv);
-  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.9 });
+  // depthWrite:true makes the Earth a solid physical blocker so the rear-hemisphere
+  // data waves are depth-culled instead of bleeding through onto the front.
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.9,
+    depthWrite: true });
   const img = new Image(); img.crossOrigin = 'anonymous';
   img.onload = () => {
     cx.globalAlpha = 0.85; cx.drawImage(img, 0, 0, cw, ch); cx.globalAlpha = 1; paintGrid();
@@ -206,7 +213,7 @@ const uniforms = {
   uTween: { value: 0.0 },                        // 0..1 blend from current frame to next
 };
 const material = new THREE.ShaderMaterial({
-  uniforms, side: THREE.DoubleSide,
+  uniforms, side: THREE.FrontSide,               // cull the rear hemisphere (outward-wound tris)
   transparent: true, depthWrite: false,          // non-resonant faces reveal the Earth beneath
   vertexShader: `
     attribute float aMagCurrent; attribute float aSimCurrent;

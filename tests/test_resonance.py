@@ -141,6 +141,15 @@ def test_topology_is_watertight_hull(tmp_path):
     assert (indices[:, 1] != indices[:, 2]).all()
     assert (indices[:, 0] != indices[:, 2]).all()
 
+    # every triangle is wound outward (cross(b-a, c-a) . centroid > 0), so the
+    # client can cull back faces (THREE.FrontSide) and hide the rear hemisphere.
+    a = verts[indices[:, 0]]
+    b = verts[indices[:, 1]]
+    c = verts[indices[:, 2]]
+    normal = np.cross(b - a, c - a)
+    centroid = (a + b + c) / 3.0
+    assert (np.einsum("ij,ij->i", normal, centroid) > 0.0).all()
+
 
 def test_coastlines_overlay(tmp_path):
     if not global_state.ephemeris_available():
