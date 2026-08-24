@@ -64,7 +64,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--knn", type=int, default=7)
     # VQ
     p.add_argument("--codebook", type=int, default=4096, help="number of archetypes")
-    p.add_argument("--beta", type=float, default=0.25, help="commitment weight")
+    p.add_argument("--beta", type=float, default=0.25,
+                   help="commitment weight inside the VQ loss")
+    p.add_argument("--lambda-vq", type=float, default=0.25,
+                   help="scale on the VQ loss in the total: geo+spec+lambda_vq*vq")
+    p.add_argument("--ema-decay", type=float, default=0.99,
+                   help="EMA decay for the codebook cluster centers")
+    p.add_argument("--restart-after", type=int, default=10,
+                   help="restart a code unused for this many consecutive steps")
     # full-mesh memory / indexing knobs
     p.add_argument("--node-chunk", type=int, default=8192)
     p.add_argument("--vq-chunk", type=int, default=131_072)
@@ -145,6 +152,7 @@ def main(argv=None) -> int:
         n_nodes=args.nodes, in_features=C.LOCAL_FIELD_WIDTH, hidden=args.hidden,
         latent=args.latent, fourier_modes=args.modes, knn=args.knn,
         n_blocks=args.blocks, codebook_size=args.codebook, commitment_beta=args.beta,
+        ema_decay=args.ema_decay, restart_after=args.restart_after,
         node_chunk=args.node_chunk, vq_chunk=args.vq_chunk,
         grad_checkpoint=args.grad_checkpoint,
     )
@@ -211,7 +219,8 @@ def main(argv=None) -> int:
             recon_f = recon.float().unflatten(-1, (-1, 5))
             target_f = e.float().unflatten(-1, (-1, 5))
             gs_total, parts = criterion(recon_f, target_f)
-            total = gs_total + vq_loss.float()
+            # total = L_geo + L_spec + lambda_vq * L_VQ
+            total = gs_total + args.lambda_vq * vq_loss.float()
             total.backward()
             if args.grad_clip:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -221,14 +230,16 @@ def main(argv=None) -> int:
 
             if step % args.log_every == 0 or step == 1:
                 lr = scheduler.get_last_lr()[0]
-                rate = step / max(time.time() - t0, 1e-9)
+                elapsed = max(time.time() - t0, 1e-9)
+                rate = step / elapsed
+                sps = elapsed / step               # seconds per step
                 print(f"  epoch {epoch} step {step:5d}  "
                       f"loss={float(total.detach()):.4f}  "
                       f"geo={float(parts['geodesic'].detach()):.4f}  "
                       f"spec={float(parts['spectral'].detach()):.4f}  "
                       f"vq={float(vq_loss.detach()):.4f}  "
                       f"ppl={model.last_perplexity:.1f}  "
-                      f"lr={lr:.2e}  ({rate:.2f} steps/s)")
+                      f"lr={lr:.2e}  ({rate:.5f} steps/s, {sps:.1f}s/step)")
             if step % args.save_every == 0:
                 save(f"step_{step:06d}")
                 print(f"    saved checkpoint at step {step}")
