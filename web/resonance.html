@@ -10,65 +10,96 @@
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: #cfd3dc; }
   #app { position: fixed; inset: 0; }
   canvas { display: block; }
-  .panel { position: fixed; background: rgba(10,12,18,0.72); border: 1px solid #1b1f2a;
+  .panel { position: fixed; background: rgba(10,12,18,0.74); border: 1px solid #1b1f2a;
     border-radius: 10px; padding: 12px 14px; backdrop-filter: blur(8px); font-size: 12px; }
-  #controls { top: 14px; left: 14px; width: 250px; }
-  #controls h1 { font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+  h1 { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
     color: #9aa3b2; margin: 0 0 10px; font-weight: 600; }
   .row { display: flex; gap: 6px; margin: 6px 0; align-items: center; }
-  .row label { width: 34px; color: #7c8598; }
-  input { flex: 1; background: #0b0e15; border: 1px solid #232838; color: #e8ecf4;
-    border-radius: 6px; padding: 5px 7px; font: inherit; width: 100%; box-sizing: border-box; }
+  .row label { width: 40px; color: #7c8598; }
+  input, button { font: inherit; }
+  input { background: #0b0e15; border: 1px solid #232838; color: #e8ecf4;
+    border-radius: 6px; padding: 5px 7px; flex: 1; box-sizing: border-box; min-width: 0; }
+  input[type=range] { padding: 0; }
   button { background: #14304a; border: 1px solid #244a6e; color: #dfe8f5; cursor: pointer;
-    border-radius: 6px; padding: 6px 9px; font: inherit; }
+    border-radius: 6px; padding: 6px 9px; }
   button:hover { background: #1b3f60; }
   button.primary { background: #b8860b; border-color: #d4a017; color: #1a1204; font-weight: 700; }
   button.primary:hover { background: #d4a017; }
+  button:disabled { opacity: 0.4; cursor: default; }
   .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .presets button { padding: 4px 8px; font-size: 11px; }
   .hint { color: #5c6577; font-size: 11px; margin-top: 8px; line-height: 1.5; }
-  #stats { bottom: 14px; left: 50%; transform: translateX(-50%); display: flex;
-    gap: 18px; text-align: center; }
-  #stats .k { color: #6b7488; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
-  #stats .v { color: #e8ecf4; font-size: 15px; margin-top: 2px; font-variant-numeric: tabular-nums; }
-  #legend { top: 14px; right: 14px; width: 172px; }
+
+  #controls { top: 58px; left: 14px; width: 236px; }
+  #legend { top: 58px; right: 14px; width: 168px; }
   #legend .bar { height: 10px; border-radius: 5px; margin: 8px 0 4px;
     background: linear-gradient(90deg,#001122,#0A2540 22%,#111116 40%,#050508 55%,#FF8C00 78%,#FFD700 90%,#FFFFFF); }
   #legend .lab { display: flex; justify-content: space-between; color: #6b7488; font-size: 10px; }
-  #err { position: fixed; bottom: 14px; right: 14px; color: #d98c8c; font-size: 11px; max-width: 320px; }
+
+  #clock { top: 14px; left: 50%; transform: translateX(-50%); text-align: center; padding: 8px 18px; }
+  #clock .k { color: #6b7488; font-size: 9px; letter-spacing: 0.22em; }
+  #clock .v { color: #ffd98a; font-size: 20px; letter-spacing: 0.06em; margin-top: 2px;
+    font-variant-numeric: tabular-nums; text-shadow: 0 0 14px rgba(255,190,90,0.35); }
+
+  #timeline { bottom: 14px; left: 50%; transform: translateX(-50%); width: min(760px, 94vw); }
+  #timeline .grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
+  #timeline .f { display: flex; flex-direction: column; gap: 3px; }
+  #timeline .f span { color: #7c8598; font-size: 10px; }
+  #transport { display: flex; gap: 6px; align-items: center; margin-top: 10px; }
+  #scrub { flex: 1; }
+  #status { color: #6b7488; font-size: 11px; min-width: 108px; text-align: right; }
+  #err { position: fixed; bottom: 92px; left: 50%; transform: translateX(-50%);
+    color: #e0a3a3; font-size: 11px; max-width: 70vw; text-align: center; }
 </style>
 </head>
 <body>
 <div id="app"></div>
 
+<div id="clock" class="panel">
+  <div class="k">CURRENTLY PROJECTING</div>
+  <div class="v" id="clock-v">— — —</div>
+</div>
+
 <div id="controls" class="panel">
-  <h1>Geo-Resonance Anchor</h1>
+  <h1>Anchor</h1>
   <div class="row"><label>Lat</label><input id="lat" type="number" step="0.1" value="26.9" /></div>
   <div class="row"><label>Lon</label><input id="lon" type="number" step="0.1" value="75.7" /></div>
-  <div class="row"><button id="go" class="primary" style="flex:1">Illuminate ▸</button></div>
   <div class="presets">
     <button data-lat="26.9" data-lon="75.7">Rajasthan</button>
     <button data-lat="51.5" data-lon="-0.12">London</button>
     <button data-lat="35.7" data-lon="139.7">Tokyo</button>
     <button data-lat="-33.9" data-lon="18.4">Cape Town</button>
-    <button data-lat="0" data-lon="0">Null Island</button>
+    <button data-lat="40.7" data-lon="-74.0">New York</button>
   </div>
   <div class="hint">Click the globe to set an anchor. Drag to orbit, scroll to zoom.</div>
-  <div class="row" style="margin-top:8px"><label style="width:auto">Elev</label>
-    <input id="elev" type="range" min="0" max="0.6" step="0.01" value="0.28" /></div>
+  <div class="row" style="margin-top:8px"><label style="width:auto">Relief</label>
+    <input id="elev" type="range" min="0" max="0.6" step="0.01" value="0.26" /></div>
+  <div class="row"><label style="width:auto">Map</label>
+    <input id="mapop" type="range" min="0" max="1" step="0.02" value="0.9" /></div>
 </div>
 
 <div id="legend" class="panel">
   <div class="k" style="color:#9aa3b2;letter-spacing:0.14em;text-transform:uppercase;font-size:11px">Cosine resonance</div>
   <div class="bar"></div>
   <div class="lab"><span>−1 shear</span><span>0</span><span>+1</span></div>
+  <div class="hint" id="legend-stats" style="margin-top:10px">node — · ‖z‖ — · cos [—, —]</div>
 </div>
 
-<div id="stats" class="panel">
-  <div><div class="k">Node</div><div class="v" id="s-node">—</div></div>
-  <div><div class="k">Anchor ‖z‖</div><div class="v" id="s-norm">—</div></div>
-  <div><div class="k">Cos min</div><div class="v" id="s-min">—</div></div>
-  <div><div class="k">Cos max</div><div class="v" id="s-max">—</div></div>
+<div id="timeline" class="panel">
+  <div class="grid">
+    <div class="f"><span>Start (UTC)</span><input id="start" type="datetime-local" /></div>
+    <div class="f"><span>End (UTC)</span><input id="end" type="datetime-local" /></div>
+    <div class="f"><span>Step (hours) · fps</span>
+      <div style="display:flex;gap:6px"><input id="stepH" type="number" step="1" value="24" style="width:64px" />
+        <input id="fps" type="range" min="0.5" max="30" step="0.5" value="6" /></div></div>
+  </div>
+  <div id="transport">
+    <button id="play" class="primary">▶ Play</button>
+    <button id="pause" disabled>⏸ Pause</button>
+    <button id="stepb">⟩ Step</button>
+    <input id="scrub" type="range" min="0" max="0" step="1" value="0" />
+    <div id="status">idle</div>
+  </div>
 </div>
 <div id="err"></div>
 
@@ -82,50 +113,106 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-const API = location.origin;                 // served same-origin by serve_resonance.py
+const API = location.origin;
 const $ = (id) => document.getElementById(id);
 const err = (m) => { $('err').textContent = m || ''; };
+const dec = new TextDecoder();
 
 // ---- scene ----------------------------------------------------------------
-const app = $('app');
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.setClearColor(0x050508, 1);
-app.appendChild(renderer.domElement);
+$('app').appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 100);
-camera.position.set(0, 0.6, 2.8);
+camera.position.set(0.4, 0.7, 3.0);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true; controls.dampingFactor = 0.08;
-controls.minDistance = 1.3; controls.maxDistance = 8; controls.autoRotate = true;
-controls.autoRotateSpeed = 0.35;
+controls.minDistance = 1.25; controls.maxDistance = 8;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.28;
 
-// faint reference sphere + invisible raycast target
-scene.add(new THREE.Mesh(new THREE.SphereGeometry(0.994, 64, 48),
-  new THREE.MeshBasicMaterial({ color: 0x0a0e16, wireframe: true, transparent: true, opacity: 0.12 })));
-const pickSphere = new THREE.Mesh(new THREE.SphereGeometry(1.0, 48, 32),
+scene.add(new THREE.AmbientLight(0x8899bb, 0.5));
+const key = new THREE.DirectionalLight(0xffffff, 1.1); key.position.set(3, 2, 4); scene.add(key);
+
+// ---- Earth context sphere (our lat/lon convention: z = sin(lat)) ----------
+function buildEarth() {
+  const stacks = 90, slices = 180, r = 0.985;
+  const pos = [], uv = [], idx = [];
+  for (let i = 0; i <= stacks; i++) {
+    const lat = (-90 + 180 * i / stacks) * Math.PI / 180;
+    for (let j = 0; j <= slices; j++) {
+      const lon = (-180 + 360 * j / slices) * Math.PI / 180;
+      pos.push(r * Math.cos(lat) * Math.cos(lon), r * Math.cos(lat) * Math.sin(lon), r * Math.sin(lat));
+      uv.push(j / slices, i / stacks);            // equirectangular u=lon, v=lat
+    }
+  }
+  const w = slices + 1;
+  for (let i = 0; i < stacks; i++) for (let j = 0; j < slices; j++) {
+    const a = i * w + j, b = a + 1, c = a + w, d = c + 1;
+    idx.push(a, c, b, b, c, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  // canvas texture: graticule (always aligned), earth image overlaid if it loads.
+  const cw = 2048, ch = 1024, cv = document.createElement('canvas');
+  cv.width = cw; cv.height = ch;
+  const cx = cv.getContext('2d');
+  const paintGrid = () => {
+    cx.strokeStyle = 'rgba(90,120,160,0.28)'; cx.lineWidth = 1;
+    for (let lo = -180; lo <= 180; lo += 30) { const x = (lo + 180) / 360 * cw;
+      cx.beginPath(); cx.moveTo(x, 0); cx.lineTo(x, ch); cx.stroke(); }
+    for (let la = -90; la <= 90; la += 30) { const y = (90 - la) / 180 * ch;
+      cx.beginPath(); cx.moveTo(0, y); cx.lineTo(cw, y); cx.stroke(); }
+    cx.strokeStyle = 'rgba(120,150,190,0.5)';
+    cx.beginPath(); cx.moveTo(0, ch / 2); cx.lineTo(cw, ch / 2); cx.stroke();
+  };
+  cx.fillStyle = '#0a0f18'; cx.fillRect(0, 0, cw, ch); paintGrid();
+  const tex = new THREE.CanvasTexture(cv);
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.9 });
+  const img = new Image(); img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    cx.globalAlpha = 0.85; cx.drawImage(img, 0, 0, cw, ch); cx.globalAlpha = 1; paintGrid();
+    tex.needsUpdate = true;
+  };
+  img.onerror = () => {};                          // graticule-only fallback
+  img.src = 'https://unpkg.com/three-globe/example/img/earth-dark.jpg';
+  const mesh = new THREE.Mesh(g, mat);
+  return { mesh, mat, tex };
+}
+const earth = buildEarth(); scene.add(earth.mesh);
+$('mapop').addEventListener('input', e => earth.mat.opacity = +e.target.value);
+
+// invisible pick sphere (radius 1, our convention matches the earth mesh)
+const pick = new THREE.Mesh(new THREE.SphereGeometry(1.0, 48, 32),
   new THREE.MeshBasicMaterial({ visible: false }));
-scene.add(pickSphere);
+scene.add(pick);
 
-// ---- point cloud + shader -------------------------------------------------
-const uniforms = { uElevation: { value: 0.28 }, uPointSize: { value: 2.4 } };
+// ---- data mesh (solid, displaced, lit) ------------------------------------
+const uniforms = {
+  uElevation: { value: 0.26 },
+  uLightDir: { value: new THREE.Vector3(0.4, 0.55, 0.85).normalize() },
+};
 const material = new THREE.ShaderMaterial({
-  uniforms, transparent: true, depthTest: true, depthWrite: true,
+  uniforms, side: THREE.DoubleSide,
   vertexShader: `
     attribute float aMagnitude; attribute float aSimilarity;
-    uniform float uElevation; uniform float uPointSize;
-    varying float vSim;
+    uniform float uElevation;
+    varying float vSim; varying vec3 vView;
     void main(){
       vSim = aSimilarity;
       vec3 disp = position * (1.0 + aMagnitude * uElevation);
       vec4 mv = modelViewMatrix * vec4(disp, 1.0);
-      gl_PointSize = uPointSize * (320.0 / max(-mv.z, 0.001));
+      vView = mv.xyz;
       gl_Position = projectionMatrix * mv;
     }`,
   fragmentShader: `
-    precision highp float; varying float vSim;
+    precision highp float;
+    varying float vSim; varying vec3 vView;
+    uniform vec3 uLightDir;
     vec3 palette(float s){
       vec3 abyssDeep=vec3(0.0,0.066,0.133), abyss=vec3(0.039,0.145,0.251);
       vec3 charLo=vec3(0.020,0.020,0.031),  charHi=vec3(0.067,0.067,0.086);
@@ -137,85 +224,153 @@ const material = new THREE.ShaderMaterial({
       return mix(warm, white, clamp((s-0.90)/0.10,0.0,1.0));
     }
     void main(){
-      vec2 d = gl_PointCoord - vec2(0.5);
-      float r = length(d);
-      if(r > 0.5) discard;
-      float a = smoothstep(0.5, 0.12, r);
-      vec3 col = palette(vSim);
-      col *= 1.0 + smoothstep(0.7, 1.0, vSim) * 1.6;    // glow high resonance
-      gl_FragColor = vec4(col, a);
+      vec3 n = normalize(cross(dFdx(vView), dFdy(vView)));   // flat per-face normal
+      if(n.z < 0.0) n = -n;
+      float diff = max(dot(n, normalize(uLightDir)), 0.0);
+      vec3 base = palette(vSim);
+      vec3 col = base * (0.28 + 0.95 * diff);
+      col += base * smoothstep(0.82, 1.0, vSim) * 0.7;       // glow high resonance
+      gl_FragColor = vec4(col, 1.0);
     }`,
-});
-
-let points = null, N = 0, aMag = null, aSim = null;
-
-async function loadMesh(){
-  err('');
-  const res = await fetch(API + '/api/mesh');
-  if(!res.ok) throw new Error('mesh fetch failed: ' + res.status);
-  const verts = new Float32Array(await res.arrayBuffer());
-  N = verts.length / 3;
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-  aMag = new Float32Array(N); aSim = new Float32Array(N);
-  geo.setAttribute('aMagnitude', new THREE.BufferAttribute(aMag, 1));
-  geo.setAttribute('aSimilarity', new THREE.BufferAttribute(aSim, 1));
-  points = new THREE.Points(geo, material);
-  points.frustumCulled = false;
-  scene.add(points);
-}
-
-async function resonate(lat, lon){
-  err('');
-  try{
-    const res = await fetch(API + '/api/resonance', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ anchor_lat: lat, anchor_lon: lon }),
-    });
-    if(!res.ok) throw new Error('resonance failed: ' + res.status);
-    const buf = new Float32Array(await res.arrayBuffer());
-    aMag.set(buf.subarray(0, N));
-    aSim.set(buf.subarray(N, 2 * N));
-    points.geometry.attributes.aMagnitude.needsUpdate = true;
-    points.geometry.attributes.aSimilarity.needsUpdate = true;
-    $('s-node').textContent = res.headers.get('X-Node-Id') ?? '—';
-    $('s-norm').textContent = (+res.headers.get('X-Anchor-Norm')).toFixed(2);
-    $('s-min').textContent  = (+res.headers.get('X-Sim-Min')).toFixed(3);
-    $('s-max').textContent  = (+res.headers.get('X-Sim-Max')).toFixed(3);
-    const rl = res.headers.get('X-Anchor-Lat'), ro = res.headers.get('X-Anchor-Lon');
-    if(rl) $('lat').value = (+rl).toFixed(1);
-    if(ro) $('lon').value = (+ro).toFixed(1);
-  } catch(e){ err(String(e.message || e)); }
-}
-
-// ---- interaction ----------------------------------------------------------
-$('go').onclick = () => resonate(+$('lat').value, +$('lon').value);
-[$('lat'), $('lon')].forEach(el => el.addEventListener('keydown',
-  e => { if(e.key === 'Enter') $('go').click(); }));
-document.querySelectorAll('.presets button').forEach(b => b.onclick = () => {
-  $('lat').value = b.dataset.lat; $('lon').value = b.dataset.lon; $('go').click();
 });
 $('elev').addEventListener('input', e => uniforms.uElevation.value = +e.target.value);
 
-const ray = new THREE.Raycaster();
-let downXY = null;
+let dataMesh = null, N = 0, aMag = null, aSim = null;
+
+async function loadTopology(){
+  const res = await fetch(API + '/api/topology');
+  if(!res.ok) throw new Error('topology ' + res.status);
+  const buf = await res.arrayBuffer();
+  const dv = new DataView(buf);
+  N = dv.getUint32(0, true);
+  const nTris = dv.getUint32(4, true);
+  const verts = new Float32Array(buf, 8, N * 3);
+  const indices = new Uint32Array(buf, 8 + N * 12, nTris * 3);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(verts.slice(), 3));
+  aMag = new Float32Array(N); aSim = new Float32Array(N);
+  g.setAttribute('aMagnitude', new THREE.BufferAttribute(aMag, 1));
+  g.setAttribute('aSimilarity', new THREE.BufferAttribute(aSim, 1));
+  g.setIndex(new THREE.BufferAttribute(indices.slice(), 1));
+  dataMesh = new THREE.Mesh(g, material);
+  dataMesh.frustumCulled = false;
+  scene.add(dataMesh);
+  $('status').textContent = N.toLocaleString() + ' nodes · ' + nTris.toLocaleString() + ' tris';
+}
+
+function applyFrame(f){
+  aMag.set(f.mags); aSim.set(f.sims);
+  dataMesh.geometry.attributes.aMagnitude.needsUpdate = true;
+  dataMesh.geometry.attributes.aSimilarity.needsUpdate = true;
+  $('clock-v').textContent = f.ts.replace(/\.0 UTC.*/, ' UTC');
+  let mn = Infinity, mx = -Infinity;
+  for(const s of f.sims){ if(s < mn) mn = s; if(s > mx) mx = s; }
+  $('legend-stats').textContent =
+    `node ${anchorNode ?? '—'} · cos [${mn.toFixed(2)}, ${mx.toFixed(2)}]`;
+}
+
+// ---- single-frame anchor (instant, no animation) --------------------------
+let anchorNode = null;
+async function resonateStatic(lat, lon){
+  err('');
+  try {
+    const res = await fetch(API + '/api/resonance', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anchor_lat: lat, anchor_lon: lon }) });
+    if(!res.ok) throw new Error('resonance ' + res.status);
+    const buf = new Float32Array(await res.arrayBuffer());
+    anchorNode = res.headers.get('X-Node-Id');
+    applyFrame({ ts: 'static', mags: buf.subarray(0, N), sims: buf.subarray(N, 2 * N) });
+    $('clock-v').textContent = '— static frame —';
+    const rl = res.headers.get('X-Anchor-Lat'), ro = res.headers.get('X-Anchor-Lon');
+    if(rl) $('lat').value = (+rl).toFixed(1); if(ro) $('lon').value = (+ro).toFixed(1);
+  } catch(e){ err(String(e.message || e)); }
+}
+
+// ---- temporal stream + playback ------------------------------------------
+let frames = [], cursor = 0, playing = false, streamAbort = null, streamDone = false;
+
+function isoUTC(el){                     // datetime-local (assumed UTC) -> ISO Z
+  return el.value ? el.value + ':00Z' : null;
+}
+function concat(a, b){ const o = new Uint8Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; }
+
+async function startStream(){
+  if(!dataMesh){ err('mesh not loaded yet'); return; }
+  stopStream(); frames = []; cursor = 0; streamDone = false;
+  $('scrub').max = 0; $('scrub').value = 0;
+  const body = { anchor_lat: +$('lat').value, anchor_lon: +$('lon').value,
+    start_date: isoUTC($('start')), end_date: isoUTC($('end')), step_hours: +$('stepH').value };
+  streamAbort = new AbortController();
+  $('status').textContent = 'computing…'; setPlaying(true);
+  let res;
+  try { res = await fetch(API + '/api/stream_resonance', { method: 'POST', signal: streamAbort.signal,
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
+  catch(e){ err('stream failed: ' + e.message); setPlaying(false); return; }
+  const total = +(res.headers.get('X-N-Frames') || 0);
+  anchorNode = res.headers.get('X-Node-Id');
+  const reader = res.body.getReader();
+  let carry = new Uint8Array(0);
+  try {
+    while(true){
+      const { done, value } = await reader.read();
+      if(done) break;
+      carry = concat(carry, value);
+      let off = 0;
+      while(carry.byteLength - off >= 4){
+        const dv = new DataView(carry.buffer, carry.byteOffset + off, 4);
+        const flen = dv.getUint32(0, true);
+        if(carry.byteLength - off - 4 < flen) break;
+        const fb = carry.buffer.slice(carry.byteOffset + off + 4, carry.byteOffset + off + 4 + flen);
+        const fdv = new DataView(fb);
+        const tsLen = fdv.getUint32(0, true);
+        const ts = dec.decode(new Uint8Array(fb, 4, tsLen));
+        const magOff = 4 + tsLen;
+        const mags = new Float32Array(fb.slice(magOff, magOff + N * 4));
+        const sims = new Float32Array(fb.slice(magOff + N * 4, magOff + 2 * N * 4));
+        frames.push({ ts, mags, sims });
+        off += 4 + flen;
+      }
+      carry = carry.slice(off);
+      $('scrub').max = frames.length - 1;
+      $('status').textContent = `buffered ${frames.length}/${total || '?'}`;
+    }
+    streamDone = true;
+    $('status').textContent = `ready ${frames.length} frames`;
+  } catch(e){
+    if(e.name !== 'AbortError') err('stream read error: ' + e.message);
+  }
+}
+function stopStream(){ if(streamAbort){ streamAbort.abort(); streamAbort = null; } }
+
+function setPlaying(v){ playing = v; $('play').disabled = v; $('pause').disabled = !v; }
+$('play').onclick = () => {
+  if(frames.length === 0 || (!streamDone && cursor >= frames.length - 1)) startStream();
+  else setPlaying(true);
+};
+$('pause').onclick = () => setPlaying(false);
+$('stepb').onclick = () => { setPlaying(false); if(frames.length){ cursor = Math.min(cursor + 1, frames.length - 1); applyFrame(frames[Math.floor(cursor)]); $('scrub').value = Math.floor(cursor); } };
+$('scrub').addEventListener('input', e => { setPlaying(false); cursor = +e.target.value; if(frames[cursor]) applyFrame(frames[cursor]); });
+
+// anchor inputs / presets / click
+document.querySelectorAll('.presets button').forEach(b => b.onclick = () => {
+  $('lat').value = b.dataset.lat; $('lon').value = b.dataset.lon; resonateStatic(+$('lat').value, +$('lon').value);
+});
+[$('lat'), $('lon')].forEach(el => el.addEventListener('change', () => resonateStatic(+$('lat').value, +$('lon').value)));
+
+const ray = new THREE.Raycaster(); let downXY = null;
 renderer.domElement.addEventListener('pointerdown', e => downXY = [e.clientX, e.clientY]);
 renderer.domElement.addEventListener('pointerup', e => {
-  if(!downXY) return;
-  const moved = Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]);
-  downXY = null;
-  if(moved > 6) return;                       // it was a drag, not a click
-  const m = new THREE.Vector2((e.clientX / innerWidth) * 2 - 1,
-                              -(e.clientY / innerHeight) * 2 + 1);
+  if(!downXY) return; const moved = Math.hypot(e.clientX - downXY[0], e.clientY - downXY[1]); downXY = null;
+  if(moved > 6) return;
+  const m = new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   ray.setFromCamera(m, camera);
-  const hit = ray.intersectObject(pickSphere, false)[0];
-  if(!hit) return;
+  const hit = ray.intersectObject(pick, false)[0]; if(!hit) return;
   const p = hit.point.clone().normalize();
   const lat = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(p.z, -1, 1)));
   const lon = THREE.MathUtils.radToDeg(Math.atan2(p.y, p.x));
   $('lat').value = lat.toFixed(1); $('lon').value = lon.toFixed(1);
-  controls.autoRotate = false;
-  resonate(lat, lon);
+  controls.autoRotate = false; resonateStatic(lat, lon);
 });
 
 addEventListener('resize', () => {
@@ -223,15 +378,33 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
-(function loop(){
+// ---- render + playback loop ----------------------------------------------
+let last = performance.now();
+(function loop(now){
   requestAnimationFrame(loop);
+  const dt = Math.min((now - last) / 1000, 0.1); last = now;
+  if(playing && frames.length){
+    cursor += (+$('fps').value) * dt;
+    if(cursor >= frames.length - 1){
+      if(streamDone) cursor = 0;                  // loop when fully buffered
+      else cursor = frames.length - 1;            // hold at buffer edge
+    }
+    const fi = Math.floor(cursor);
+    applyFrame(frames[fi]); $('scrub').value = fi;
+  }
   controls.update();
   renderer.render(scene, camera);
-})();
+})(last);
 
 // ---- boot -----------------------------------------------------------------
-loadMesh()
-  .then(() => resonate(+$('lat').value, +$('lon').value))   // start on Rajasthan
+(function initDates(){
+  const pad = (n) => String(n).padStart(2, '0');
+  const fmt = (d) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:00`;
+  const s = new Date(); const e = new Date(s.getTime() + 30 * 864e5);
+  $('start').value = fmt(s); $('end').value = fmt(e);
+})();
+loadTopology()
+  .then(() => resonateStatic(+$('lat').value, +$('lon').value))
   .catch(e => err('Could not reach backend at ' + API + ' — is serve_resonance.py running? (' + e.message + ')'));
 </script>
 </body>

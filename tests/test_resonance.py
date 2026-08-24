@@ -1,11 +1,13 @@
 """Act II Geo-Resonance backend: checkpoint load -> inference -> endpoints.
 
 Builds a tiny v3 checkpoint (in the exact format scripts/train_v3.py saves), then
-exercises serve_resonance.create_app over it: /health, binary /api/mesh, and
-binary /api/resonance with its stats headers.
+exercises serve_resonance.create_app over it: /health, binary /api/mesh, binary
+/api/resonance with its stats headers, the triangulated /api/topology surface, and
+the animated /api/stream_resonance temporal stream.
 """
 
 import importlib.util
+import struct
 from dataclasses import asdict
 from pathlib import Path
 
@@ -93,7 +95,7 @@ def test_resonance_node_id_and_nearest(tmp_path):
     if not global_state.ephemeris_available():
         pytest.skip("pyswisseph not installed")
     ckpt = tmp_path / "m.pt"
-    n = _tiny_checkpoint(ckpt, n=300)
+    _tiny_checkpoint(ckpt, n=300)
     app = serve.create_app(str(ckpt), date="2024-01-01T00:00:00Z", window=6,
                            device=torch.device("cpu"))
     client = TestClient(app)
@@ -104,3 +106,84 @@ def test_resonance_node_id_and_nearest(tmp_path):
     a = client.post("/api/resonance", json={"anchor_lat": 0.0, "anchor_lon": 0.0})
     b = client.post("/api/resonance", json={"anchor_lat": 0.0, "anchor_lon": 0.0})
     assert a.headers["X-Node-Id"] == b.headers["X-Node-Id"]
+
+
+def test_topology_is_watertight_hull(tmp_path):
+    if not global_state.ephemeris_available():
+        pytest.skip("pyswisseph not installed")
+    pytest.importorskip("scipy")
+    serve = _load_serve()
+    ckpt = tmp_path / "model_step_000025.pt"
+    n = _tiny_checkpoint(ckpt)
+    app = serve.create_app(str(ckpt), date="2024-04-08T18:17:00Z", window=8,
+                           device=torch.device("cpu"))
+    client = TestClient(app)
+
+    h = client.get("/health").json()
+    assert h["n_triangles"] > 0
+
+    res = client.get("/api/topology")
+    assert res.status_code == 200
+    N, n_tris = struct.unpack("<II", res.content[:8])
+    assert N == n and n_tris == int(res.headers["X-N-Tris"])
+    # exact binary layout: [u32 N][u32 nTris][verts f32 N*3][indices u32 M*3]
+    assert len(res.content) == 8 + N * 12 + n_tris * 12
+
+    verts = np.frombuffer(res.content, dtype="<f4", count=N * 3, offset=8).reshape(N, 3)
+    assert np.allclose(np.linalg.norm(verts, axis=1), 1.0, atol=1e-4)   # unit sphere
+    indices = np.frombuffer(res.content, dtype="<u4", offset=8 + N * 12).reshape(n_tris, 3)
+    assert indices.min() >= 0 and indices.max() < N                     # valid refs
+    # a closed hull of a sphere: Euler characteristic V - E + F = 2, and every
+    # edge is shared by exactly two triangles => E = 3F/2, so F = 2N - 4.
+    assert n_tris == 2 * N - 4
+    # every triangle references three distinct vertices
+    assert (indices[:, 0] != indices[:, 1]).all()
+    assert (indices[:, 1] != indices[:, 2]).all()
+    assert (indices[:, 0] != indices[:, 2]).all()
+
+
+def test_stream_resonance_frames(tmp_path):
+    if not global_state.ephemeris_available():
+        pytest.skip("pyswisseph not installed")
+    serve = _load_serve()
+    ckpt = tmp_path / "model_step_000025.pt"
+    n = _tiny_checkpoint(ckpt)
+    app = serve.create_app(str(ckpt), date="2024-01-01T00:00:00Z", window=8,
+                           stream_window=6, device=torch.device("cpu"))
+    client = TestClient(app)
+
+    r = client.post("/api/stream_resonance", json={
+        "anchor_lat": 26.9, "anchor_lon": 75.7,
+        "start_date": "2024-01-01T00:00:00Z", "end_date": "2024-01-04T00:00:00Z",
+        "step_hours": 24.0})
+    assert r.status_code == 200
+    declared = int(r.headers["X-N-Frames"])
+    node = int(r.headers["X-Node-Id"])
+    assert 0 <= node < n
+    assert declared == 4                       # [0,1,2,3] days inclusive
+
+    # parse the frame stream exactly as the browser does
+    data = r.content
+    off, frames = 0, []
+    while off + 4 <= len(data):
+        (flen,) = struct.unpack_from("<I", data, off)
+        off += 4
+        fb = data[off:off + flen]
+        off += flen
+        (ts_len,) = struct.unpack_from("<I", fb, 0)
+        ts = fb[4:4 + ts_len].decode("utf-8")
+        base = 4 + ts_len
+        mags = np.frombuffer(fb, dtype="<f4", count=n, offset=base)
+        sims = np.frombuffer(fb, dtype="<f4", count=n, offset=base + n * 4)
+        assert flen == 4 + ts_len + 8 * n
+        assert len(ts) > 0
+        assert mags.min() >= 0.0 and mags.max() <= 1.5 + 1e-5
+        assert sims.min() >= -1.0 - 1e-4 and sims.max() <= 1.0 + 1e-4
+        frames.append((ts, mags, sims))
+
+    assert off == len(data)                    # no trailing bytes
+    assert len(frames) == declared
+    # the anchor is self-similar in the first frame (z_anchor is taken from it)
+    assert abs(frames[0][2][node] - 1.0) < 1e-4
+    # frames advance in time (timestamps differ across the run)
+    assert frames[0][0] != frames[-1][0]
