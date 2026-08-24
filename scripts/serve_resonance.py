@@ -223,12 +223,17 @@ def compute_resonance_series(model, grid, jds, node: int, device, encode_batch: 
     Projects every requested timeline step once, encodes them in batched passes
     (each slab is ``(Tb, 1, N, 50)`` -> ``(Tb, N, 64)`` in a single forward), and
     reduces to per-frame magnitude/similarity fields. The anchor latent
-    ``z_anchor`` and the magnitude reference scale are **frozen from the first
-    frame (Start Date)** and reused for every later step, so the animation
-    compares a changing field against one fixed moment in the past.
+    ``z_anchor`` and the magnitude scale are **frozen from the first frame
+    (Start Date)** and reused for every later step, so the animation compares a
+    changing field against one fixed moment in the past.
+
+    Magnitudes are min-max normalized by the start-frame ``||z||`` range (matching
+    the static /api/resonance path), so the lowest-relief nodes sit at 0 and hug
+    the map surface instead of the whole field inflating into a shell that floats
+    above the map and slides under rotation.
 
     Returns ``(mags[T, N] f32 in [0, 1.5], sims[T, N] f32 in [-1, 1],
-    anchor_norm, ref_scale)``.
+    anchor_norm, ref_lo)``.
     """
     import torch
 
@@ -237,24 +242,27 @@ def compute_resonance_series(model, grid, jds, node: int, device, encode_batch: 
     mags = np.empty((t_total, n), dtype="<f4")
     sims = np.empty((t_total, n), dtype="<f4")
     z_anchor = None
-    ref = 1.0
+    lo = 0.0
+    span = 1.0
     for s in range(0, t_total, encode_batch):
         e = min(s + encode_batch, t_total)
         fields = _project_fields(grid, jds[s:e])[:, None]      # (Tb, 1, N, 50)
         e_t = torch.from_numpy(fields.astype(np.float32)).to(device)
         with torch.no_grad():
             z = model.encode(e_t)[:, 0]                         # (Tb, N, 64)
-        if z_anchor is None:                                    # freeze from frame 0
+        if z_anchor is None:                                    # freeze scale from frame 0
             z_anchor = z[0, node].clone()
-            ref = float(z[0].norm(dim=1).max()) + 1e-12
-        m = (z.norm(dim=2) / ref).clamp(0.0, 1.5)              # (Tb, N)
+            n0 = z[0].norm(dim=1)
+            lo = float(n0.min())
+            span = float(n0.max() - n0.min()) + 1e-12
+        m = ((z.norm(dim=2) - lo) / span).clamp(0.0, 1.5)      # base hugs the surface
         sm = torch.nn.functional.cosine_similarity(
             z, z_anchor.view(1, 1, -1), dim=2)                  # (Tb, N)
         mags[s:e] = m.cpu().numpy().astype("<f4")
         sims[s:e] = sm.cpu().numpy().astype("<f4")
         del z, e_t
         _empty_cache(device)
-    return mags, sims, float(z_anchor.norm()), ref
+    return mags, sims, float(z_anchor.norm()), lo
 
 
 def nearest_node(grid, lat_deg: float, lon_deg: float) -> int:
