@@ -183,7 +183,7 @@ function buildEarth() {
   const mesh = new THREE.Mesh(g, mat);
   return { mesh, mat, tex };
 }
-const earth = buildEarth(); scene.add(earth.mesh);
+const earth = buildEarth(); earth.mesh.renderOrder = 0; scene.add(earth.mesh);
 $('mapop').addEventListener('input', e => earth.mat.opacity = +e.target.value);
 
 // invisible pick sphere (radius 1, our convention matches the earth mesh)
@@ -198,6 +198,7 @@ const uniforms = {
 };
 const material = new THREE.ShaderMaterial({
   uniforms, side: THREE.DoubleSide,
+  transparent: true, depthWrite: false,          // non-resonant faces reveal the Earth beneath
   vertexShader: `
     attribute float aMagnitude; attribute float aSimilarity;
     uniform float uElevation;
@@ -230,7 +231,10 @@ const material = new THREE.ShaderMaterial({
       vec3 base = palette(vSim);
       vec3 col = base * (0.28 + 0.95 * diff);
       col += base * smoothstep(0.82, 1.0, vSim) * 0.7;       // glow high resonance
-      gl_FragColor = vec4(col, 1.0);
+      // Neutral/ocean zones (vSim < 0.70) -> semi-transparent dark glass (0.15);
+      // resonant zones (vSim >= 0.70) -> opaque glowing waves (0.90).
+      float alpha = mix(0.15, 0.90, smoothstep(0.68, 0.72, vSim));
+      gl_FragColor = vec4(col, alpha);
     }`,
 });
 $('elev').addEventListener('input', e => uniforms.uElevation.value = +e.target.value);
@@ -254,8 +258,29 @@ async function loadTopology(){
   g.setIndex(new THREE.BufferAttribute(indices.slice(), 1));
   dataMesh = new THREE.Mesh(g, material);
   dataMesh.frustumCulled = false;
+  dataMesh.renderOrder = 2;                 // drawn after the Earth + coastlines
   scene.add(dataMesh);
   $('status').textContent = N.toLocaleString() + ' nodes · ' + nTris.toLocaleString() + ' tris';
+}
+
+// ---- coastline overlay (crisp continent outlines, our xyz frame) ----------
+let coastLines = null;
+async function loadCoastlines(){
+  try {
+    const res = await fetch(API + '/api/coastlines');
+    if(!res.ok) throw new Error('coastlines ' + res.status);
+    const buf = await res.arrayBuffer();
+    if(buf.byteLength < 4) return;
+    const nSeg = new DataView(buf).getUint32(0, true);
+    if(nSeg === 0) return;                  // no dataset -> graticule stands in
+    const verts = new Float32Array(buf, 4, nSeg * 6);   // pairs: [x0,y0,z0, x1,y1,z1]
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(verts.slice(), 3));
+    const mat = new THREE.LineBasicMaterial({ color: 0x6f93c4, transparent: true, opacity: 0.95 });
+    coastLines = new THREE.LineSegments(g, mat);
+    coastLines.renderOrder = 1;             // between the Earth sphere and the data mesh
+    scene.add(coastLines);
+  } catch(e){ /* graticule fallback already on the Earth sphere */ }
 }
 
 function applyFrame(f){
@@ -403,6 +428,7 @@ let last = performance.now();
   const s = new Date(); const e = new Date(s.getTime() + 30 * 864e5);
   $('start').value = fmt(s); $('end').value = fmt(e);
 })();
+loadCoastlines();
 loadTopology()
   .then(() => resonateStatic(+$('lat').value, +$('lon').value))
   .catch(e => err('Could not reach backend at ' + API + ' — is serve_resonance.py running? (' + e.message + ')'));

@@ -12,6 +12,8 @@ Endpoints:
   GET  /health               -> status + node/triangle counts
   GET  /api/topology         -> binary: [u32 nVerts][u32 nTris][verts f32 N*3]
                                 [indices u32 M*3]   (a watertight sphere mesh)
+  GET  /api/coastlines       -> binary: [u32 nSeg][verts f32 nSeg*2*3]
+                                (continent outlines as GL_LINES, mesh xyz frame)
   GET  /api/mesh             -> binary Float32 [N*3] vertex unit-vectors (legacy)
   POST /api/resonance        -> single-frame {mags}{sims} for one anchor (legacy)
   POST /api/stream_resonance -> streamed animated frames over a timeline:
@@ -101,6 +103,62 @@ def build_topology(grid):
     return verts, tris.ravel()
 
 
+def _lonlat_to_xyz(lon_deg, lat_deg, radius):
+    """GeoJSON [lon, lat] (deg) -> our mesh convention xyz on a sphere of ``radius``.
+
+    Uses exactly the projection engine's convention
+    ``xyz = [cos(lat)cos(lon), cos(lat)sin(lon), sin(lat)]`` (see nearest_node and
+    grid.geodesic), so coastlines register precisely against the node field.
+    """
+    lon = np.deg2rad(np.asarray(lon_deg, dtype=np.float64))
+    lat = np.deg2rad(np.asarray(lat_deg, dtype=np.float64))
+    cl = np.cos(lat)
+    return np.stack([cl * np.cos(lon), cl * np.sin(lon), np.sin(lat)], axis=-1) * radius
+
+
+def build_coastlines(radius: float = 0.998):
+    """Continent outlines as GL_LINES vertex pairs (float32, our xyz convention).
+
+    Reads ``web/coastlines.geojson`` (Natural Earth 110m land polygons) and turns
+    every polygon ring into consecutive segment endpoints so a single
+    ``THREE.LineSegments`` draws crisp, high-contrast coastlines that share the
+    mesh's coordinate frame. Returns an empty array if the dataset is absent.
+    """
+    import json
+
+    path = Path(__file__).resolve().parents[1] / "web" / "coastlines.geojson"
+    if not path.is_file():
+        return np.zeros((0,), dtype="<f4")
+    data = json.loads(path.read_text())
+
+    def rings(geom):
+        t = geom.get("type")
+        if t == "Polygon":
+            return geom["coordinates"]
+        if t == "MultiPolygon":
+            return [ring for poly in geom["coordinates"] for ring in poly]
+        if t == "LineString":
+            return [geom["coordinates"]]
+        if t == "MultiLineString":
+            return geom["coordinates"]
+        return []
+
+    segs = []
+    for feat in data.get("features", []):
+        for ring in rings(feat.get("geometry", {})):
+            pts = np.asarray(ring, dtype=np.float64)
+            if pts.shape[0] < 2:
+                continue
+            xyz = _lonlat_to_xyz(pts[:, 0], pts[:, 1], radius)     # (K, 3)
+            pairs = np.empty((xyz.shape[0] - 1, 2, 3), dtype=np.float64)
+            pairs[:, 0, :] = xyz[:-1]
+            pairs[:, 1, :] = xyz[1:]
+            segs.append(pairs.reshape(-1, 3))
+    if not segs:
+        return np.zeros((0,), dtype="<f4")
+    return np.concatenate(segs, axis=0).astype("<f4").ravel()
+
+
 def latent_at(model, grid, jd: float, window: int, device):
     """Continuous latent z (N, 64) CPU tensor at Julian Day ``jd`` (window center)."""
     import torch
@@ -154,6 +212,12 @@ def create_app(checkpoint: str, date: str = "now", window: int = 32,
     topo = (struct.pack("<II", N, n_tris) + verts.tobytes() + indices.tobytes())
     print(f"  {n_tris:,} triangles.")
 
+    coast = build_coastlines()
+    n_coast_seg = coast.size // 6                         # 2 endpoints * 3 floats
+    coast_bytes = struct.pack("<I", n_coast_seg) + coast.tobytes()
+    print(f"  {n_coast_seg:,} coastline segments." if n_coast_seg
+          else "  (no coastline dataset — graticule only)")
+
     print(f"Computing initial latent field for {date} (window={window})...")
     z0 = latent_at(model, grid, parse_datetime(date), window, device)
     mags0 = z0.norm(dim=1)
@@ -168,12 +232,18 @@ def create_app(checkpoint: str, date: str = "now", window: int = 32,
     @app.get("/health")
     def health() -> dict:
         return {"status": "ok", "n_nodes": N, "n_triangles": n_tris,
+                "n_coastline_segments": n_coast_seg,
                 "latent": cfg.latent, "codebook": cfg.codebook_size}
 
     @app.get("/api/topology")
     def topology() -> Response:
         return Response(content=topo, media_type="application/octet-stream",
                         headers={"X-N-Nodes": str(N), "X-N-Tris": str(n_tris)})
+
+    @app.get("/api/coastlines")
+    def coastlines() -> Response:
+        return Response(content=coast_bytes, media_type="application/octet-stream",
+                        headers={"X-N-Segments": str(n_coast_seg)})
 
     @app.get("/api/mesh")
     def mesh() -> Response:
@@ -250,6 +320,7 @@ def create_app(checkpoint: str, date: str = "now", window: int = 32,
 
     app.state.n_nodes = N
     app.state.n_triangles = n_tris
+    app.state.n_coastline_segments = n_coast_seg
     return app
 
 

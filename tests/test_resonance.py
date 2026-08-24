@@ -142,6 +142,40 @@ def test_topology_is_watertight_hull(tmp_path):
     assert (indices[:, 0] != indices[:, 2]).all()
 
 
+def test_coastlines_overlay(tmp_path):
+    if not global_state.ephemeris_available():
+        pytest.skip("pyswisseph not installed")
+    serve = _load_serve()
+    ckpt = tmp_path / "model_step_000025.pt"
+    _tiny_checkpoint(ckpt)
+    app = serve.create_app(str(ckpt), date="2024-04-08T18:17:00Z", window=8,
+                           device=torch.device("cpu"))
+    client = TestClient(app)
+
+    h = client.get("/health").json()
+    n_seg = h["n_coastline_segments"]
+    assert n_seg > 100                       # a real world outline, not a stub
+
+    res = client.get("/api/coastlines")
+    assert res.status_code == 200
+    (hdr_seg,) = struct.unpack("<I", res.content[:4])
+    assert hdr_seg == n_seg == int(res.headers["X-N-Segments"])
+    # exact layout: [u32 nSeg][verts f32 nSeg*2*3]
+    assert len(res.content) == 4 + n_seg * 6 * 4
+
+    verts = np.frombuffer(res.content, dtype="<f4", offset=4).reshape(n_seg * 2, 3)
+    # coastlines sit on the reference shell just above the Earth sphere
+    assert np.allclose(np.linalg.norm(verts, axis=1), 0.998, atol=1e-3)
+    # and they span the whole globe (both hemispheres in every axis)
+    assert verts[:, 2].min() < -0.5 and verts[:, 2].max() > 0.5
+
+    # convention check: the builder matches the mesh's lon/lat->xyz exactly
+    xyz = serve._lonlat_to_xyz(0.0, 0.0, 1.0)          # Greenwich / equator
+    assert np.allclose(xyz, [1.0, 0.0, 0.0], atol=1e-9)
+    xyz = serve._lonlat_to_xyz(90.0, 0.0, 1.0)         # 90E on the equator -> +y
+    assert np.allclose(xyz, [0.0, 1.0, 0.0], atol=1e-9)
+
+
 def test_stream_resonance_frames(tmp_path):
     if not global_state.ephemeris_available():
         pytest.skip("pyswisseph not installed")
