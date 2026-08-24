@@ -82,8 +82,6 @@
   <div class="hint">Click the globe to set an anchor. Drag to orbit, scroll to zoom.</div>
   <div class="row" style="margin-top:8px"><label style="width:auto">Relief</label>
     <input id="elev" type="range" min="0" max="0.6" step="0.01" value="0.22" /></div>
-  <div class="row"><label style="width:auto">Map</label>
-    <input id="mapop" type="range" min="0" max="1" step="0.02" value="0.9" /></div>
 </div>
 
 <div id="legend" class="panel">
@@ -163,7 +161,7 @@ function buildEarth() {
   const w = slices + 1;
   for (let i = 0; i < stacks; i++) for (let j = 0; j < slices; j++) {
     const a = i * w + j, b = a + 1, c = a + w, d = c + 1;
-    idx.push(a, c, b, b, c, d);
+    idx.push(a, b, c, b, d, c);      // OUTWARD winding: FrontSide shows the near hemisphere
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -184,10 +182,12 @@ function buildEarth() {
   };
   cx.fillStyle = '#0a0f18'; cx.fillRect(0, 0, cw, ch); paintGrid();
   const tex = new THREE.CanvasTexture(cv);
-  // depthWrite:true makes the Earth a solid physical blocker so the rear-hemisphere
-  // data waves are depth-culled instead of bleeding through onto the front.
-  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.9,
-    depthWrite: true });
+  // Opaque + outward-wound so the Earth is a solid depth occluder in the opaque
+  // pass: the entire rear hemisphere of the data mesh AND the coastlines (which
+  // are lines and cannot be back-face culled) is depth-culled, so nothing on the
+  // far side can counter-rotate through the front. DoubleSide guards against any
+  // winding subtlety by always showing whichever face is nearer.
+  const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide });
   const img = new Image(); img.crossOrigin = 'anonymous';
   img.onload = () => {
     cx.globalAlpha = 0.85; cx.drawImage(img, 0, 0, cw, ch); cx.globalAlpha = 1; paintGrid();
@@ -199,7 +199,6 @@ function buildEarth() {
   return { mesh, mat, tex };
 }
 const earth = buildEarth(); earth.mesh.renderOrder = 0; scene.add(earth.mesh);
-$('mapop').addEventListener('input', e => earth.mat.opacity = +e.target.value);
 
 // invisible pick sphere (radius 1, our convention matches the earth mesh)
 const pick = new THREE.Mesh(new THREE.SphereGeometry(1.0, 48, 32),
