@@ -221,3 +221,43 @@ def test_stream_resonance_frames(tmp_path):
     assert abs(frames[0][2][node] - 1.0) < 1e-4
     # frames advance in time (timestamps differ across the run)
     assert frames[0][0] != frames[-1][0]
+
+
+def test_stream_anchor_is_frozen_to_start(tmp_path):
+    """Fix #1: z_anchor is frozen at the Start Date, not re-derived per frame.
+
+    If the anchor were re-derived each step, the anchor node's similarity would be
+    1.0 in *every* frame. With a frozen anchor it is 1.0 only at frame 0 and drifts
+    as the field evolves against that fixed past moment.
+    """
+    if not global_state.ephemeris_available():
+        pytest.skip("pyswisseph not installed")
+    serve = _load_serve()
+    ckpt = tmp_path / "model_step_000025.pt"
+    n = _tiny_checkpoint(ckpt)
+    app = serve.create_app(str(ckpt), date="2024-01-01T00:00:00Z", window=8,
+                           device=torch.device("cpu"))
+    client = TestClient(app)
+
+    r = client.post("/api/stream_resonance", json={
+        "anchor_lat": 26.9, "anchor_lon": 75.7,
+        "start_date": "2024-01-01T00:00:00Z", "end_date": "2024-12-01T00:00:00Z",
+        "step_hours": 730.0})                   # ~monthly over a year: field moves a lot
+    assert r.status_code == 200
+    assert r.headers["X-Anchor-Date"].startswith("2024-01-01")
+    node = int(r.headers["X-Node-Id"])
+
+    data, off, anchor_sims = r.content, 0, []
+    while off + 4 <= len(data):
+        (flen,) = struct.unpack_from("<I", data, off)
+        off += 4
+        fb = data[off:off + flen]
+        off += flen
+        (ts_len,) = struct.unpack_from("<I", fb, 0)
+        sims = np.frombuffer(fb, dtype="<f4", count=n, offset=4 + ts_len + n * 4)
+        anchor_sims.append(float(sims[node]))
+
+    assert len(anchor_sims) >= 3
+    assert abs(anchor_sims[0] - 1.0) < 1e-4              # frozen anchor == frame 0
+    # a re-derived anchor would keep this at 1.0 forever; a frozen one drifts.
+    assert min(anchor_sims[1:]) < 0.9

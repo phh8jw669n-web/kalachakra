@@ -22,10 +22,13 @@ Endpoints:
                                [magnitudes f32 N][cosine_similarities f32 N]
 
 Magnitudes are ||z||_2 normalized by the start-frame scale (consistent across the
-animation); similarities are cosine(z(t), z_anchor) with z_anchor fixed at the
-start date. Each frame is one bounded eval forward; the stream is produced by a
-sync generator that Starlette iterates off the event loop, so PyTorch never blocks
-the server. The accelerator cache is released periodically to keep MPS steady.
+animation); similarities are cosine(z(t), z_anchor) with z_anchor **frozen at the
+Start Date** — the whole timeline is compared against that one fixed moment. The
+entire range is projected and encoded up front in batched forward passes
+(``compute_resonance_series``), then the sync generator only serializes the cached
+fields, so frames stream out with no per-frame inference stall. The heavy compute
+runs in Starlette's threadpool (sync endpoint), so the event loop stays free, and
+the accelerator cache is released between slabs to keep MPS steady.
 
 Requires:  pip install "kalachakra[train,serve,transducer]"
            (torch + fastapi/uvicorn + scipy for the triangulation)
@@ -180,6 +183,68 @@ def latent_at(model, grid, jd: float, window: int, device):
     return z_seq[window // 2].float().cpu()                 # (N, 64)
 
 
+def _project_fields(grid, jds):
+    """Project a list of Julian Days to local fields, shape ``(len(jds), N, 50)``."""
+    from kalachakra.ephemeris import global_state
+    from kalachakra.projection import spatial
+
+    out = []
+    for j in jds:
+        g = global_state.global_state_frame(float(j))
+        out.append(spatial.project(g, float(j), grid).reshape(grid.n_nodes, -1))
+    return np.stack(out, axis=0)
+
+
+def auto_encode_batch(n_nodes: int) -> int:
+    """Timeline steps per encoder pass that keep a full-mesh activation bounded.
+
+    Each step is one row of a ``(Tb, 1, N, hidden)`` activation, so peak memory
+    scales with ``Tb * N``; ~1.5M node-rows/pass stays well within a laptop's MPS
+    budget at N=122,880 (=> ~12) while letting small test meshes batch freely.
+    """
+    return int(max(2, min(64, 1_500_000 // max(n_nodes, 1))))
+
+
+def compute_resonance_series(model, grid, jds, node: int, device, encode_batch: int):
+    """Batch pre-computation of the whole animation (no per-frame inference).
+
+    Projects every requested timeline step once, encodes them in batched passes
+    (each slab is ``(Tb, 1, N, 50)`` -> ``(Tb, N, 64)`` in a single forward), and
+    reduces to per-frame magnitude/similarity fields. The anchor latent
+    ``z_anchor`` and the magnitude reference scale are **frozen from the first
+    frame (Start Date)** and reused for every later step, so the animation
+    compares a changing field against one fixed moment in the past.
+
+    Returns ``(mags[T, N] f32 in [0, 1.5], sims[T, N] f32 in [-1, 1],
+    anchor_norm, ref_scale)``.
+    """
+    import torch
+
+    n = grid.n_nodes
+    t_total = len(jds)
+    mags = np.empty((t_total, n), dtype="<f4")
+    sims = np.empty((t_total, n), dtype="<f4")
+    z_anchor = None
+    ref = 1.0
+    for s in range(0, t_total, encode_batch):
+        e = min(s + encode_batch, t_total)
+        fields = _project_fields(grid, jds[s:e])[:, None]      # (Tb, 1, N, 50)
+        e_t = torch.from_numpy(fields.astype(np.float32)).to(device)
+        with torch.no_grad():
+            z = model.encode(e_t)[:, 0]                         # (Tb, N, 64)
+        if z_anchor is None:                                    # freeze from frame 0
+            z_anchor = z[0, node].clone()
+            ref = float(z[0].norm(dim=1).max()) + 1e-12
+        m = (z.norm(dim=2) / ref).clamp(0.0, 1.5)              # (Tb, N)
+        sm = torch.nn.functional.cosine_similarity(
+            z, z_anchor.view(1, 1, -1), dim=2)                  # (Tb, N)
+        mags[s:e] = m.cpu().numpy().astype("<f4")
+        sims[s:e] = sm.cpu().numpy().astype("<f4")
+        del z, e_t
+        _empty_cache(device)
+    return mags, sims, float(z_anchor.norm()), ref
+
+
 def nearest_node(grid, lat_deg: float, lon_deg: float) -> int:
     la, lo = np.deg2rad(lat_deg), np.deg2rad(lon_deg)
     target = np.array([np.cos(la) * np.cos(lo), np.cos(la) * np.sin(lo), np.sin(la)])
@@ -187,8 +252,15 @@ def nearest_node(grid, lat_deg: float, lon_deg: float) -> int:
 
 
 def create_app(checkpoint: str, date: str = "now", window: int = 32,
-               stream_window: int = 16, max_frames: int = 400, device=None):
-    """Build the FastAPI resonance app."""
+               stream_window: int = 16, max_frames: int = 400,
+               encode_batch: int = 0, device=None):
+    """Build the FastAPI resonance app.
+
+    ``encode_batch`` is the number of timeline steps encoded per forward pass in
+    the streamed animation (0 = auto-size from the node count); ``stream_window``
+    is retained for backward compatibility but the batched stream no longer uses
+    a per-frame window.
+    """
     import torch
     from fastapi import Body, FastAPI, Request, Response
     from fastapi.middleware.cors import CORSMiddleware
@@ -203,8 +275,9 @@ def create_app(checkpoint: str, date: str = "now", window: int = 32,
 
     model, cfg, grid = load_model_and_grid(checkpoint, device)
     N = grid.n_nodes
+    enc_batch = encode_batch if encode_batch and encode_batch > 0 else auto_encode_batch(N)
     print(f"Loaded v3 model on {device}: {N:,} nodes, latent={cfg.latent}, "
-          f"codebook={cfg.codebook_size}")
+          f"codebook={cfg.codebook_size}, encode_batch={enc_batch}")
 
     print("Triangulating mesh surface (convex hull)...")
     verts, indices = build_topology(grid)
@@ -288,29 +361,29 @@ def create_app(checkpoint: str, date: str = "now", window: int = 32,
         j1 = parse_datetime(body.get("end_date", body.get("start_date", date)))
         step_hours = float(body.get("step_hours", 24.0))
         jds = _timeline(j0, j1, step_hours)
+        anchor_date = format_jd(float(jds[0]))
+
+        # Batch pre-computation: project + encode the entire range up front, with
+        # z_anchor frozen from the Start Date. The heavy PyTorch work happens here
+        # (sync endpoint -> Starlette threadpool, so the event loop is free); the
+        # generator below only serializes the cached fields, so frames then stream
+        # out as fast as the socket drains.
+        mags, sims, anchor_norm, _ref = compute_resonance_series(
+            model, grid, jds, node, device, enc_batch)
 
         def frames():
-            # Anchor vector + magnitude scale are fixed from the start frame so the
-            # animation stays on one consistent scale.
-            z_start = latent_at(model, grid, jds[0], stream_window, device)
-            z_anchor = z_start[node]
-            ref = float(z_start.norm(dim=1).max()) + 1e-12
-            for k, j in enumerate(jds):
-                z = z_start if k == 0 else latent_at(model, grid, j, stream_window, device)
-                mags = (z.norm(dim=1) / ref).clamp(0.0, 1.5).numpy().astype("<f4")
-                sims = torch.nn.functional.cosine_similarity(
-                    z, z_anchor.unsqueeze(0), dim=1).numpy().astype("<f4")
-                ts = format_jd(float(j)).encode("utf-8")
-                body_bytes = struct.pack("<I", len(ts)) + ts + mags.tobytes() + sims.tobytes()
+            for k in range(len(jds)):
+                ts = format_jd(float(jds[k])).encode("utf-8")
+                body_bytes = (struct.pack("<I", len(ts)) + ts
+                              + mags[k].tobytes() + sims[k].tobytes())
                 yield struct.pack("<I", len(body_bytes)) + body_bytes
-                del z
-                if (k + 1) % 5 == 0:
-                    _empty_cache(device)
 
         return StreamingResponse(frames(), media_type="application/octet-stream",
                                  headers={"X-N-Nodes": str(N),
                                           "X-N-Frames": str(len(jds)),
-                                          "X-Node-Id": str(node)})
+                                          "X-Node-Id": str(node),
+                                          "X-Anchor-Date": anchor_date,
+                                          "X-Anchor-Norm": f"{anchor_norm:.6f}"})
 
     @app.get("/")
     def index():
@@ -331,7 +404,9 @@ def parse_args(argv=None):
     p.add_argument("--date", default="now", help="initial frame (UTC ISO or 'now')")
     p.add_argument("--window", type=int, default=32, help="encode window for the static frame")
     p.add_argument("--stream-window", type=int, default=16,
-                   help="encode window per animated frame (smaller = faster)")
+                   help="legacy; unused by the batched stream")
+    p.add_argument("--encode-batch", type=int, default=0,
+                   help="timeline steps per encoder forward pass (0 = auto from node count)")
     p.add_argument("--max-frames", type=int, default=400, help="cap on timeline frames")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
@@ -350,7 +425,8 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 2
     app = create_app(args.checkpoint, date=args.date, window=args.window,
-                     stream_window=args.stream_window, max_frames=args.max_frames)
+                     stream_window=args.stream_window, max_frames=args.max_frames,
+                     encode_batch=args.encode_batch)
     print(f"\nGeo-Resonance Globe on http://{args.host}:{args.port}  (open it in a browser)")
     uvicorn.run(app, host=args.host, port=args.port)
     return 0

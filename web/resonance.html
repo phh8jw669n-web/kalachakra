@@ -40,6 +40,12 @@
   #clock .k { color: #6b7488; font-size: 9px; letter-spacing: 0.22em; }
   #clock .v { color: #ffd98a; font-size: 20px; letter-spacing: 0.06em; margin-top: 2px;
     font-variant-numeric: tabular-nums; text-shadow: 0 0 14px rgba(255,190,90,0.35); }
+  #anchorlock { color: #7bd0ff; font-size: 10px; letter-spacing: 0.12em; margin-top: 5px;
+    display: none; text-shadow: 0 0 10px rgba(90,180,255,0.4); }
+  #loading { color: #ffd98a; font-size: 11px; letter-spacing: 0.2em; margin-top: 5px;
+    display: none; animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 0.32; } 50% { opacity: 1; } }
+  #transport.busy { opacity: 0.45; pointer-events: none; }
 
   #timeline { bottom: 14px; left: 50%; transform: translateX(-50%); width: min(760px, 94vw); }
   #timeline .grid { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
@@ -58,6 +64,8 @@
 <div id="clock" class="panel">
   <div class="k">CURRENTLY PROJECTING</div>
   <div class="v" id="clock-v">— — —</div>
+  <div id="anchorlock"></div>
+  <div id="loading">[ COMPUTING FIELD TENSORS... ]</div>
 </div>
 
 <div id="controls" class="panel">
@@ -195,25 +203,28 @@ scene.add(pick);
 const uniforms = {
   uElevation: { value: 0.26 },
   uLightDir: { value: new THREE.Vector3(0.4, 0.55, 0.85).normalize() },
+  uTween: { value: 0.0 },                        // 0..1 blend from current frame to next
 };
 const material = new THREE.ShaderMaterial({
   uniforms, side: THREE.DoubleSide,
   transparent: true, depthWrite: false,          // non-resonant faces reveal the Earth beneath
   vertexShader: `
-    attribute float aMagnitude; attribute float aSimilarity;
-    uniform float uElevation;
-    varying float vSim; varying vec3 vView;
+    attribute float aMagCurrent; attribute float aSimCurrent;
+    attribute float aMagNext;    attribute float aSimNext;
+    uniform float uElevation; uniform float uTween;
+    varying float vSimA; varying float vSimB; varying vec3 vView;
     void main(){
-      vSim = aSimilarity;
-      vec3 disp = position * (1.0 + aMagnitude * uElevation);
+      vSimA = aSimCurrent; vSimB = aSimNext;
+      float mag = mix(aMagCurrent, aMagNext, uTween);   // smooth relief between frames
+      vec3 disp = position * (1.0 + mag * uElevation);
       vec4 mv = modelViewMatrix * vec4(disp, 1.0);
       vView = mv.xyz;
       gl_Position = projectionMatrix * mv;
     }`,
   fragmentShader: `
     precision highp float;
-    varying float vSim; varying vec3 vView;
-    uniform vec3 uLightDir;
+    varying float vSimA; varying float vSimB; varying vec3 vView;
+    uniform vec3 uLightDir; uniform float uTween;
     vec3 palette(float s){
       vec3 abyssDeep=vec3(0.0,0.066,0.133), abyss=vec3(0.039,0.145,0.251);
       vec3 charLo=vec3(0.020,0.020,0.031),  charHi=vec3(0.067,0.067,0.086);
@@ -225,6 +236,7 @@ const material = new THREE.ShaderMaterial({
       return mix(warm, white, clamp((s-0.90)/0.10,0.0,1.0));
     }
     void main(){
+      float vSim = mix(vSimA, vSimB, uTween);               // smooth colour between frames
       vec3 n = normalize(cross(dFdx(vView), dFdy(vView)));   // flat per-face normal
       if(n.z < 0.0) n = -n;
       float diff = max(dot(n, normalize(uLightDir)), 0.0);
@@ -239,7 +251,8 @@ const material = new THREE.ShaderMaterial({
 });
 $('elev').addEventListener('input', e => uniforms.uElevation.value = +e.target.value);
 
-let dataMesh = null, N = 0, aMag = null, aSim = null;
+let dataMesh = null, N = 0, geo = null;
+let aMagC = null, aSimC = null, aMagN = null, aSimN = null;
 
 async function loadTopology(){
   const res = await fetch(API + '/api/topology');
@@ -252,10 +265,14 @@ async function loadTopology(){
   const indices = new Uint32Array(buf, 8 + N * 12, nTris * 3);
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(verts.slice(), 3));
-  aMag = new Float32Array(N); aSim = new Float32Array(N);
-  g.setAttribute('aMagnitude', new THREE.BufferAttribute(aMag, 1));
-  g.setAttribute('aSimilarity', new THREE.BufferAttribute(aSim, 1));
+  aMagC = new Float32Array(N); aSimC = new Float32Array(N);
+  aMagN = new Float32Array(N); aSimN = new Float32Array(N);
+  g.setAttribute('aMagCurrent', new THREE.BufferAttribute(aMagC, 1));
+  g.setAttribute('aSimCurrent', new THREE.BufferAttribute(aSimC, 1));
+  g.setAttribute('aMagNext', new THREE.BufferAttribute(aMagN, 1));
+  g.setAttribute('aSimNext', new THREE.BufferAttribute(aSimN, 1));
   g.setIndex(new THREE.BufferAttribute(indices.slice(), 1));
+  geo = g;
   dataMesh = new THREE.Mesh(g, material);
   dataMesh.frustumCulled = false;
   dataMesh.renderOrder = 2;                 // drawn after the Earth + coastlines
@@ -283,21 +300,51 @@ async function loadCoastlines(){
   } catch(e){ /* graticule fallback already on the Earth sphere */ }
 }
 
-function applyFrame(f){
-  aMag.set(f.mags); aSim.set(f.sims);
-  dataMesh.geometry.attributes.aMagnitude.needsUpdate = true;
-  dataMesh.geometry.attributes.aSimilarity.needsUpdate = true;
-  $('clock-v').textContent = f.ts.replace(/\.0 UTC.*/, ' UTC');
+const cleanTs = (s) => s.replace(/\.0 UTC.*/, ' UTC');
+function markDirty(){
+  geo.attributes.aMagCurrent.needsUpdate = geo.attributes.aSimCurrent.needsUpdate = true;
+  geo.attributes.aMagNext.needsUpdate = geo.attributes.aSimNext.needsUpdate = true;
+}
+function updateLegend(sims){
   let mn = Infinity, mx = -Infinity;
-  for(const s of f.sims){ if(s < mn) mn = s; if(s > mx) mx = s; }
+  for(const s of sims){ if(s < mn) mn = s; if(s > mx) mx = s; }
   $('legend-stats').textContent =
     `node ${anchorNode ?? '—'} · cos [${mn.toFixed(2)}, ${mx.toFixed(2)}]`;
 }
+// Static single frame: current == next, no tween.
+function applyStatic(mags, sims){
+  if(!aMagC) return;
+  aMagC.set(mags); aSimC.set(sims); aMagN.set(mags); aSimN.set(sims);
+  markDirty(); uniforms.uTween.value = 0; updateLegend(sims);
+}
+// Load a (current, next) pair for interpolated playback; loop tweens between them.
+let curIndex = -1;
+function setFramePair(fi){
+  if(!aMagC || !frames.length) return;
+  const last = frames.length - 1;
+  const a = frames[Math.min(fi, last)], b = frames[Math.min(fi + 1, last)];
+  aMagC.set(a.mags); aSimC.set(a.sims); aMagN.set(b.mags); aSimN.set(b.sims);
+  markDirty(); updateLegend(a.sims);
+  $('clock-v').textContent = cleanTs(a.ts);
+  curIndex = fi;
+}
+
+// ---- HUD: anchor lock (#1) + computing state (#4) -------------------------
+function showAnchorLock(dateStr){
+  const el = $('anchorlock'); el.textContent = 'ANCHOR LOCKED TO: ' + dateStr;
+  el.style.display = 'block';
+}
+function hideAnchorLock(){ $('anchorlock').style.display = 'none'; }
+function showComputing(){ $('loading').style.display = 'block'; $('transport').classList.add('busy'); }
+function hideComputing(){ $('loading').style.display = 'none'; $('transport').classList.remove('busy'); }
+const fmtStartDisplay = (v) => v ? v.replace('T', ' ') + ' UTC' : 'start date';
 
 // ---- single-frame anchor (instant, no animation) --------------------------
 let anchorNode = null;
 async function resonateStatic(lat, lon){
-  err('');
+  err(''); stopStream(); setPlaying(false);
+  frames = []; streamDone = false; curIndex = -1;
+  hideAnchorLock(); hideComputing();
   try {
     const res = await fetch(API + '/api/resonance', { method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -305,7 +352,7 @@ async function resonateStatic(lat, lon){
     if(!res.ok) throw new Error('resonance ' + res.status);
     const buf = new Float32Array(await res.arrayBuffer());
     anchorNode = res.headers.get('X-Node-Id');
-    applyFrame({ ts: 'static', mags: buf.subarray(0, N), sims: buf.subarray(N, 2 * N) });
+    applyStatic(buf.subarray(0, N), buf.subarray(N, 2 * N));
     $('clock-v').textContent = '— static frame —';
     const rl = res.headers.get('X-Anchor-Lat'), ro = res.headers.get('X-Anchor-Lon');
     if(rl) $('lat').value = (+rl).toFixed(1); if(ro) $('lon').value = (+ro).toFixed(1);
@@ -322,18 +369,21 @@ function concat(a, b){ const o = new Uint8Array(a.length + b.length); o.set(a); 
 
 async function startStream(){
   if(!dataMesh){ err('mesh not loaded yet'); return; }
-  stopStream(); frames = []; cursor = 0; streamDone = false;
+  stopStream(); frames = []; cursor = 0; curIndex = -1; streamDone = false;
   $('scrub').max = 0; $('scrub').value = 0;
   const body = { anchor_lat: +$('lat').value, anchor_lon: +$('lon').value,
     start_date: isoUTC($('start')), end_date: isoUTC($('end')), step_hours: +$('stepH').value };
   streamAbort = new AbortController();
+  showAnchorLock(fmtStartDisplay($('start').value));   // provisional; refined from header
+  showComputing();                                     // pulsing while the backend batches
   $('status').textContent = 'computing…'; setPlaying(true);
   let res;
   try { res = await fetch(API + '/api/stream_resonance', { method: 'POST', signal: streamAbort.signal,
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
-  catch(e){ err('stream failed: ' + e.message); setPlaying(false); return; }
+  catch(e){ hideComputing(); err('stream failed: ' + e.message); setPlaying(false); return; }
   const total = +(res.headers.get('X-N-Frames') || 0);
   anchorNode = res.headers.get('X-Node-Id');
+  const ad = res.headers.get('X-Anchor-Date'); if(ad) showAnchorLock(cleanTs(ad));
   const reader = res.body.getReader();
   let carry = new Uint8Array(0);
   try {
@@ -357,12 +407,15 @@ async function startStream(){
         off += 4 + flen;
       }
       carry = carry.slice(off);
-      $('scrub').max = frames.length - 1;
+      if(frames.length >= 1) hideComputing();          // first frame in -> drop the loader
+      $('scrub').max = Math.max(frames.length - 1, 0);
       $('status').textContent = `buffered ${frames.length}/${total || '?'}`;
     }
     streamDone = true;
+    hideComputing();
     $('status').textContent = `ready ${frames.length} frames`;
   } catch(e){
+    hideComputing();
     if(e.name !== 'AbortError') err('stream read error: ' + e.message);
   }
 }
@@ -374,8 +427,12 @@ $('play').onclick = () => {
   else setPlaying(true);
 };
 $('pause').onclick = () => setPlaying(false);
-$('stepb').onclick = () => { setPlaying(false); if(frames.length){ cursor = Math.min(cursor + 1, frames.length - 1); applyFrame(frames[Math.floor(cursor)]); $('scrub').value = Math.floor(cursor); } };
-$('scrub').addEventListener('input', e => { setPlaying(false); cursor = +e.target.value; if(frames[cursor]) applyFrame(frames[cursor]); });
+$('stepb').onclick = () => { setPlaying(false); if(frames.length){
+  cursor = Math.min(Math.floor(cursor) + 1, frames.length - 1);
+  setFramePair(Math.floor(cursor)); uniforms.uTween.value = 0; $('scrub').value = Math.floor(cursor); } };
+$('scrub').addEventListener('input', e => { setPlaying(false); if(frames.length){
+  cursor = Math.min(+e.target.value, frames.length - 1);
+  setFramePair(Math.floor(cursor)); uniforms.uTween.value = 0; } });
 
 // anchor inputs / presets / click
 document.querySelectorAll('.presets button').forEach(b => b.onclick = () => {
@@ -409,13 +466,16 @@ let last = performance.now();
   requestAnimationFrame(loop);
   const dt = Math.min((now - last) / 1000, 0.1); last = now;
   if(playing && frames.length){
+    const lastI = frames.length - 1;
     cursor += (+$('fps').value) * dt;
-    if(cursor >= frames.length - 1){
+    if(cursor >= lastI){
       if(streamDone) cursor = 0;                  // loop when fully buffered
-      else cursor = frames.length - 1;            // hold at buffer edge
+      else cursor = lastI;                        // hold at buffer edge
     }
     const fi = Math.floor(cursor);
-    applyFrame(frames[fi]); $('scrub').value = fi;
+    if(fi !== curIndex) setFramePair(fi);         // swap current/next only on frame change
+    uniforms.uTween.value = cursor - fi;          // buttery interpolation within the step
+    $('scrub').value = fi;
   }
   controls.update();
   renderer.render(scene, camera);
