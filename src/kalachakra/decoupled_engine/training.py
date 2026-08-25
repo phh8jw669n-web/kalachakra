@@ -70,8 +70,8 @@ def composite_step(sky, earth, batch, cfg: EngineConfig, device):
     coords_nb = geodesic_neighbor(coords_bt, eps_rad)
     color_nb = earth(z, coords_nb)
     gmst_deg = geo.greenwich_mean_sidereal_time_deg(
-        jds.reshape(-1).detach().cpu().numpy())
-    gmst_rad = torch.as_tensor(np.deg2rad(gmst_deg), dtype=color.dtype, device=device)
+        jds.reshape(-1).detach().cpu().numpy())      # jds are CPU float64
+    gmst_rad = torch.as_tensor(np.deg2rad(gmst_deg), dtype=torch.float32, device=device)
     permission = culmination_edge_permission(flat_cel, coords_bt, gmst_rad)
     l_terr = terrestrial_smoothness_loss(color, color_nb, eps_rad, permission)
 
@@ -107,6 +107,8 @@ def train(cfg: EngineConfig, *, num_workers: int = 0, ephe_path: str | None = No
                                   weight_decay=cfg.train.weight_decay)
     scheduler = cosine_warmup(optimizer, cfg.train.warmup_steps, steps_target)
     use_amp = cfg.train.amp and device.type in ("cuda", "mps")
+    # bf16 on CUDA (wide range), fp16 on MPS (bf16 autocast is patchy on Metal).
+    amp_dtype = torch.bfloat16 if device.type == "cuda" else torch.float16
     scaler = torch.amp.GradScaler(enabled=cfg.train.amp and device.type == "cuda")
 
     out_dir = Path(cfg.train.out_dir)
@@ -125,7 +127,7 @@ def train(cfg: EngineConfig, *, num_workers: int = 0, ephe_path: str | None = No
             if num_workers > 0:
                 batch = move_batch(batch, device)
             optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+            with torch.autocast(device_type=device.type, dtype=amp_dtype,
                                 enabled=use_amp):
                 total, parts = composite_step(sky, earth, batch, cfg, device)
             if scaler.is_enabled():

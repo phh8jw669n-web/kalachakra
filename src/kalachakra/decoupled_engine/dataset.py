@@ -63,19 +63,25 @@ class CelestialTerrestrialStream(IterableDataset):
             jds = start + np.arange(T, dtype=np.float64) * stride
             cel = celestial_features_batch(jds)                     # (T, 10, 5)
             coords = sample_sphere_coords(self.cfg.points_per_frame, rng)  # (P, 2)
+            # jds stay on CPU as float64: a Julian Day needs double precision (it is
+            # only used to derive GMST on the CPU), and MPS cannot hold float64.
             yield (
                 torch.as_tensor(cel, dtype=torch.float32, device=dev),
-                torch.as_tensor(jds, dtype=torch.float64, device=dev),
+                torch.as_tensor(jds, dtype=torch.float64),
                 torch.as_tensor(coords, dtype=torch.float32, device=dev),
             )
 
 
 def move_batch(batch, device: str | torch.device):
-    """Move a ``(celestial, jds, coords)`` batch onto the target device."""
+    """Move a ``(celestial, jds, coords)`` batch onto the target device.
+
+    ``jds`` are deliberately left on the CPU as float64 (double-precision Julian
+    Days; MPS has no float64) -- they are only consumed on the CPU for GMST.
+    """
     dev = torch.device(device)
     cel, jds, coords = batch
     return (cel.to(dev, non_blocking=True),
-            jds.to(dev, non_blocking=True),
+            jds,
             coords.to(dev, non_blocking=True))
 
 
