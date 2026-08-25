@@ -46,6 +46,11 @@ def parse_args(argv=None):
                    help="window length in days from --start-date (alt to --end-date)")
     p.add_argument("--full", action="store_true",
                    help="sweep the entire 10,256-year timeline (overrides dates)")
+    p.add_argument("--lite", action="store_true",
+                   help="rapid UI-prototyping mode: skip Domain-5 ecosystem graph "
+                        "(antipode map, halos, resonance, lineage, exclusion) and "
+                        "Domain-1 PCA/SVD; keep Domains 1-4. Skipped columns are "
+                        "written as NULL so the SQLite schema is unchanged.")
     p.add_argument("--coarse-seconds", type=float, default=3600.0)
     p.add_argument("--fine-seconds", type=float, default=float(C.VIGHATIKA_SECONDS))
     p.add_argument("--velocity-threshold", type=float, default=0.02)
@@ -72,7 +77,7 @@ def build_config(args):
         coarse_step_seconds=args.coarse_seconds, fine_step_seconds=args.fine_seconds,
         velocity_threshold=args.velocity_threshold, chunk_frames=args.chunk_frames,
         calib_days=args.calib_days, epoch_years=args.epoch_years,
-        node_batch=args.node_batch, device=args.device,
+        node_batch=args.node_batch, device=args.device, lite=args.lite,
         heartbeat_frames=args.heartbeat_frames, heartbeat_seconds=args.heartbeat_seconds)
     if args.full:
         b = C.timeline_bounds()

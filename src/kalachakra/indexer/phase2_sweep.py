@@ -84,7 +84,7 @@ class Accum:
     cooc_anti: np.ndarray = None
 
     @classmethod
-    def new(cls, K, N):
+    def new(cls, K, N, lite=False):
         a = cls(K=K, N=N)
         z = lambda *s: np.zeros(s, dtype=np.float64)  # noqa: E731
         a.lat_sum, a.lat_sq, a.abslat_sum = z(K), z(K), z(K)
@@ -105,8 +105,12 @@ class Accum:
         a.bspeed_sum = z(K, N_BODIES)
         a.wsum_body = z(K)
         a.prev_dirs = z(N_BODIES, 3)
-        a.cooc_sym = np.zeros((K, K), dtype=np.int64)
-        a.cooc_anti = np.zeros((K, K), dtype=np.int64)
+        # Domain-5 graph co-occurrence matrices (K x K each). In --lite mode the
+        # ecosystem graph is skipped entirely, so keep them empty to save the
+        # ~270 MB allocation and the per-chunk checkpoint I/O.
+        gk = 0 if lite else K
+        a.cooc_sym = np.zeros((gk, gk), dtype=np.int64)
+        a.cooc_anti = np.zeros((gk, gk), dtype=np.int64)
         return a
 
     def save(self, path: Path) -> None:
@@ -171,8 +175,15 @@ def run_phase2(cfg, model, model_cfg, grid, neighbors, device, state, logger):
     batch = auto_node_batch(N, cfg.node_batch)
     lat_deg = np.rad2deg(grid.lat)
     xyz = grid.xyz
-    antipode = build_antipode_map(xyz)
-    logger.info(f"[P2] antipode map built for {N} nodes; frames/forward={batch}")
+    lite = bool(getattr(cfg, "lite", False))
+    if lite:
+        antipode = None
+        logger.info(f"[P2][LITE] Domain-5 graph disabled: skipping the {N}-node "
+                    f"antipode map + adjacency-halo/antipodal co-occurrence; "
+                    f"frames/forward={batch}")
+    else:
+        antipode = build_antipode_map(xyz)
+        logger.info(f"[P2] antipode map built for {N} nodes; frames/forward={batch}")
 
     pq_act = cfg.parquet_dir / "activations"
     pq_day = cfg.parquet_dir / "daily_volume"
@@ -188,7 +199,7 @@ def run_phase2(cfg, model, model_cfg, grid, neighbors, device, state, logger):
         logger.info(f"[P2] RESUME: loaded accumulators at frame_ord={resume_frames} "
                     f"(last chunk {state.last_chunk()})")
     else:
-        acc = Accum.new(K, N)
+        acc = Accum.new(K, N, lite=lite)
 
     # -- adaptive clock with loud anomaly logging -----------------------------
     def on_down(jd, v):
@@ -226,8 +237,9 @@ def run_phase2(cfg, model, model_cfg, grid, neighbors, device, state, logger):
             return
         speed = d_frames / d_time if d_time > 0 else 0.0
         clk = "FINE(24s)" if tick.fine else "COARSE(1h)"
+        mode = "LITE graph:off" if lite else "FULL graph:on"
         y = jd_to_gregorian(tick.jd)[0]
-        logger.info(f"[P2][HB] {format_jd(tick.jd)} (yr {y}) | "
+        logger.info(f"[P2][HB] {format_jd(tick.jd)} (yr {y}) | {mode} | "
                     f"chunk {chunk_id} frame {processed_in_chunk}/{cfg.chunk_frames} | "
                     f"{clk} | downshifts={clock.stats['downshift_events']} | "
                     f"{speed:.2f} frames/s | {format_hw(hardware_snapshot())}")
@@ -324,12 +336,14 @@ def run_phase2(cfg, model, model_cfg, grid, neighbors, device, state, logger):
         acc.prev_dirs_jd = float(jd)
         acc.prev_dirs_has = 1
 
-        # Domain 5 (graph): adjacency-halo symbiosis + antipodal co-occurrence
-        for j in range(neighbors.shape[1]):
-            nb = neighbors[:, j]
-            diff = tokens != tokens[nb]
-            np.add.at(acc.cooc_sym, (tokens[diff], tokens[nb][diff]), 1)
-        np.add.at(acc.cooc_anti, (tokens, tokens[antipode]), 1)
+        # Domain 5 (graph): adjacency-halo symbiosis + antipodal co-occurrence.
+        # Skipped wholesale in --lite mode (the sweep's main bottleneck).
+        if not lite:
+            for j in range(neighbors.shape[1]):
+                nb = neighbors[:, j]
+                diff = tokens != tokens[nb]
+                np.add.at(acc.cooc_sym, (tokens[diff], tokens[nb][diff]), 1)
+            np.add.at(acc.cooc_anti, (tokens, tokens[antipode]), 1)
 
         # raw activation records -> parquet buffers
         fo = acc.frame_ord

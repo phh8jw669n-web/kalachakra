@@ -51,6 +51,14 @@ class IndexerConfig:
     device: str = ""                                # "" -> auto (mps/cuda/cpu)
     seed: int = 0
 
+    # -- lite mode (rapid UI prototyping) ------------------------------------
+    #: When True, skip the expensive ecosystem graph (Domain 5: antipode map,
+    #: adjacency halos, antipodal resonance, Markov lineage, global exclusion)
+    #: and the Domain-1 PCA/SVD. Domains 1 (magnitude/variance/anomaly), 2, 3 and
+    #: 4 are kept intact. The skipped profile columns are emitted as NULL so the
+    #: SQLite schema (and the UI frontend) stays identical.
+    lite: bool = False
+
     # -- provenance ----------------------------------------------------------
     codebook_size: int = 0                          # filled from the checkpoint
     n_nodes: int = 0                                # filled from the checkpoint

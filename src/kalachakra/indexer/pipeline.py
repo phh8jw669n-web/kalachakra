@@ -22,7 +22,7 @@ from .model_io import auto_node_batch, load_model_and_grid, select_device
 from .phase1_physics import run_phase1
 from .phase2_sweep import Accum, run_phase2
 from .phase3_temporal import run_phase3
-from .phase4_ecosystem import run_phase4
+from .phase4_ecosystem import empty_phase4, run_phase4
 from .state import StateLock, atomic_write_text
 from .telemetry import DiskWriteRate, format_hw, hardware_snapshot, setup_logging
 
@@ -46,6 +46,9 @@ def run_pipeline(cfg: IndexerConfig):
                 f"({(cfg.end_jd - cfg.start_jd) / 365.25:.2f} yr)")
     logger.info(f"adaptive: coarse={cfg.coarse_step_seconds}s fine={cfg.fine_step_seconds}s "
                 f"threshold={cfg.velocity_threshold}")
+    if cfg.lite:
+        logger.info("MODE: --lite (skipping Domain-5 ecosystem graph + Domain-1 PCA; "
+                    "Domains 1-4 kept; skipped columns written as NULL)")
     logger.info(f"hardware: {format_hw(hardware_snapshot(disk))}")
 
     if not global_state.ephemeris_available():
@@ -76,7 +79,8 @@ def run_pipeline(cfg: IndexerConfig):
         logger.info("[P1] Domain-1 tensor physics ...")
         calib = np.linspace(cfg.start_jd, cfg.end_jd, cfg.calib_days, endpoint=False)
         batch = auto_node_batch(cfg.n_nodes, cfg.node_batch)
-        phase1 = run_phase1(model, grid, device, calib.tolist(), batch, logger)
+        phase1 = run_phase1(model, grid, device, calib.tolist(), batch, logger,
+                            lite=cfg.lite)
         _save_json(p1_path, {str(k): v for k, v in phase1.items()})
         state.mark_phase("phase1", n_tokens=len(phase1))
         logger.info(f"[P1] done. {format_hw(hardware_snapshot(disk))}")
@@ -110,6 +114,13 @@ def run_pipeline(cfg: IndexerConfig):
         logger.info("[P4] already complete; loading.")
         phase4 = {int(k): v for k, v in _load_json(p4_path).items()}
         relations = _load_json(rel_path)
+    elif cfg.lite:
+        logger.info("[P4] Domain-5 ecosystem SKIPPED (--lite); "
+                    "writing NULL profile columns + empty relation graphs.")
+        phase4, relations = empty_phase4(cfg.codebook_size)
+        _save_json(p4_path, {str(k): v for k, v in phase4.items()})
+        _save_json(rel_path, relations)
+        state.mark_phase("phase4", n_tokens=len(phase4), lite=True)
     else:
         logger.info("[P4] Domain-5 ecosystem (DuckDB + mesh graph) ...")
         phase4, relations = run_phase4(cfg, acc, logger)
@@ -128,7 +139,10 @@ def run_pipeline(cfg: IndexerConfig):
         "fine_step_seconds": cfg.fine_step_seconds,
         "checkpoint": cfg.checkpoint,
         "elapsed_seconds": round(time.time() - t0, 2),
-        "domains": 5, "profiles": 18,
+        "lite": cfg.lite,
+        # lite drops Domain 5 (4 profiles) and Domain-1 PCA (1 profile)
+        "domains": 4 if cfg.lite else 5,
+        "profiles": 13 if cfg.lite else 18,
     }
     db_path = write_master(cfg, phase1, phase2, phase3, phase4, relations, meta, logger)
     state.mark_phase("master_db", path=str(db_path))

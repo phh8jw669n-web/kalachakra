@@ -82,6 +82,20 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--batch", type=int, default=4)
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--epochs", type=int, default=3)
+    p.add_argument("--curriculum", action="store_true",
+                   help="progressive multi-scale temporal-resolution curriculum: "
+                        "coarse->fine temporal_stride per epoch (24h->2h->24min->"
+                        "4min->24s), sweeping the full 10,256-year timeline on the "
+                        "fly and micro-bursting for sub-hour strides. Bypasses the "
+                        "pre-built store; requires pyswisseph.")
+    p.add_argument("--curriculum-seed", type=int, default=0,
+                   help="seed for the curriculum's random micro-burst windows")
+    p.add_argument("--timeline-start", default=None,
+                   help="curriculum: override the sweep start (UTC ISO); default is "
+                        "the full 10,256-year timeline epoch. Use a narrower range "
+                        "when the ephemeris backend does not cover deep time.")
+    p.add_argument("--timeline-end", default=None,
+                   help="curriculum: override the sweep end (UTC ISO)")
     p.add_argument("--max-steps", type=int, default=None)
     p.add_argument("--lr", type=float, default=2e-3)
     p.add_argument("--grad-clip", type=float, default=1.0)
@@ -149,8 +163,6 @@ def main(argv=None) -> int:
     )
     from kalachakra.training.optim import OptimConfig, build_optimizer, build_scheduler
 
-    store = ensure_store(args)
-
     grid = fibonacci_sphere(args.nodes)
     neighbors = build_knn(grid.xyz, args.knn)
     cfg = VQAutoencoderV3Config(
@@ -165,11 +177,36 @@ def main(argv=None) -> int:
     model = VQAutoencoderV3(cfg, neighbors).to(device)
     n_params = sum(p.numel() for p in model.parameters())
 
-    stream = EphemerisStream(
-        store, grid,
-        StreamConfig(window_frames=args.window, window_stride=args.stride,
-                     node_subsample=None),
-    )
+    scfg = StreamConfig(window_frames=args.window, window_stride=args.stride,
+                        node_subsample=None)
+    curriculum_stream = None
+    if args.curriculum:
+        # Curriculum bypasses the fixed-cadence store: it generates G(t) on the fly
+        # so it can sweep the full timeline at any temporal stride.
+        from kalachakra.data.curriculum import CurriculumStream, curriculum_phase
+        from kalachakra.ephemeris import global_state
+        from kalachakra.ephemeris.calendar import parse_datetime
+        if not global_state.ephemeris_available():
+            print("ERROR: pyswisseph not installed (required for --curriculum).",
+                  file=sys.stderr)
+            return 2
+        emode = global_state.configure_from_args(ephe_path=args.ephe_path,
+                                                 jpl_file=args.jpl_file)
+        print(f"  ephemeris backend: {emode}")
+        tstart = parse_datetime(args.timeline_start) if args.timeline_start else None
+        tend = parse_datetime(args.timeline_end) if args.timeline_end else None
+        curriculum_stream = CurriculumStream(grid, scfg, start_jd=tstart, end_jd=tend,
+                                             seed=args.curriculum_seed)
+        stream = curriculum_stream
+        print("Curriculum learning ENABLED — progressive multi-scale temporal "
+              "resolution:")
+        for ep in range(args.epochs):
+            ph = curriculum_phase(ep)
+            print(f"    epoch {ep:2d}: {ph.name:9s} | stride {ph.human_stride:>6s} "
+                  f"| {ph.human_plan}")
+    else:
+        store = ensure_store(args)
+        stream = EphemerisStream(store, grid, scfg)
     loader = DataLoader(stream, batch_size=args.batch, num_workers=args.workers)
 
     ocfg = OptimConfig(optimizer="lion", lr=args.lr, restart_period=500)
@@ -232,6 +269,11 @@ def main(argv=None) -> int:
     for epoch in range(args.epochs):
         if stop:
             break
+        if curriculum_stream is not None:
+            curriculum_stream.set_epoch(epoch)     # pick this epoch's temporal stride
+            ph = curriculum_phase(epoch)           # imported in the --curriculum branch
+            print(f"\n[curriculum] epoch {epoch}: {ph.name} phase — "
+                  f"stride {ph.human_stride} ({ph.human_plan})")
         for e, _lons in loader:
             e = e.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)

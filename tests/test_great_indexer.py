@@ -147,6 +147,67 @@ def test_pipeline_end_to_end(tmp_path):
     con.close()
 
 
+def test_pipeline_lite_mode(tmp_path):
+    """--lite skips Domain-5 + Domain-1 PCA yet keeps the SQLite schema stable."""
+    if not global_state.ephemeris_available():
+        pytest.skip("pyswisseph not installed")
+    from kalachakra.indexer.pipeline import run_pipeline
+    ckpt = tmp_path / "checkpoints/v3/model_step_000025.pt"
+    _tiny_ckpt(ckpt)
+    cfg = IndexerConfig(
+        checkpoint=str(ckpt), out_dir=str(tmp_path / "out"),
+        start_jd=parse_datetime("2024-03-01T00:00:00Z"),
+        end_jd=parse_datetime("2024-03-01T00:00:00Z") + 8.0,
+        coarse_step_seconds=10800.0, velocity_threshold=0.02,
+        chunk_frames=40, calib_days=6, fft_min_samples=6, device="cpu",
+        heartbeat_frames=10, heartbeat_seconds=1e9, lite=True)
+    db_path = run_pipeline(cfg)
+
+    con = sqlite3.connect(db_path)
+    c = con.cursor()
+    tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    # schema unchanged: every table still present (relation tables just empty)
+    assert {"tokens", "attribution", "transitions", "exclusion",
+            "symbiosis", "antipode", "run_meta"} <= tables
+    assert c.execute("SELECT COUNT(*) FROM tokens").fetchone()[0] == 4096
+
+    cols = {r[1] for r in c.execute("PRAGMA table_info(tokens)")}
+    # kept domains (1 non-PCA, 2, 3, 4) present AND populated
+    for dom in ("magnitude", "dim_variance", "anomaly_isolation_percentile",
+                "lat_mean_deg", "dispersion_index", "attribution_top_body",
+                "solar_alignment_deg", "phase_harmonic", "dwell_frames_mean",
+                "fano_factor"):
+        assert dom in cols, dom
+    mag = [r[0] for r in c.execute(
+        "SELECT magnitude FROM tokens WHERE node_activations>0")]
+    assert mag and all(m is not None for m in mag)
+
+    # skipped columns still present in the schema but entirely NULL
+    for dom in ("pc_dominant", "pc1_weight", "pc2_weight", "pc3_weight",
+                "transition_top_to", "transition_top_prob", "symbiosis_top_token",
+                "antipode_top_token", "exclusion_top_token"):
+        assert dom in cols, dom
+        vals = [r[0] for r in c.execute(f"SELECT {dom} FROM tokens")]
+        assert all(v is None for v in vals), dom
+
+    # Domain-5 relation graphs exist but are empty
+    for tbl in ("transitions", "exclusion", "symbiosis", "antipode"):
+        assert c.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0] == 0
+
+    # meta records lite provenance + reduced profile count
+    lite = c.execute("SELECT value FROM run_meta WHERE key='lite'").fetchone()[0]
+    prof = c.execute("SELECT value FROM run_meta WHERE key='profiles'").fetchone()[0]
+    dom = c.execute("SELECT value FROM run_meta WHERE key='domains'").fetchone()[0]
+    assert lite == "true" and prof == "13" and dom == "4"
+    con.close()
+
+    # the Phase-2 heartbeat announces the lite (graph-off) mode
+    log = (cfg.log_dir / "indexer.log").read_text()
+    assert any("[P2][HB]" in ln and "LITE graph:off" in ln
+               for ln in log.splitlines())
+    assert any("Domain-5 graph disabled" in ln for ln in log.splitlines())
+
+
 def test_phase2_heartbeat_logs(tmp_path):
     if not global_state.ephemeris_available():
         pytest.skip("pyswisseph not installed")

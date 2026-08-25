@@ -23,6 +23,28 @@ import numpy as np
 
 from .phase3_temporal import _connect, _daily_matrix
 
+#: The per-token scalar columns produced by Domain 5. In --lite mode they are
+#: emitted as NULL (and the relation side-tables left empty) so the master-DB
+#: schema is byte-for-byte the same shape the UI frontend expects.
+DOMAIN5_SCALAR_KEYS = (
+    "transition_top_to", "transition_top_prob",
+    "symbiosis_top_token", "symbiosis_top_prob",
+    "antipode_top_token", "antipode_top_prob",
+    "exclusion_top_token", "exclusion_top_corr",
+)
+
+
+def empty_phase4(codebook_size: int):
+    """Domain-5 placeholders for --lite runs: NULL scalars + empty relation graphs.
+
+    Keeps every Domain-5 column present (as NULL) and every relation table present
+    (empty) so downstream SQL against the dossier never errors in lite mode.
+    """
+    profiles = {t: dict.fromkeys(DOMAIN5_SCALAR_KEYS, None)
+                for t in range(codebook_size)}
+    relations = {"transitions": [], "exclusion": [], "symbiosis": [], "antipode": []}
+    return profiles, relations
+
 
 def transition_lineage(con, act_glob: str, top_k: int, logger=None):
     """Markov transitions from node token sequences; returns (top_per_token, rows)."""

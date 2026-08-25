@@ -45,8 +45,13 @@ def calibrate_magnitude(model, grid, device, calib_jds, codebook_size, batch, lo
     return mean_mag, cnt
 
 
-def run_phase1(model, grid, device, calib_jds, batch, logger=None) -> dict:
-    """Compute all four Domain-1 profiles; returns ``{token_id: {..physics..}}``."""
+def run_phase1(model, grid, device, calib_jds, batch, logger=None, lite=False) -> dict:
+    """Compute the Domain-1 profiles; returns ``{token_id: {..physics..}}``.
+
+    ``lite`` skips the Principal-Component (SVD) dominance profile for rapid UI
+    prototyping; its four columns are emitted as ``None`` so the master-DB schema
+    is unchanged. Magnitude, dimensional variance and anomaly rank are always kept.
+    """
     t0 = time.time()
     cb = model.vq.codebook.detach().cpu().numpy().astype(np.float64)     # (K, 64) unit norm
     k, d = cb.shape
@@ -66,12 +71,15 @@ def run_phase1(model, grid, device, calib_jds, batch, logger=None) -> dict:
     isolation_pctile = 100.0 - isolation_pctile                         # low sim -> high isolation
 
     # -- Principal component dominance (SVD) ---------------------------------
-    cb_centered = cb - cb.mean(axis=0, keepdims=True)
-    # economy SVD: rows = tokens; V rows are the principal axes.
-    _u, _s, vt = np.linalg.svd(cb_centered, full_matrices=False)
-    axes = vt[:3]                                                        # top-3 PCs (3, 64)
-    proj = np.abs(cb_centered @ axes.T)                                  # (K, 3) |weights|
-    pc_dominant = proj.argmax(axis=1) + 1                                # 1..3
+    if lite:
+        pc_dominant = proj = None                                       # skipped in --lite
+    else:
+        cb_centered = cb - cb.mean(axis=0, keepdims=True)
+        # economy SVD: rows = tokens; V rows are the principal axes.
+        _u, _s, vt = np.linalg.svd(cb_centered, full_matrices=False)
+        axes = vt[:3]                                                    # top-3 PCs (3, 64)
+        proj = np.abs(cb_centered @ axes.T)                             # (K, 3) |weights|
+        pc_dominant = proj.argmax(axis=1) + 1                           # 1..3
 
     # -- True magnitude via calibration --------------------------------------
     mean_mag, _cnt = calibrate_magnitude(
@@ -92,14 +100,15 @@ def run_phase1(model, grid, device, calib_jds, batch, logger=None) -> dict:
             "dim_variance": round(float(dim_variance[t]), 6),
             "anomaly_mean_similarity": round(float(mean_sim[t]), 5),
             "anomaly_isolation_percentile": round(float(isolation_pctile[t]), 2),
-            "pc_dominant": int(pc_dominant[t]),
-            "pc1_weight": round(float(proj[t, 0]), 5),
-            "pc2_weight": round(float(proj[t, 1]), 5),
-            "pc3_weight": round(float(proj[t, 2]), 5),
+            "pc_dominant": None if lite else int(pc_dominant[t]),
+            "pc1_weight": None if lite else round(float(proj[t, 0]), 5),
+            "pc2_weight": None if lite else round(float(proj[t, 1]), 5),
+            "pc3_weight": None if lite else round(float(proj[t, 2]), 5),
         }
     if logger:
+        pcs = "PCA skipped (--lite)" if lite else "top-3 PCs of codebook"
         logger.info(f"[P1] Domain-1 physics complete for {k} tokens in "
-                    f"{time.time() - t0:.2f}s (dim={d}, top-3 PCs of codebook).")
+                    f"{time.time() - t0:.2f}s (dim={d}, {pcs}).")
         top_iso = np.argsort(mean_sim)[:3].tolist()
         logger.info(f"[P1] most isolated tokens (lowest mean cosine): {top_iso}")
     return profiles
