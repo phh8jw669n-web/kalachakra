@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Decoupled Engine — Live Energy Field</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #05070e; color: #d6dae4;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  #app { display: grid; grid-template-columns: 340px 1fr; height: 100%; }
+  @media (max-width: 900px) { #app { grid-template-columns: 1fr; } }
+  aside { background: #0a0d17; border-right: 1px solid #182034; padding: 16px; overflow: auto; }
+  main { position: relative; overflow: hidden; }
+  h1 { font-size: 13px; letter-spacing: .16em; text-transform: uppercase; color: #6ec7c1; margin: 0 0 2px; }
+  .sub { color: #6b7488; font-size: 11px; margin-bottom: 12px; line-height: 1.4; }
+  .demo { display:none; margin:8px 0; padding:7px 9px; border-radius:7px; font-size:11px;
+    background:#3a2a12; border:1px solid #6a4d18; color:#e6c07b; }
+  label { display:block; color:#8791a3; font-size:11px; margin:12px 0 3px; letter-spacing:.04em; }
+  input[type=date], input[type=time], select { width:100%; background:#0e1322; border:1px solid #232c40;
+    color:#e7ecf6; border-radius:7px; padding:7px 9px; font:inherit; }
+  input[type=range] { width:100%; }
+  .row2 { display:flex; gap:8px; } .row2 > div { flex:1; }
+
+  .transport { display:flex; gap:8px; align-items:center; margin-top:12px; }
+  .play { flex:0 0 auto; width:46px; height:46px; border-radius:50%; border:none; cursor:pointer;
+    background:#6ec7c1; color:#04140f; font-size:18px; font-weight:700; }
+  .play:hover { background:#8bd8d2; }
+  .nowbox { flex:1; }
+  .nowbox .d { font-size:15px; color:#e7ecf6; letter-spacing:.02em; }
+  .nowbox .j { font-size:10px; color:#6b7488; }
+
+  .val { float:right; color:#9aa3b6; }
+  .seg { display:flex; margin-top:6px; border:1px solid #26314a; border-radius:7px; overflow:hidden; }
+  .seg button { flex:1; background:#0e1322; border:none; color:#8791a3; font:inherit; font-size:11px;
+    padding:6px 4px; cursor:pointer; } .seg button.on { background:#173042; color:#bfeee9; }
+  .check { display:flex; align-items:center; gap:8px; font-size:12px; margin-top:8px; cursor:pointer; color:#aeb6c6; }
+  .check input { width:auto; }
+
+  .section { margin-top:16px; border-top:1px solid #161d2c; padding-top:12px; }
+  .swatch { width:100%; height:44px; border-radius:8px; border:1px solid #232c40; margin:6px 0;
+    background:#0e1322; }
+  .kv { display:flex; justify-content:space-between; font-size:11px; color:#9aa3b6; padding:2px 0; }
+  .kv b { color:#cfe; font-weight:600; }
+  .attr { margin-top:8px; }
+  .attr .bar { display:flex; align-items:center; gap:6px; margin:3px 0; font-size:11px; }
+  .attr .nm { width:64px; color:#6ec7c1; text-transform:capitalize; }
+  .attr .track { flex:1; height:8px; background:#0e1322; border-radius:5px; overflow:hidden; }
+  .attr .fill { height:100%; background:linear-gradient(90deg,#2b6f8f,#6ec7c1); }
+  .attr .pct { width:38px; text-align:right; color:#9aa3b6; }
+  .hint { color:#5a6473; }
+
+  #topbar { position:absolute; top:0; left:0; right:0; z-index:5; padding:12px 16px 22px;
+    background:linear-gradient(#05070ee0,#05070e00); pointer-events:none; }
+  #title { font-size:14px; color:#e7ecf6; letter-spacing:.03em; } #title b { color:#6ec7c1; }
+  #sub2 { color:#6b7488; font-size:11px; margin-top:1px; }
+  #wrap { position:absolute; inset:0; }
+  canvas { width:100%; height:100%; display:block; cursor:crosshair; }
+  #status { position:absolute; bottom:12px; left:50%; transform:translateX(-50%);
+    background:#0a0d17d0; border:1px solid #182034; border-radius:8px; padding:7px 14px;
+    font-size:12px; color:#aeb6c6; max-width:82%; text-align:center; }
+  #status .warn { color:#e6c07b; }
+  #legend { position:absolute; right:12px; bottom:12px; background:#0a0d17c8; border:1px solid #182034;
+    border-radius:8px; padding:8px 10px; font-size:10px; color:#8791a3; max-width:220px; line-height:1.5; }
+  #legend b { color:#6ec7c1; }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <h1>Decoupled Engine</h1>
+    <div class="sub">Live global energy signatures · Sky Encoder → Earth Lens · sidereal ephemeris</div>
+    <div class="demo" id="demo">Demo mode: <b>random weights</b>. Train a model and serve its
+      checkpoint for real learned signatures.</div>
+
+    <div class="transport">
+      <button class="play" id="play" title="Play / pause">▶</button>
+      <div class="nowbox">
+        <div class="d" id="nowDate">—</div>
+        <div class="j" id="nowJD"></div>
+      </div>
+    </div>
+
+    <label>Timeline <span class="val" id="covLabel"></span></label>
+    <input type="range" id="time" min="0" max="1000" value="500" />
+
+    <label>Time step per frame</label>
+    <select id="step">
+      <option value="0.0416667">1 hour</option>
+      <option value="0.25">6 hours</option>
+      <option value="1" selected>1 day</option>
+      <option value="7">1 week</option>
+      <option value="30.4375">1 month</option>
+      <option value="365.25">1 year</option>
+    </select>
+
+    <div class="row2">
+      <div>
+        <label>Field resolution</label>
+        <select id="res">
+          <option value="128">128 × 64</option>
+          <option value="256" selected>256 × 128</option>
+          <option value="512">512 × 256</option>
+        </select>
+      </div>
+      <div>
+        <label>Layer opacity <span class="val" id="opVal">0.85</span></label>
+        <input type="range" id="opacity" min="0" max="1" step="0.05" value="0.85" />
+      </div>
+    </div>
+
+    <label class="check"><input type="checkbox" id="coast" checked> Coastlines</label>
+    <label class="check"><input type="checkbox" id="grid" checked> Graticule</label>
+
+    <div class="section">
+      <label style="margin:0">Point inspector <span class="val hint" id="ptHint">click the map</span></label>
+      <div class="swatch" id="swatch"></div>
+      <div class="kv"><span>Location</span><b id="ptLoc">—</b></div>
+      <div class="kv"><span>OKLab (L,a,b)</span><b id="ptLab">—</b></div>
+      <div class="kv"><span>sRGB</span><b id="ptRgb">—</b></div>
+      <div class="attr" id="attr"></div>
+    </div>
+  </aside>
+
+  <main>
+    <div id="wrap"><canvas id="cv"></canvas></div>
+    <div id="topbar">
+      <div id="title"><b>Live Energy Field</b> · continuous planetary tension → perceptual color</div>
+      <div id="sub2">Press play to watch the signature evolve across the globe. Click anywhere to inspect a point.</div>
+    </div>
+    <div id="legend">The color layer is the model's learned <b>energy signature</b> in perceptual
+      OKLab space — every point on Earth is evaluated on demand at infinite resolution. Continents
+      are drawn as outlines over the field.</div>
+    <div id="status">Loading model…</div>
+  </main>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const API = location.origin;
+const BODIES = ["Sun","Moon","Mercury","Venus","Mars","Jupiter","Saturn","Uranus","Neptune","Pluto"];
+
+let coverage = { start_jd: 2433282.5, end_jd: 2469807.5 };   // overwritten by /health
+let jd = null, playing = false, playToken = 0;
+let step = 1.0, tw = 256, th = 128, opacity = 0.85;
+let showCoast = true, showGrid = true;
+let coastRings = [];
+let marker = null;                     // {lat, lon}
+let texCache = null;                   // last decoded frame {jd, canvas}
+
+// ---- canvas + projection ---------------------------------------------------
+const cv = $("cv"), ctx = cv.getContext("2d");
+const off = document.createElement("canvas");             // texture backbuffer
+let CW = 0, CH = 0, DPR = 1;
+// map rect in CSS px (kept 2:1, letterboxed inside the canvas)
+let MX = 0, MY = 0, MW = 0, MH = 0;
+function layout() {
+  DPR = window.devicePixelRatio || 1;
+  CW = cv.clientWidth; CH = cv.clientHeight;
+  cv.width = Math.round(CW * DPR); cv.height = Math.round(CH * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const pad = 14;
+  let w = CW - pad * 2, h = w / 2;
+  if (h > CH - pad * 2) { h = CH - pad * 2; w = h * 2; }
+  MW = w; MH = h; MX = (CW - w) / 2; MY = (CH - h) / 2;
+  render();
+}
+const X = (lon) => MX + (lon + 180) / 360 * MW;
+const Y = (lat) => MY + (90 - lat) / 180 * MH;
+const lonAt = (px) => (px - MX) / MW * 360 - 180;
+const latAt = (py) => 90 - (py - MY) / MH * 180;
+
+// ---- date helpers (proleptic Gregorian from Julian Day) --------------------
+function jdToUTC(jd) {
+  const z = Math.floor(jd + 0.5), f = jd + 0.5 - z;
+  let a = z;
+  if (z >= 2299161) { const al = Math.floor((z - 1867216.25) / 36524.25);
+    a = z + 1 + al - Math.floor(al / 4); }
+  const b = a + 1524, c = Math.floor((b - 122.1) / 365.25),
+        d = Math.floor(365.25 * c), e = Math.floor((b - d) / 30.6001);
+  const day = b - d - Math.floor(30.6001 * e) + f;
+  const month = e < 14 ? e - 1 : e - 13;
+  const year = month > 2 ? c - 4716 : c - 4715;
+  const dd = Math.floor(day), frac = day - dd;
+  const hrs = frac * 24, hh = Math.floor(hrs), mm = Math.floor((hrs - hh) * 60);
+  return { year, month, day: dd, hh, mm };
+}
+function fmtDate(jd) {
+  const t = jdToUTC(jd);
+  const era = t.year > 0 ? "" : " BCE";
+  const yy = t.year > 0 ? t.year : 1 - t.year;
+  const p = (n) => String(n).padStart(2, "0");
+  return `${String(yy).padStart(4,"0")}-${p(t.month)}-${p(t.day)}${era}  ${p(t.hh)}:${p(t.mm)} UTC`;
+}
+
+// ---- data ------------------------------------------------------------------
+async function fetchTexture(qjd) {
+  const url = `${API}/api/texture?timestamp=${qjd}&width=${tw}&height=${th}`;
+  const res = await fetch(url);
+  if (!res.ok) { let m = res.statusText; try { m = (await res.json()).error; } catch {}
+    throw new Error(m); }
+  const buf = new Uint8Array(await res.arrayBuffer());
+  off.width = tw; off.height = th;
+  const octx = off.getContext("2d");
+  const img = octx.createImageData(tw, th);
+  for (let i = 0, j = 0; i < tw * th; i++) {
+    img.data[j++] = buf[i * 3]; img.data[j++] = buf[i * 3 + 1];
+    img.data[j++] = buf[i * 3 + 2]; img.data[j++] = 255;
+  }
+  octx.putImageData(img, 0, 0);
+  const c = document.createElement("canvas"); c.width = tw; c.height = th;
+  c.getContext("2d").drawImage(off, 0, 0);
+  return { jd: qjd, canvas: c };
+}
+
+// ---- render ----------------------------------------------------------------
+function render() {
+  ctx.clearRect(0, 0, CW, CH);
+  ctx.fillStyle = "#070c16"; ctx.fillRect(MX, MY, MW, MH);      // ocean base
+  if (texCache) {
+    ctx.globalAlpha = opacity;
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(texCache.canvas, MX, MY, MW, MH);
+    ctx.globalAlpha = 1;
+  }
+  if (showGrid) {
+    ctx.strokeStyle = "rgba(120,150,190,.16)"; ctx.lineWidth = 0.5; ctx.beginPath();
+    for (let lo = -180; lo <= 180; lo += 30) { ctx.moveTo(X(lo), Y(90)); ctx.lineTo(X(lo), Y(-90)); }
+    for (let la = -60; la <= 60; la += 30) { ctx.moveTo(X(-180), Y(la)); ctx.lineTo(X(180), Y(la)); }
+    ctx.stroke();
+  }
+  if (showCoast && coastRings.length) {
+    ctx.strokeStyle = "rgba(230,238,250,.55)"; ctx.lineWidth = 0.7; ctx.beginPath();
+    for (const ring of coastRings) {
+      for (let i = 0; i < ring.length; i++) {
+        const px = X(ring[i][0]), py = Y(ring[i][1]);
+        i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+      }
+    }
+    ctx.stroke();
+  }
+  ctx.strokeStyle = "rgba(120,150,190,.3)"; ctx.lineWidth = 1; ctx.strokeRect(MX, MY, MW, MH);
+  if (marker) {
+    const px = X(marker.lon), py = Y(marker.lat);
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.beginPath();
+    ctx.arc(px, py, 6, 0, 7); ctx.moveTo(px - 10, py); ctx.lineTo(px + 10, py);
+    ctx.moveTo(px, py - 10); ctx.lineTo(px, py + 10); ctx.stroke();
+  }
+}
+function setNow(qjd) {
+  jd = qjd;
+  $("nowDate").textContent = fmtDate(jd);
+  $("nowJD").textContent = "JD " + jd.toFixed(3);
+  const t = coverage.end_jd > coverage.start_jd
+    ? (jd - coverage.start_jd) / (coverage.end_jd - coverage.start_jd) : 0.5;
+  $("time").value = Math.max(0, Math.min(1000, Math.round(t * 1000)));
+}
+
+// ---- playback --------------------------------------------------------------
+async function showFrame(qjd) {
+  try {
+    texCache = await fetchTexture(qjd);
+    setNow(qjd); render();
+    return true;
+  } catch (e) {
+    $("status").innerHTML = `<span class="warn">Field error: ${e.message}</span>`;
+    return false;
+  }
+}
+async function loop() {
+  const token = ++playToken;
+  while (playing && token === playToken) {
+    let next = jd + step;
+    if (next > coverage.end_jd) next = coverage.start_jd;          // wrap the timeline
+    const ok = await showFrame(next);
+    if (!ok) { setPlaying(false); break; }
+    $("status").textContent = `▶ playing · ${fmtDate(jd)} · step ${$("step").selectedOptions[0].text}`;
+    await new Promise(requestAnimationFrame);
+  }
+}
+function setPlaying(on) {
+  playing = on; $("play").textContent = on ? "❚❚" : "▶";
+  if (on) loop(); else { playToken++;
+    $("status").textContent = `paused · ${fmtDate(jd)}`; }
+}
+
+// ---- point inspector -------------------------------------------------------
+async function inspect(lat, lon) {
+  marker = { lat, lon }; render();
+  $("ptHint").textContent = "querying…";
+  try {
+    const res = await fetch(`${API}/api/point`, { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ timestamp: jd, lat, lon }) });
+    const r = await res.json();
+    if (r.error) throw new Error(r.error);
+    const [R, G, B] = r.rgb;
+    $("swatch").style.background = `rgb(${R},${G},${B})`;
+    $("ptLoc").textContent = `${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
+    $("ptLab").textContent = r.oklab.map((v) => v.toFixed(3)).join(", ");
+    $("ptRgb").textContent = `${R}, ${G}, ${B}`;
+    const entries = BODIES.map((n) => [n, r.attribution[n] || 0]).sort((a, b) => b[1] - a[1]);
+    $("attr").innerHTML = entries.map(([n, w]) =>
+      `<div class="bar"><span class="nm">${n}</span>` +
+      `<span class="track"><span class="fill" style="width:${(w * 100).toFixed(1)}%"></span></span>` +
+      `<span class="pct">${(w * 100).toFixed(1)}%</span></div>`).join("");
+    $("ptHint").textContent = fmtDate(jd).split("  ")[1];
+  } catch (e) { $("ptHint").textContent = "error"; }
+}
+
+// ---- events ----------------------------------------------------------------
+$("play").onclick = () => setPlaying(!playing);
+$("time").addEventListener("input", () => {
+  setPlaying(false);
+  const t = +$("time").value / 1000;
+  showFrame(coverage.start_jd + t * (coverage.end_jd - coverage.start_jd));
+});
+$("step").onchange = () => { step = +$("step").value; };
+$("res").onchange = () => { const w = +$("res").value; tw = w; th = w / 2;
+  if (jd != null) showFrame(jd); };
+$("opacity").addEventListener("input", () => { opacity = +$("opacity").value;
+  $("opVal").textContent = opacity.toFixed(2); render(); });
+$("coast").onchange = (e) => { showCoast = e.target.checked; render(); };
+$("grid").onchange = (e) => { showGrid = e.target.checked; render(); };
+cv.addEventListener("click", (e) => {
+  const rect = cv.getBoundingClientRect();
+  const px = e.clientX - rect.left, py = e.clientY - rect.top;
+  if (px < MX || px > MX + MW || py < MY || py > MY + MH) return;
+  inspect(latAt(py), lonAt(px));
+});
+window.addEventListener("resize", layout);
+
+// ---- boot ------------------------------------------------------------------
+async function boot() {
+  try {
+    const h = await (await fetch(`${API}/health`)).json();
+    coverage = h.coverage || coverage;
+    if (h.demo) $("demo").style.display = "block";
+    $("covLabel").textContent = `${fmtDate(coverage.start_jd).split("  ")[0]} → ${fmtDate(coverage.end_jd).split("  ")[0]}`;
+  } catch (e) { $("status").innerHTML = `<span class="warn">Backend unreachable: ${e.message}</span>`; return; }
+  try { const g = await (await fetch(`${API}/api/coastlines.geojson`)).json();
+    for (const f of (g.features || [])) { const gm = f.geometry; if (!gm) continue;
+      const polys = gm.type === "Polygon" ? [gm.coordinates]
+        : gm.type === "MultiPolygon" ? gm.coordinates : [];
+      for (const poly of polys) for (const ring of poly) coastRings.push(ring); }
+  } catch {}
+  layout();
+  const mid = coverage.start_jd + 0.5 * (coverage.end_jd - coverage.start_jd);
+  await showFrame(mid);
+  $("status").textContent = `ready · ${fmtDate(jd)} · press ▶ to animate`;
+}
+boot();
+</script>
+</body>
+</html>

@@ -353,6 +353,39 @@ def test_torchscript_export_matches_eager(tmp_path):
 # ---------------------------------------------------------------------------
 # FastAPI integration
 # ---------------------------------------------------------------------------
+def test_jd_from_timestamp_parsing():
+    from kalachakra.decoupled_engine.inference import jd_from_timestamp
+    assert jd_from_timestamp(2460000.5) == 2460000.5
+    assert jd_from_timestamp("2460000.5") == 2460000.5        # numeric string -> JD
+    iso = jd_from_timestamp("2000-01-01T00:00:00Z")
+    assert 2451544.0 < iso < 2451546.0                        # ~ J2000
+
+
+def test_api_demo_mode_and_dashboard(tmp_path):
+    _skip_no_ephem()
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from kalachakra.decoupled_engine.api import create_app
+    app = create_app(None, device="cpu", bank_size=4)         # no checkpoint -> demo
+    c = TestClient(app)
+
+    h = c.get("/health").json()
+    assert h["status"] == "ok" and h["demo"] is True
+    assert "coverage" in h and h["coverage"]["end_jd"] > h["coverage"]["start_jd"]
+
+    assert c.get("/").status_code == 200                       # dashboard served
+    assert c.get("/api/coastlines.geojson").status_code == 200
+
+    mid = 0.5 * (h["coverage"]["start_jd"] + h["coverage"]["end_jd"])
+    tex = c.get("/api/texture", params={"timestamp": mid, "width": 8, "height": 4})
+    assert tex.status_code == 200 and len(tex.content) == 8 * 4 * 3
+    assert tex.headers.get("x-jd") is not None                 # numeric-JD timestamp works
+    pt = c.post("/api/point", json={"timestamp": mid, "lat": 10.0, "lon": 20.0}).json()
+    assert len(pt["rgb"]) == 3 and abs(sum(pt["attribution"].values()) - 1.0) < 1e-4
+    assert "date" in pt
+
+
 def test_api_endpoints(tmp_path):
     _skip_no_ephem()
     pytest.importorskip("fastapi")

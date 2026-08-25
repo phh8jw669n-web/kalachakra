@@ -97,8 +97,9 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--device", default="")
     x.set_defaults(func=_cmd_export)
 
-    s = sub.add_parser("serve", help="run the FastAPI live-integration server")
-    s.add_argument("checkpoint")
+    s = sub.add_parser("serve", help="run the FastAPI live dashboard / API server")
+    s.add_argument("checkpoint", nargs="?", default=None,
+                   help="trained checkpoint; omit for demo mode (random weights)")
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8100)
     s.add_argument("--device", default="")

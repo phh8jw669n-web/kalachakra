@@ -38,10 +38,18 @@ def select_device(pref: str = "") -> torch.device:
 
 
 def jd_from_timestamp(ts) -> float:
-    """Accept a Julian Day float or an ISO-8601 / 'now' string -> Julian Day."""
+    """Accept a Julian Day (number or numeric string) or an ISO-8601 / 'now' string.
+
+    A bare number is treated as a Julian Day so the UI can scrub smoothly in JD
+    space; anything else (``2024-01-01``, ``now``) goes through the calendar parser.
+    """
     if isinstance(ts, (int, float)):
         return float(ts)
-    return float(parse_datetime(str(ts)))
+    s = str(ts).strip()
+    try:
+        return float(s)                       # numeric string -> Julian Day
+    except ValueError:
+        return float(parse_datetime(s))
 
 
 class DecoupledInference:
