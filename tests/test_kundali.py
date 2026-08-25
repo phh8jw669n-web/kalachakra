@@ -88,11 +88,13 @@ def test_all_tiers_and_structure(kundali_db):
     ks = KundaliSearch(kundali_db)
     ks.set_natal(parse_datetime("1990-01-01T12:00:00Z"), 26.9, 75.8)
     house_tiers = {3, 4, 8}
-    prev_broad = None
     for tier in range(1, 9):
-        res = ks.search(tier, limit=500)
+        out = ks.search(tier, limit=500)
+        assert out["active_constraint_count"] == 9 and out["match_score"] == 1.0
+        res = out["results"]
         for r in res:
             assert "jd" in r and "date" in r and "longitude" in r
+            assert 1 <= r["total_matched"] <= 9
             if tier in house_tiers:
                 assert r["longitude_constrained"] is True
                 assert "ascendant_sign" in r and 0 <= r["ascendant_sign"] <= 11
@@ -100,8 +102,6 @@ def test_all_tiers_and_structure(kundali_db):
                 assert r["longitude_constrained"] is False
         if tier == 2:                     # the birth day itself is a psychological twin
             assert any(r["date"].startswith("1990-01-01") for r in res)
-        prev_broad = res
-    assert prev_broad is not None
     avail = ks.counts_by_tier()
     assert set(avail) == set(range(1, 9)) and all(isinstance(v, bool) for v in avail.values())
     ks.close()
@@ -114,13 +114,44 @@ def test_absolute_twin_orb(kundali_db):
     from kalachakra.kundali.search import KundaliSearch
     ks = KundaliSearch(kundali_db)
     natal = ks.set_natal(parse_datetime("1990-01-01T12:00:00Z"), 26.9, 75.8)
-    res = ks.search(7, limit=50)
+    res = ks.search(7, limit=50)["results"]
     for r in res:
         lons = astro.body_longitudes(r["jd"])
         for name, b in natal["bodies"].items():
             d = abs(lons[name] - b["lon"]) % 360
             d = min(d, 360 - d)
             assert d <= 5.0 + 1e-6
+    ks.close()
+
+
+def test_dynamic_constraint_toggles(kundali_db):
+    """Relaxing the active set widens Tier 3; the full set preserves strict counts."""
+    from kalachakra.kundali import astro
+    from kalachakra.kundali.search import KundaliSearch
+    ks = KundaliSearch(kundali_db)
+    ks.set_natal(parse_datetime("1990-01-01T12:00:00Z"), 26.9, 75.8)
+
+    full = ks.search(3, limit=2000)                     # all 9 bodies (strict)
+    relaxed = ks.search(3, limit=2000,                  # drop fast movers
+                        active_planets=["sun", "jupiter", "saturn", "rahu", "ketu"])
+    assert full["active_constraint_count"] == 9
+    assert relaxed["active_constraint_count"] == 5
+    assert relaxed["match_score"] == round(5 / 9, 3)
+    # relaxing the constraint set must not shrink the match set
+    assert len(relaxed["results"]) >= len(full["results"])
+    # a strict all-9 query equals the default (no active set)
+    assert len(ks.search(2)["results"]) == len(
+        ks.search(2, active_planets=list(astro.BODY_NAMES))["results"])
+
+    # By Houses mode: locking the houses of a couple of bodies resolves to a
+    # planet subset and returns matches with solved longitudes.
+    natal = ks.natal
+    occ = sorted(int(h) for h in natal["houses"])       # occupied houses
+    houses = occ[:2]
+    byh = ks.search(3, limit=500, active_houses=houses)
+    assert byh["active_constraint_count"] >= 1
+    for r in byh["results"][:5]:
+        assert r["longitude_constrained"] is True
     ks.close()
 
 

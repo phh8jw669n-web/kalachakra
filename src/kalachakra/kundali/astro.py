@@ -161,14 +161,18 @@ def natal_chart(jd_ut: float, geo_lat_deg: float, geo_lon_deg: float) -> dict:
     the higher search tiers.
     """
     lons = body_longitudes(jd_ut)
+    asc = ascendant_sign(jd_ut, geo_lat_deg, geo_lon_deg)
     bodies = {}
+    houses: dict[int, list[str]] = {}
     for name in BODY_NAMES:
         lo = lons[name]
+        sign = sign_of(lo)
+        house = (sign - asc) % 12 + 1                # whole-sign house (1..12)
         bodies[name] = {
-            "lon": round(lo, 5), "sign": sign_of(lo), "deg": round(degree_in_sign(lo), 5),
-            "nak": nakshatra_of(lo), "nav": navamsa_sign(lo),
+            "lon": round(lo, 5), "sign": sign, "deg": round(degree_in_sign(lo), 5),
+            "nak": nakshatra_of(lo), "nav": navamsa_sign(lo), "house": house,
         }
-    asc = ascendant_sign(jd_ut, geo_lat_deg, geo_lon_deg)
+        houses.setdefault(house, []).append(name)
     # conjunction groups: bodies sharing a sign, ordered by degree (who "wins")
     by_sign: dict[int, list[str]] = {}
     for name in BODY_NAMES:
@@ -178,4 +182,5 @@ def natal_chart(jd_ut: float, geo_lat_deg: float, geo_lon_deg: float) -> dict:
     return {
         "jd": jd_ut, "lat": geo_lat_deg, "lon": geo_lon_deg,
         "ascendant_sign": asc, "bodies": bodies, "conjunctions": conj,
+        "houses": {h: sorted(names) for h, names in sorted(houses.items())},
     }

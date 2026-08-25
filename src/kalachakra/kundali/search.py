@@ -58,79 +58,143 @@ class KundaliSearch:
         self.natal = astro.natal_chart(jd_ut, lat_deg, lon_deg)
         return self.natal
 
-    # -- WHERE builders ------------------------------------------------------
+    # -- active-set resolution (Planetary Tethers / Selective House Locking) --
+    def resolve_active(self, active_planets=None, active_houses=None) -> list[str]:
+        """Ordered list of the bodies whose constraints are enforced this query.
+
+        By Houses mode (``active_houses`` given) selects the natal residents of the
+        chosen houses; otherwise ``active_planets`` (default: all nine) is used.
+        The order follows the canonical body order for stable SQL/scoring.
+        """
+        if active_houses:
+            hs = {int(h) for h in active_houses}
+            names = [n for n, b in self.natal["bodies"].items()
+                     if b["house"] in hs]
+        elif active_planets is None:
+            names = list(astro.BODY_NAMES)
+        else:
+            want = set(active_planets)
+            names = [n for n in astro.BODY_NAMES if n in want]
+        return names
+
+    # -- WHERE builders (all take the active subset ``names``) ---------------
     def _signs_where(self, names) -> str:
         b = self.natal["bodies"]
-        return " AND ".join(f"{n}_sign = {b[n]['sign']}" for n in names)
+        clauses = [f"{n}_sign = {b[n]['sign']}" for n in names]
+        return " AND ".join(clauses) if clauses else "TRUE"
 
-    def _mirror_where(self) -> str:
-        """All bodies shifted by a common sign offset relative to the natal chart."""
+    def _mirror_where(self, names) -> str:
+        """Active bodies share a common sign offset relative to the natal chart.
+
+        With a subset this relaxes the all-9 house-sequence lock to only the
+        checked bodies (PRD Tier-3 relaxation). One or zero bodies impose no
+        relative constraint (a single planet's house is always solvable).
+        """
         b = self.natal["bodies"]
-        ref = f"((sun_sign - {b['sun']['sign']} + 12) % 12)"
+        if len(names) < 2:
+            return "TRUE"
+        ref_name = names[0]
+        ref = f"(({ref_name}_sign - {b[ref_name]['sign']} + 12) % 12)"
         parts = [f"((({n}_sign - {b[n]['sign']} + 12) % 12) = {ref})"
-                 for n in astro.BODY_NAMES if n != "sun"]
+                 for n in names[1:]]
         return " AND ".join(parts)
 
-    def _war_where(self) -> str:
-        """Conjunct planets keep the same degree order (same planet 'wins')."""
+    def _war_where(self, names) -> str:
+        active = set(names)
         clauses = []
         for group in self.natal["conjunctions"].values():   # degree-ordered
-            for a, c in zip(group, group[1:]):
+            g = [n for n in group if n in active]
+            for a, c in zip(g, g[1:]):
                 clauses.append(f"{a}_deg < {c}_deg")
-        return " AND ".join(clauses)
+        return " AND ".join(clauses) if clauses else "TRUE"
 
-    def _orb_where(self) -> str:
+    def _orb_where(self, names) -> str:
         b = self.natal["bodies"]
-        return " AND ".join(f"{_circ(n + '_lon', b[n]['lon'])} <= {_ORB_DEG}"
-                            for n in astro.BODY_NAMES)
+        clauses = [f"{_circ(n + '_lon', b[n]['lon'])} <= {_ORB_DEG}" for n in names]
+        return " AND ".join(clauses) if clauses else "TRUE"
 
-    def _nav_where(self) -> str:
+    def _nav_where(self, names) -> str:
         b = self.natal["bodies"]
-        return " AND ".join(f"{n}_nav = {b[n]['nav']}" for n in astro.BODY_NAMES)
+        clauses = [f"{n}_nav = {b[n]['nav']}" for n in names]
+        return " AND ".join(clauses) if clauses else "TRUE"
 
-    def _tier_where(self, tier: int) -> str:
+    def _tier_where(self, tier: int, names) -> str:
         b = self.natal["bodies"]
+        slow = [n for n in names if n in astro.SLOW_BODIES]
         if tier == 1:
-            return self._signs_where(astro.SLOW_BODIES)
+            return self._signs_where(slow)
         if tier == 2:
-            return self._signs_where(astro.BODY_NAMES)
+            return self._signs_where(names)
         if tier == 3:
-            return self._mirror_where()
+            return self._mirror_where(names)
         if tier == 4:
-            return self._signs_where(astro.BODY_NAMES)
+            return self._signs_where(names)
         if tier == 5:
-            return f"{self._signs_where(astro.BODY_NAMES)} AND moon_nak = {b['moon']['nak']}"
+            base = self._signs_where(names)
+            return f"{base} AND moon_nak = {b['moon']['nak']}" if "moon" in names else base
         if tier == 6:
-            base = f"{self._signs_where(astro.BODY_NAMES)} AND moon_nak = {b['moon']['nak']}"
-            war = self._war_where()
-            return f"{base} AND {war}" if war else base
+            base = self._signs_where(names)
+            if "moon" in names:
+                base = f"{base} AND moon_nak = {b['moon']['nak']}"
+            war = self._war_where(names)
+            return f"{base} AND {war}" if war != "TRUE" else base
         if tier == 7:
-            return self._orb_where()
+            return self._orb_where(names)
         if tier == 8:
-            return f"{self._nav_where()} AND {self._orb_where()}"
+            return f"({self._nav_where(names)}) AND ({self._orb_where(names)})"
         raise ValueError(f"tier must be 1..8, got {tier}")
 
+    # -- per-row enrichment: how many of ALL nine also satisfy the criterion --
+    def _total_matched(self, tier: int, row: dict) -> int:
+        b = self.natal["bodies"]
+        if tier in (7, 8):
+            c = 0
+            for n in astro.BODY_NAMES:
+                d = abs(row[f"{n}_lon"] - b[n]["lon"]) % 360.0
+                if min(d, 360.0 - d) <= _ORB_DEG:
+                    c += 1
+            return c
+        if tier == 3:
+            # bodies sharing the modal common sign offset k (the relative pattern)
+            offs = [(int(row[f"{n}_sign"]) - b[n]["sign"]) % 12 for n in astro.BODY_NAMES]
+            kmode = max(set(offs), key=offs.count)
+            return sum(1 for o in offs if o == kmode)
+        # sign tiers
+        return sum(1 for n in astro.BODY_NAMES if int(row[f"{n}_sign"]) == b[n]["sign"])
+
     # -- query ---------------------------------------------------------------
-    def search(self, tier: int, limit: int = 300) -> list[dict]:
+    def search(self, tier: int, limit: int = 300, active_planets=None,
+               active_houses=None) -> dict:
         if self.natal is None:
             raise RuntimeError("call set_natal() first")
-        where = self._tier_where(tier)
-        # sun_sign is needed to recover the mirror offset k per row (tier 3)
-        rows = self.con.execute(
-            f"SELECT jd, year, sun_sign FROM positions WHERE {where} "
-            f"ORDER BY jd LIMIT {limit}").fetchall()
+        names = self.resolve_active(active_planets, active_houses)
+        if not names:
+            return {"results": [], "active_planets": [], "active_constraint_count": 0,
+                    "match_score": 0.0, "note": "no active constraints"}
+        where = self._tier_where(tier, names)
+        # fetch jd + all nine sign/lon columns (needed for enrichment + mirror k)
+        cols = ["jd"] + [f"{n}_sign" for n in astro.BODY_NAMES] \
+            + [f"{n}_lon" for n in astro.BODY_NAMES]
+        sql = (f"SELECT {', '.join(cols)} FROM positions WHERE {where} "
+               f"ORDER BY jd LIMIT {limit}")
+        raw = self.con.execute(sql).fetchall()
         natal_asc = self.natal["ascendant_sign"]
-        natal_sun = self.natal["bodies"]["sun"]["sign"]
 
         results = []
-        for jd, _year, sun_sign in rows:
-            jd = float(jd)
+        for tup in raw:
+            row = dict(zip(cols, tup))
+            jd = float(row["jd"])
             r = {"jd": jd, "date": _fmt_date(jd), "year": jd_to_gregorian(jd)[0],
-                 "latitude": round(float(self.natal["lat"]), 4)}
+                 "latitude": round(float(self.natal["lat"]), 4),
+                 "total_matched": self._total_matched(tier, row)}
             if tier in _HOUSE_TIERS:
-                # tier 3 shifts the ascendant by the common sign offset k; tiers 4/8
-                # match signs exactly (k == 0), so the target is the natal Lagna.
-                k = (int(sun_sign) - natal_sun) % 12 if tier == 3 else 0
+                # k is the common offset shared by the *active* bodies (tier 3);
+                # tiers 4/8 match signs exactly, so k == 0.
+                if tier == 3:
+                    ref = names[0]
+                    k = (int(row[f"{ref}_sign"]) - self.natal["bodies"][ref]["sign"]) % 12
+                else:
+                    k = 0
                 target = (natal_asc + k) % 12
                 bands = astro.longitudes_for_ascendant_sign(
                     jd, self.natal["lat"], target, refine=(tier == 8))
@@ -141,18 +205,25 @@ class KundaliSearch:
                 r["ascendant_sign"] = target
                 r["longitude_constrained"] = True
             else:
-                # sign/degree tiers are longitude-free: the twin can be born at any
-                # longitude that day; we pin at the user's own longitude as a proxy.
                 r["longitude"] = round(float(self.natal["lon"]), 4)
                 r["longitude_constrained"] = False
             results.append(r)
-        return results
+        return {
+            "results": results,
+            "active_planets": names,
+            "active_constraint_count": len(names),
+            "match_score": round(len(names) / len(astro.BODY_NAMES), 3),
+        }
 
-    def counts_by_tier(self, limit_probe: int = 1) -> dict[int, bool]:
-        """Cheap existence probe per tier (does any match exist?)."""
+    def counts_by_tier(self, active_planets=None, active_houses=None) -> dict[int, bool]:
+        """Cheap existence probe per tier for the current active set."""
+        names = self.resolve_active(active_planets, active_houses)
         out = {}
         for t in range(1, 9):
-            where = self._tier_where(t)
+            if not names:
+                out[t] = False
+                continue
+            where = self._tier_where(t, names)
             row = self.con.execute(
                 f"SELECT 1 FROM positions WHERE {where} LIMIT 1").fetchone()
             out[t] = row is not None

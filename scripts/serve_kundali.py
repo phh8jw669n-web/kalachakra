@@ -49,10 +49,13 @@ def _natal_summary(natal: dict) -> dict:
     from kalachakra.kundali import astro
     return {
         "ascendant": astro.SIGNS[natal["ascendant_sign"]],
+        "ascendant_sign": natal["ascendant_sign"],
         "bodies": {n: {"sign": astro.SIGNS[b["sign"]], "deg": round(b["deg"], 2),
                        "nakshatra": astro.NAKSHATRAS[b["nak"]],
-                       "navamsa": astro.SIGNS[b["nav"]]}
+                       "navamsa": astro.SIGNS[b["nav"]], "house": b["house"]}
                    for n, b in natal["bodies"].items()},
+        # house -> resident bodies, for the By-Houses selector matrix
+        "houses": {str(h): names for h, names in natal["houses"].items()},
     }
 
 
@@ -100,19 +103,28 @@ def create_app(db_path: str):
             lon = float(body["lon"])
             tier = int(body.get("tier", 1))
             limit = int(body.get("limit", 300))
+            active_planets = body.get("active_planets")     # list[str] or None (=all)
+            active_houses = body.get("active_houses")       # list[int] or None
         except (KeyError, ValueError) as exc:
             return JSONResponse({"error": f"bad request: {exc}"}, status_code=400)
 
         ks = KundaliSearch(db_path)
         try:
             natal = ks.set_natal(jd, lat, lon)
-            results = ks.search(tier, limit=limit)
-            available = ks.counts_by_tier()
+            out = ks.search(tier, limit=limit, active_planets=active_planets,
+                            active_houses=active_houses)
+            available = ks.counts_by_tier(active_planets=active_planets,
+                                          active_houses=active_houses)
         finally:
             ks.close()
+        results = out["results"]
         return JSONResponse({
             "tier": tier, "tier_name": TIER_NAMES[tier], "count": len(results),
-            "results": results, "available": {str(k): v for k, v in available.items()},
+            "results": results,
+            "active_planets": out["active_planets"],
+            "active_constraint_count": out["active_constraint_count"],
+            "match_score": out["match_score"],
+            "available": {str(k): v for k, v in available.items()},
             "tier_names": TIER_NAMES,
             "natal": _natal_summary(natal),
             "signs": list(astro.SIGNS),
