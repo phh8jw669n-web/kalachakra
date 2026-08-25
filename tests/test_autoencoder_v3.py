@@ -5,6 +5,8 @@ The v3 model is a VQ-VAE with the modern stability formulation: L2-normalized
 commitment-only loss, and dead-code restart. These tests pin that contract.
 """
 
+import warnings
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -12,7 +14,8 @@ import torch.nn.functional as F                                       # noqa: E4
 
 from kalachakra.grid import geodesic                                  # noqa: E402
 from kalachakra.models.autoencoder_v3 import (                        # noqa: E402
-    VectorQuantizer, VQAutoencoderV3, VQAutoencoderV3Config, build_knn,
+    SpectralConv1dV3, VectorQuantizer, VQAutoencoderV3,
+    VQAutoencoderV3Config, build_knn,
 )
 
 
@@ -25,6 +28,49 @@ def _model(n=300, blocks=2, node_chunk=64, grad_checkpoint=False, codebook=4096)
         node_chunk=node_chunk, vq_chunk=4096, grad_checkpoint=grad_checkpoint,
     )
     return VQAutoencoderV3(cfg, nb), grid
+
+
+def _spectral_ref(conv, x):
+    """The original rfft/irfft spectral path, for the length-1 equivalence check."""
+    b, _, length = x.shape
+    xf = x.float()
+    x_ft = torch.fft.rfft(xf, dim=-1)
+    keep = min(conv.modes, x_ft.shape[-1])
+    xr, xi = x_ft.real[:, :, :keep], x_ft.imag[:, :, :keep]
+    wr = conv.weight[:, :, :keep, 0].float()
+    wi = conv.weight[:, :, :keep, 1].float()
+    out_r = torch.einsum("bix,iox->box", xr, wr) - torch.einsum("bix,iox->box", xi, wi)
+    out_i = torch.einsum("bix,iox->box", xr, wi) + torch.einsum("bix,iox->box", xi, wr)
+    out_ft = torch.zeros(b, conv.out_channels, x_ft.shape[-1], dtype=torch.cfloat)
+    out_ft[:, :, :keep] = torch.complex(out_r, out_i)
+    return torch.fft.irfft(out_ft, n=length, dim=-1)
+
+
+def test_spectral_length1_matches_fft_and_is_warning_free():
+    # single-frame inference (length==1) must be bit-identical to the rfft/irfft
+    # round trip, and must not emit the benign MPS out-resize UserWarning.
+    torch.manual_seed(0)
+    conv = SpectralConv1dV3(8, 5, modes=6).eval()
+    x = torch.randn(2048, 8, 1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)     # any UserWarning -> failure
+        with torch.no_grad():
+            y = conv(x)
+    with torch.no_grad():
+        ref = _spectral_ref(conv, x)
+    assert y.shape == (2048, 5, 1)
+    assert torch.equal(y, ref)                          # bit-identical
+
+
+def test_model_single_frame_encode_is_warning_free():
+    model, _ = _model(n=200, blocks=2)
+    model.eval()
+    e = torch.randn(1, 1, 200, 50)                      # (B, T=1, N, 50) single frame
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        with torch.no_grad():
+            z = model.encode(e)
+    assert z.shape == (1, 1, 200, 64)
 
 
 def test_forward_signature_and_shapes():
@@ -111,10 +157,13 @@ def test_grad_checkpoint_is_exact():
     m0, _ = _model(blocks=3, grad_checkpoint=False)
     m1, _ = _model(blocks=3, grad_checkpoint=True)
     m1.load_state_dict(m0.state_dict())
-    m0.train(); m1.train()
+    m0.train()
+    m1.train()
     e = torch.randn(1, 8, 300, 50)
-    r0, _z0, _i0, v0 = m0(e); (r0.pow(2).mean() + v0).backward()
-    r1, _z1, _i1, v1 = m1(e); (r1.pow(2).mean() + v1).backward()
+    r0, _z0, _i0, v0 = m0(e)
+    (r0.pow(2).mean() + v0).backward()
+    r1, _z1, _i1, v1 = m1(e)
+    (r1.pow(2).mean() + v1).backward()
     assert torch.equal(r0, r1)
     for p0, p1 in zip(m0.parameters(), m1.parameters()):
         assert torch.equal(p0.grad, p1.grad)

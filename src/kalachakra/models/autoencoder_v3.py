@@ -106,6 +106,15 @@ class SpectralConv1dV3(nn.Module):
         in_dtype = x.dtype
         with torch.autocast(device_type=x.device.type, enabled=False):
             xf = x.float()
+            if length == 1:
+                # A single time step carries only the DC component: the rfft/irfft
+                # round trip reduces exactly to the first-mode real projection
+                # (irfft(n=1) keeps only the real DC term). Short-circuiting it is
+                # bit-identical AND avoids a benign per-call MPS out-resize
+                # UserWarning during single-frame inference (indexer / serving).
+                w0 = self.weight[:, :, 0, 0].float()          # (in, out) first-mode real
+                out = torch.einsum("bi,io->bo", xf[:, :, 0], w0).unsqueeze(-1)
+                return out.to(in_dtype)
             x_ft = torch.fft.rfft(xf, dim=-1)
             keep = min(self.modes, x_ft.shape[-1])
             xr, xi = x_ft.real[:, :, :keep], x_ft.imag[:, :, :keep]
