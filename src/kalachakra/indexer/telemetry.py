@@ -28,16 +28,27 @@ def setup_logging(log_dir: str | Path, name: str = "great_indexer",
     """A logger writing to a rotating file AND stdout with rich, timestamped lines."""
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
+    target = str((log_dir / "indexer.log").resolve())
     logger = logging.getLogger(name)
     logger.setLevel(level)
     logger.propagate = False
-    if logger.handlers:                       # idempotent across phase calls
+
+    # Idempotent within one run, but re-point the file handler if this call names a
+    # different log dir (e.g. a second pipeline run in the same process) so the log
+    # always lands in the active run's directory.
+    already = any(isinstance(h, RotatingFileHandler)
+                  and getattr(h, "baseFilename", None) == target
+                  for h in logger.handlers)
+    if already:
         return logger
+    for h in list(logger.handlers):           # drop handlers from a prior log dir
+        logger.removeHandler(h)
+        h.close()
 
     fmt = logging.Formatter(
         "%(asctime)s.%(msecs)03d | %(levelname)-7s | %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S")
-    fh = RotatingFileHandler(log_dir / "indexer.log", maxBytes=32 * 1024 * 1024,
+    fh = RotatingFileHandler(target, maxBytes=32 * 1024 * 1024,
                              backupCount=5, encoding="utf-8")
     fh.setFormatter(fmt)
     sh = logging.StreamHandler()

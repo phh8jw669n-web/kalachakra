@@ -38,6 +38,9 @@ class IndexerConfig:
     chunk_frames: int = 50_000                      # processed frames per parquet flush + state lock
     node_batch: int = 0                             # 0 -> auto from node count
     calib_days: int = 24                            # frames for the pre-quant magnitude calibration
+    # inner-loop heartbeat: log live telemetry every N frames OR every S seconds
+    heartbeat_frames: int = 100
+    heartbeat_seconds: float = 60.0
 
     # -- analytics -----------------------------------------------------------
     epoch_years: int = 50                           # Fano-factor bin width

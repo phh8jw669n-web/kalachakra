@@ -50,6 +50,10 @@ def parse_args(argv=None):
     p.add_argument("--fine-seconds", type=float, default=float(C.VIGHATIKA_SECONDS))
     p.add_argument("--velocity-threshold", type=float, default=0.02)
     p.add_argument("--chunk-frames", type=int, default=50_000)
+    p.add_argument("--heartbeat-frames", type=int, default=100,
+                   help="live sweep telemetry every N frames")
+    p.add_argument("--heartbeat-seconds", type=float, default=60.0,
+                   help="...or every S seconds, whichever comes first")
     p.add_argument("--calib-days", type=int, default=24)
     p.add_argument("--epoch-years", type=int, default=50)
     p.add_argument("--node-batch", type=int, default=0)
@@ -68,7 +72,8 @@ def build_config(args):
         coarse_step_seconds=args.coarse_seconds, fine_step_seconds=args.fine_seconds,
         velocity_threshold=args.velocity_threshold, chunk_frames=args.chunk_frames,
         calib_days=args.calib_days, epoch_years=args.epoch_years,
-        node_batch=args.node_batch, device=args.device)
+        node_batch=args.node_batch, device=args.device,
+        heartbeat_frames=args.heartbeat_frames, heartbeat_seconds=args.heartbeat_seconds)
     if args.full:
         b = C.timeline_bounds()
         cfg.start_jd, cfg.end_jd = b.start_jd, b.end_jd

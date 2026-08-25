@@ -87,7 +87,7 @@ def test_atomic_write_and_state_lock(tmp_path):
     assert st2.phase_done("phase1") and st2.last_chunk() == 1
 
 
-def _run_small_pipeline(tmp_path, days=8.0):
+def _run_small_pipeline(tmp_path, days=8.0, heartbeat_frames=100):
     from kalachakra.indexer.pipeline import run_pipeline
     ckpt = tmp_path / "checkpoints/v3/model_step_000025.pt"
     _tiny_ckpt(ckpt)
@@ -96,7 +96,8 @@ def _run_small_pipeline(tmp_path, days=8.0):
         start_jd=parse_datetime("2024-03-01T00:00:00Z"),
         end_jd=parse_datetime("2024-03-01T00:00:00Z") + days,
         coarse_step_seconds=10800.0, velocity_threshold=0.02,
-        chunk_frames=40, calib_days=6, fft_min_samples=6, device="cpu")
+        chunk_frames=40, calib_days=6, fft_min_samples=6, device="cpu",
+        heartbeat_frames=heartbeat_frames, heartbeat_seconds=1e9)
     return run_pipeline(cfg), cfg
 
 
@@ -144,6 +145,20 @@ def test_pipeline_end_to_end(tmp_path):
     prof = c.execute("SELECT value FROM run_meta WHERE key='profiles'").fetchone()[0]
     assert prof == "18"
     con.close()
+
+
+def test_phase2_heartbeat_logs(tmp_path):
+    if not global_state.ephemeris_available():
+        pytest.skip("pyswisseph not installed")
+    # small heartbeat interval so several fire over a short window
+    _db, cfg = _run_small_pipeline(tmp_path, days=8.0, heartbeat_frames=10)
+    log = (cfg.log_dir / "indexer.log").read_text()
+    hb = [ln for ln in log.splitlines() if "[P2][HB]" in ln]
+    assert hb, "expected at least one Phase-2 heartbeat line"
+    line = hb[0]
+    # heartbeat carries all requested fields
+    for token in ("chunk", "frame", "downshifts=", "frames/s", "COARSE", "mem="):
+        assert token in line or token in "".join(hb), token
 
 
 def test_pipeline_resume_idempotent(tmp_path):

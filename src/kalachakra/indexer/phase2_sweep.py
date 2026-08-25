@@ -29,13 +29,14 @@ from pathlib import Path
 import numpy as np
 
 from .. import constants as C
-from ..ephemeris.calendar import jd_to_gregorian
+from ..ephemeris.calendar import format_jd, jd_to_gregorian
 from .adaptive import AdaptiveClock
 from .model_io import auto_node_batch, project_fields, tokenize_batch
 from .state import atomic_write_bytes
 from .sweep_math import (
     connected_components, great_circle_deg, latlon_of, subsolar_point,
 )
+from .telemetry import format_hw, hardware_snapshot
 
 N_BODIES = C.N_BODIES
 BODY_FEATS = C.LOCAL_BODY_FEATURES     # 5
@@ -209,6 +210,29 @@ def run_phase2(cfg, model, model_cfg, grid, neighbors, device, state, logger):
     processed_in_chunk = 0
     t_chunk = time.time()
     t_start = time.time()
+    # inner-loop heartbeat state (log every HB_FRAMES frames or HB_SECONDS seconds)
+    hb_frames_mark = acc.frame_ord
+    hb_time_mark = t_start
+    hb_every_frames = max(1, int(cfg.heartbeat_frames))
+    hb_every_seconds = float(cfg.heartbeat_seconds)
+
+    def heartbeat(tick):
+        """Granular live telemetry inside the sweep (no math changes)."""
+        nonlocal hb_frames_mark, hb_time_mark
+        now = time.time()
+        d_frames = acc.frame_ord - hb_frames_mark
+        d_time = now - hb_time_mark
+        if d_frames < hb_every_frames and d_time < hb_every_seconds:
+            return
+        speed = d_frames / d_time if d_time > 0 else 0.0
+        clk = "FINE(24s)" if tick.fine else "COARSE(1h)"
+        y = jd_to_gregorian(tick.jd)[0]
+        logger.info(f"[P2][HB] {format_jd(tick.jd)} (yr {y}) | "
+                    f"chunk {chunk_id} frame {processed_in_chunk}/{cfg.chunk_frames} | "
+                    f"{clk} | downshifts={clock.stats['downshift_events']} | "
+                    f"{speed:.2f} frames/s | {format_hw(hardware_snapshot())}")
+        hb_frames_mark = acc.frame_ord
+        hb_time_mark = now
 
     def flush_chunk(cid):
         if act_frame:
@@ -336,9 +360,11 @@ def run_phase2(cfg, model, model_cfg, grid, neighbors, device, state, logger):
         pend_ticks.append(tick)
         if len(pend_ticks) < batch:
             continue
+        last_tick = pend_ticks[-1]
         _run_batch(pend_ticks, grid, model, device, process_frame, logger)
         pend_ticks = []
         processed_in_chunk += batch
+        heartbeat(last_tick)                      # inner-loop live telemetry
         if processed_in_chunk >= cfg.chunk_frames:
             flush_chunk(chunk_id)
             speed = processed_in_chunk / max(time.time() - t_chunk, 1e-6)
