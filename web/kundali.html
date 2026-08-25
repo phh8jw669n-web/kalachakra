@@ -58,9 +58,11 @@
   .ticks span { font-size:9px; color:#495468; width:12.5%; text-align:center; cursor:pointer; }
   .ticks span.has { color:#5f8; } .ticks span.none { color:#a55; } .ticks span.active { color:#c8a24a; font-weight:700; }
 
-  #map { position:absolute; inset:0; } svg { width:100%; height:100%; display:block; }
-  .coast { fill:#0e1626; stroke:#25406a; stroke-width:.4; }
-  .grid { stroke:#152036; stroke-width:.4; }
+  #map { position:absolute; inset:0; background:#070c16; } svg { width:100%; height:100%; display:block; }
+  .coast { fill:#1b2c49; stroke:#5b83bd; stroke-width:.6; }
+  .grid { stroke:#233350; stroke-width:.5; }
+  .locus { fill:#5db4ec; stroke:none; opacity:.7; }
+  .freezone { fill:#3f6fb0; opacity:.12; }
   .pin { fill:#c8a24a; stroke:#fff3d0; stroke-width:.4; cursor:pointer; transition:opacity .25s; }
   .pin.free { fill:#3f6fb0; }
   #status { position:absolute; bottom:12px; left:50%; transform:translateX(-50%);
@@ -68,11 +70,15 @@
     font-size:12px; color:#aeb6c6; text-align:center; max-width:80%; } #status .warn { color:#e6c07b; }
   #tip { position:absolute; pointer-events:none; background:#0b0e17; border:1px solid #26314a;
     border-radius:6px; padding:4px 8px; font-size:11px; color:#e7ecf6; display:none; z-index:9; }
-  #results { position:absolute; right:12px; top:96px; width:220px; max-height:70%; overflow:auto;
+  #results { position:absolute; right:12px; top:96px; width:246px; max-height:70%; overflow:auto;
     background:#0b0e17cc; border:1px solid #1a1f2c; border-radius:8px; padding:8px 10px; font-size:11px; z-index:5; }
   #results h2 { font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:#8791a3; margin:0 0 6px; }
-  #results div.r { padding:3px 4px; border-bottom:1px solid #141a28; display:flex; justify-content:space-between; }
-  #results .sc { color:#5f8; } #results .lon { color:#6b7488; }
+  #results div.r { padding:4px 4px; border-bottom:1px solid #141a28; }
+  #results .r .top { display:flex; justify-content:space-between; align-items:baseline; }
+  #results .dt { color:#d6dae4; } #results .tm { color:#7f93b5; }
+  #results .sc { color:#5f8; } #results .lon { color:#c8a24a; } #results .free { color:#5aa0d6; }
+  #results .lt { color:#6b7488; font-size:10px; }
+  #results::-webkit-scrollbar { width:7px; } #results::-webkit-scrollbar-thumb { background:#24314b; border-radius:4px; }
 </style>
 </head>
 <body>
@@ -96,6 +102,12 @@
       <button data-lat="19.1" data-lon="72.9">Mumbai</button>
       <button data-lat="51.5" data-lon="-0.12">London</button>
     </div>
+    <label style="margin-top:12px">Search date range (optional)</label>
+    <div class="row2">
+      <div><input id="fromYear" type="number" step="1" placeholder="from yr" /></div>
+      <div><input id="toYear" type="number" step="1" placeholder="to yr" /></div>
+    </div>
+    <div class="sub" id="coverage" style="margin:4px 0 0">Whole database.</div>
     <button class="go" id="go">Find Twins</button>
 
     <div class="section">
@@ -175,14 +187,30 @@ function drawCoast(geo){ const rings=[];
     for(let i=0;i<ring.length;i++){ const [lo,la]=ring[i]; d+=(i?"L":"M")+X(lo).toFixed(1)+" "+Y(la).toFixed(1)+" "; }
     const p=document.createElementNS(svg.namespaceURI,"path"); p.setAttribute("d",d+"Z");
     p.setAttribute("class","coast"); svg.appendChild(p); } }
-function clearPins(){ svg.querySelectorAll(".pin").forEach(e=>e.remove()); }
-function drawPins(results){ clearPins();
-  for(const r of results){ const c=document.createElementNS(svg.namespaceURI,"circle");
-    c.setAttribute("cx",X(r.longitude)); c.setAttribute("cy",Y(r.latitude)); c.setAttribute("r",2.6);
-    c.setAttribute("class","pin"+(r.longitude_constrained?"":" free"));
-    c.addEventListener("mousemove",(e)=>showTip(e,`${r.date} · lon ${r.longitude}° · ${r.total_matched}/9`
-      + (r.longitude_constrained?"":" (any longitude)")));
-    c.addEventListener("mouseleave",()=>$("tip").style.display="none"); svg.appendChild(c); } }
+function clearPins(){ svg.querySelectorAll(".pin,.locus,.freezone").forEach(e=>e.remove()); }
+function dot(cx,cy,r,cls){ const c=document.createElementNS(svg.namespaceURI,"circle");
+  c.setAttribute("cx",cx); c.setAttribute("cy",cy); c.setAttribute("r",r);
+  c.setAttribute("class",cls); return c; }
+function drawPins(data){ clearPins();
+  // Sign tiers are geocentric — the same signs hold everywhere on Earth on that
+  // date. There is no meaningful pin location, so tint the whole map instead.
+  if (data.location_free) {
+    const rect=document.createElementNS(svg.namespaceURI,"rect");
+    rect.setAttribute("x",0); rect.setAttribute("y",0);
+    rect.setAttribute("width",W); rect.setAttribute("height",H);
+    rect.setAttribute("class","freezone"); svg.appendChild(rect); return;
+  }
+  // House tiers: the Ascendant depends on latitude, so each date's valid
+  // birthplaces trace a lat/lon curve. Draw the locus (faint) + the primary point.
+  for(const r of data.results){
+    if (r.globe_points) for(const p of r.globe_points)
+      svg.appendChild(dot(X(p.lon),Y(p.lat),1.8,"locus"));
+    const c=dot(X(r.longitude),Y(r.latitude),2.6,"pin");
+    c.style.cursor="pointer";
+    c.addEventListener("mousemove",(e)=>showTip(e,
+      `${r.date} ${r.time_utc} · lon ${r.longitude}° · ${r.local_time||""} · ${r.total_matched}/9`));
+    c.addEventListener("mouseleave",()=>$("tip").style.display="none"); svg.appendChild(c);
+  } }
 function showTip(e,t){ const el=$("tip"); el.textContent=t; el.style.display="block";
   el.style.left=(e.clientX+12)+"px"; el.style.top=(e.clientY+12)+"px"; }
 
@@ -254,7 +282,10 @@ function renderTicks(available, tier) {
 // ---- search ----------------------------------------------------------------
 function body() {
   const b = { date:$("date").value, time:$("time").value, tz_hours:+$("tz").value,
-    lat:+$("lat").value, lon:+$("lon").value, tier:+$("tier").value, limit:600 };
+    lat:+$("lat").value, lon:+$("lon").value, tier:+$("tier").value, limit:1000 };
+  const fy = $("fromYear").value, ty = $("toYear").value;
+  if (fy !== "") b.start_year = +fy;
+  if (ty !== "") b.end_year = +ty;
   if (filterMode === "houses" && activeHouses) b.active_houses = [...activeHouses];
   else b.active_planets = [...activePlanets];
   return b;
@@ -280,26 +311,37 @@ function render(data) {
   if (filterMode === "houses") renderHouses(data.natal);
   $("asc").innerHTML = `<b>Ascendant:</b> ${data.natal.ascendant} · ` +
     `<b>${data.active_constraint_count}/9</b> constraints (score ${data.match_score})`;
-  drawPins(data.results); renderResults(data.results);
+  if (data.coverage) $("coverage").textContent =
+    `Database ${data.coverage.start_year}–${data.coverage.end_year}. Leave blank for all.`;
+  drawPins(data); renderResults(data.results);
+  const geo = data.location_free
+    ? ` · <span class="warn">location-free</span> (same signs worldwide on each date)`
+    : ` · birthplaces trace the blue curve across latitudes`;
   if (data.count === 0) {
     let lower = null;
     for (let i = data.tier - 1; i >= 1; i--) if (data.available[String(i)]) { lower = i; break; }
     const hint = lower
       ? ` Drag the slider down to <b>Tier ${lower} · ${data.tier_names[lower]}</b>, or uncheck a fast-moving body to relax the match.`
-      : " Uncheck a body or widen the database span.";
+      : " Uncheck a body, widen the year range, or widen the database span.";
     $("status").innerHTML = `<span class="warn">No twin at Tier ${data.tier} with ${data.active_constraint_count}/9 constraints.</span>${hint}`;
   } else {
     $("status").innerHTML = `${data.count} ${data.count===1?"match":"matches"} · Tier ${data.tier} · ` +
-      `${data.tier_name} · <b>${data.active_constraint_count}/9</b> planets locked`;
+      `${data.tier_name} · <b>${data.active_constraint_count}/9</b> planets locked${geo}`;
   }
 }
 function renderResults(results) {
   const el = $("results");
   if (!results.length) { el.innerHTML = ""; return; }
   let h = `<h2>${results.length} results</h2>`;
-  for (const r of results.slice(0, 80)) {
-    h += `<div class="r"><span>${r.date}</span>` +
-         `<span><span class="sc">${r.total_matched}/9</span> <span class="lon">${r.longitude}°</span></span></div>`;
+  for (const r of results.slice(0, 1000)) {
+    const place = r.longitude_constrained
+      ? `<span class="lon">${r.longitude}°</span>`
+      : `<span class="free">any place</span>`;
+    const lt = r.longitude_constrained ? `<span class="lt"> · ${r.local_time}</span>` : "";
+    h += `<div class="r">` +
+         `<div class="top"><span class="dt">${r.date}</span><span class="tm">${r.time_utc}</span></div>` +
+         `<div class="top"><span class="sc">${r.total_matched}/9 twins</span>` +
+         `<span>${place}${lt}</span></div></div>`;
   }
   el.innerHTML = h;
 }
@@ -316,6 +358,7 @@ function resetForNewChart() { activePlanets = new Set(BODY_NAMES); activeHouses 
 $("tier").addEventListener("input", onTier);
 $("go").onclick = resetForNewChart;
 ["date","time","tz","lat","lon"].forEach(id => $(id).addEventListener("change", resetForNewChart));
+["fromYear","toYear"].forEach(id => $(id).addEventListener("input", debounced));
 document.querySelectorAll(".presets button").forEach(b => b.onclick = () => {
   $("lat").value = b.dataset.lat; $("lon").value = b.dataset.lon; resetForNewChart(); });
 document.querySelectorAll(".quick button").forEach(b => b.onclick = () => applyQuick(b.dataset.q));

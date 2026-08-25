@@ -45,6 +45,14 @@ def _natal_jd(date: str, time: str, tz_hours: float) -> float:
     return local_jd - tz_hours / 24.0
 
 
+def _to_int(v):
+    """Best-effort int from a DuckDB meta VARCHAR (values are stored as strings)."""
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
 def _natal_summary(natal: dict) -> dict:
     from kalachakra.kundali import astro
     return {
@@ -102,9 +110,13 @@ def create_app(db_path: str):
             lat = float(body["lat"])
             lon = float(body["lon"])
             tier = int(body.get("tier", 1))
-            limit = int(body.get("limit", 300))
+            limit = max(1, min(1000, int(body.get("limit", 300))))    # hard-cap at 1000
             active_planets = body.get("active_planets")     # list[str] or None (=all)
             active_houses = body.get("active_houses")       # list[int] or None
+            start_year = body.get("start_year")             # int or None (astronomical yr)
+            end_year = body.get("end_year")                 # int or None
+            start_year = int(start_year) if start_year not in (None, "") else None
+            end_year = int(end_year) if end_year not in (None, "") else None
         except (KeyError, ValueError) as exc:
             return JSONResponse({"error": f"bad request: {exc}"}, status_code=400)
 
@@ -112,9 +124,11 @@ def create_app(db_path: str):
         try:
             natal = ks.set_natal(jd, lat, lon)
             out = ks.search(tier, limit=limit, active_planets=active_planets,
-                            active_houses=active_houses)
+                            active_houses=active_houses,
+                            start_year=start_year, end_year=end_year)
             available = ks.counts_by_tier(active_planets=active_planets,
-                                          active_houses=active_houses)
+                                          active_houses=active_houses,
+                                          start_year=start_year, end_year=end_year)
         finally:
             ks.close()
         results = out["results"]
@@ -124,10 +138,13 @@ def create_app(db_path: str):
             "active_planets": out["active_planets"],
             "active_constraint_count": out["active_constraint_count"],
             "match_score": out["match_score"],
+            "location_free": out.get("location_free", False),
             "available": {str(k): v for k, v in available.items()},
             "tier_names": TIER_NAMES,
             "natal": _natal_summary(natal),
             "signs": list(astro.SIGNS),
+            "coverage": {"start_year": _to_int(meta.get("start_year")),
+                         "end_year": _to_int(meta.get("end_year"))},
         })
 
     @app.get("/")

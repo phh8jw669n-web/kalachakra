@@ -54,6 +54,20 @@ def test_natal_chart_and_ascendant_band():
     assert bands and min(abs(b - 75.8) for b in bands) < 8.0
 
 
+def test_globe_locus_spans_latitudes():
+    """A fixed rising sign is reproduced along a lat/lon curve, not one point."""
+    _skip_if_no_ephem()
+    from kalachakra.kundali import astro
+    astro.configure()
+    jd = parse_datetime("1990-01-01T12:00:00Z")
+    pts = astro.globe_ascendant_points(jd, 3)
+    assert len(pts) >= 5
+    assert len({p["lat"] for p in pts}) > 1                 # spans latitudes
+    # every locus point actually rises the target sign at its own latitude
+    for p in pts:
+        assert astro.ascendant_sign(jd, p["lat"], p["lon"]) == 3
+
+
 # ---------------------------------------------------------------------------
 # DB + search
 # ---------------------------------------------------------------------------
@@ -91,15 +105,22 @@ def test_all_tiers_and_structure(kundali_db):
     for tier in range(1, 9):
         out = ks.search(tier, limit=500)
         assert out["active_constraint_count"] == 9 and out["match_score"] == 1.0
+        assert out["location_free"] is (tier not in house_tiers)
         res = out["results"]
         for r in res:
             assert "jd" in r and "date" in r and "longitude" in r
+            assert "time_utc" in r and r["time_utc"].endswith("UTC")
             assert 1 <= r["total_matched"] <= 9
             if tier in house_tiers:
                 assert r["longitude_constrained"] is True
                 assert "ascendant_sign" in r and 0 <= r["ascendant_sign"] <= 11
+                assert "local_time" in r
             else:
                 assert r["longitude_constrained"] is False
+        if tier in house_tiers and res:
+            # the leading result carries the globe locus, and it spans latitudes
+            gp = res[0].get("globe_points")
+            assert gp and len({p["lat"] for p in gp}) > 1
         if tier == 2:                     # the birth day itself is a psychological twin
             assert any(r["date"].startswith("1990-01-01") for r in res)
     avail = ks.counts_by_tier()
@@ -121,6 +142,21 @@ def test_absolute_twin_orb(kundali_db):
             d = abs(lons[name] - b["lon"]) % 360
             d = min(d, 360 - d)
             assert d <= 5.0 + 1e-6
+    ks.close()
+
+
+def test_year_range_filter(kundali_db):
+    """The optional date range restricts results to the requested span."""
+    from kalachakra.kundali.search import KundaliSearch
+    ks = KundaliSearch(kundali_db)
+    ks.set_natal(parse_datetime("1990-01-01T12:00:00Z"), 26.9, 75.8)
+    everything = ks.search(1, limit=5000)["results"]
+    ranged = ks.search(1, limit=5000, start_year=1990, end_year=1991)["results"]
+    assert 0 < len(ranged) < len(everything)
+    assert all(1990 <= r["year"] <= 1991 for r in ranged)
+    # availability probe honours the range too
+    avail = ks.counts_by_tier(start_year=1990, end_year=1990)
+    assert set(avail) == set(range(1, 9))
     ks.close()
 
 
@@ -181,8 +217,18 @@ def test_dashboard_api(kundali_db):
                                     "tier": 2}).json()
     assert r["tier"] == 2 and r["tier_name"] == "Psychological Twin"
     assert r["count"] >= 1
+    assert r["location_free"] is True
+    assert r["results"][0]["time_utc"].endswith("UTC")
+    assert "coverage" in r and r["coverage"]["start_year"] <= 1990
     assert "ascendant" in r["natal"] and len(r["natal"]["bodies"]) == 9
     assert set(r["available"]) == {str(i) for i in range(1, 9)}
+
+    # date range narrows the sweep
+    rr = c.post("/api/search", json={"date": "1990-01-01", "time": "12:00",
+                                     "tz_hours": 0.0, "lat": 26.9, "lon": 75.8,
+                                     "tier": 1, "start_year": 1990,
+                                     "end_year": 1991}).json()
+    assert rr["count"] >= 1 and all(1990 <= x["year"] <= 1991 for x in rr["results"])
 
     # bad request -> 400
     assert c.post("/api/search", json={"date": "1990-01-01"}).status_code == 400

@@ -29,6 +29,10 @@ TIER_NAMES = {
 }
 _HOUSE_TIERS = {3, 4, 8}
 _ORB_DEG = 5.0
+#: House-tier results carrying a full globe locus (lat/lon fan). All results keep
+#: the primary solved longitude + time; only this many also carry ``globe_points``
+#: so a large (limit=1000) result set stays a light JSON payload.
+_GLOBE_MAX = 200
 
 
 def _fmt_date(jd: float) -> str:
@@ -36,6 +40,23 @@ def _fmt_date(jd: float) -> str:
     era = "CE" if y > 0 else "BCE"
     yy = y if y > 0 else 1 - y
     return f"{yy:04d}-{m:02d}-{d:02d} {era}"
+
+
+def _fmt_time_utc(jd: float) -> str:
+    """UT clock time of the sampled instant (rows are noon-UT integer JDs)."""
+    _y, _m, _d, h, mi, _s = jd_to_gregorian(float(jd))
+    return f"{h:02d}:{mi:02d} UTC"
+
+
+def _fmt_local_time(jd: float, lon_deg: float) -> str:
+    """Local mean time at ``lon_deg`` for the sampled instant (15 deg == 1 hour)."""
+    _y, _m, _d, h, mi, _s = jd_to_gregorian(float(jd))
+    lt = (h + mi / 60.0 + lon_deg / 15.0) % 24.0
+    hh = int(lt)
+    mm = int(round((lt - hh) * 60.0))
+    if mm == 60:
+        hh, mm = (hh + 1) % 24, 0
+    return f"{hh:02d}:{mm:02d} LMT"
 
 
 def _circ(col: str, val: float) -> str:
@@ -162,9 +183,19 @@ class KundaliSearch:
         # sign tiers
         return sum(1 for n in astro.BODY_NAMES if int(row[f"{n}_sign"]) == b[n]["sign"])
 
+    @staticmethod
+    def _year_clause(start_year, end_year) -> str:
+        """SQL restricting the ``year`` column to the requested range (inclusive)."""
+        parts = []
+        if start_year is not None:
+            parts.append(f"year >= {int(start_year)}")
+        if end_year is not None:
+            parts.append(f"year <= {int(end_year)}")
+        return " AND ".join(parts)
+
     # -- query ---------------------------------------------------------------
     def search(self, tier: int, limit: int = 300, active_planets=None,
-               active_houses=None) -> dict:
+               active_houses=None, start_year=None, end_year=None) -> dict:
         if self.natal is None:
             raise RuntimeError("call set_natal() first")
         names = self.resolve_active(active_planets, active_houses)
@@ -172,22 +203,27 @@ class KundaliSearch:
             return {"results": [], "active_planets": [], "active_constraint_count": 0,
                     "match_score": 0.0, "note": "no active constraints"}
         where = self._tier_where(tier, names)
+        year_clause = self._year_clause(start_year, end_year)
+        if year_clause:
+            where = f"({where}) AND {year_clause}"
         # fetch jd + all nine sign/lon columns (needed for enrichment + mirror k)
         cols = ["jd"] + [f"{n}_sign" for n in astro.BODY_NAMES] \
             + [f"{n}_lon" for n in astro.BODY_NAMES]
         sql = (f"SELECT {', '.join(cols)} FROM positions WHERE {where} "
-               f"ORDER BY jd LIMIT {limit}")
+               f"ORDER BY jd LIMIT {int(limit)}")
         raw = self.con.execute(sql).fetchall()
         natal_asc = self.natal["ascendant_sign"]
+        house_tier = tier in _HOUSE_TIERS
 
         results = []
         for tup in raw:
             row = dict(zip(cols, tup))
             jd = float(row["jd"])
             r = {"jd": jd, "date": _fmt_date(jd), "year": jd_to_gregorian(jd)[0],
+                 "time_utc": _fmt_time_utc(jd),
                  "latitude": round(float(self.natal["lat"]), 4),
                  "total_matched": self._total_matched(tier, row)}
-            if tier in _HOUSE_TIERS:
+            if house_tier:
                 # k is the common offset shared by the *active* bodies (tier 3);
                 # tiers 4/8 match signs exactly, so k == 0.
                 if tier == 3:
@@ -204,26 +240,40 @@ class KundaliSearch:
                 r["longitudes"] = bands
                 r["ascendant_sign"] = target
                 r["longitude_constrained"] = True
+                r["local_time"] = _fmt_local_time(jd, bands[0])
+                # The Ascendant depends on latitude, so the valid birthplaces trace
+                # a lat/lon curve across the globe (not one point). Attach the locus
+                # for the leading results to keep the payload light.
+                if len(results) < _GLOBE_MAX:
+                    r["globe_points"] = astro.globe_ascendant_points(jd, target)
             else:
+                # Sign tiers are geocentric: the planetary signs are identical
+                # everywhere on Earth at this instant, so the twin is location-free.
                 r["longitude"] = round(float(self.natal["lon"]), 4)
                 r["longitude_constrained"] = False
+                r["local_time"] = _fmt_time_utc(jd)
             results.append(r)
         return {
             "results": results,
             "active_planets": names,
             "active_constraint_count": len(names),
             "match_score": round(len(names) / len(astro.BODY_NAMES), 3),
+            "location_free": not house_tier,
         }
 
-    def counts_by_tier(self, active_planets=None, active_houses=None) -> dict[int, bool]:
-        """Cheap existence probe per tier for the current active set."""
+    def counts_by_tier(self, active_planets=None, active_houses=None,
+                       start_year=None, end_year=None) -> dict[int, bool]:
+        """Cheap existence probe per tier for the current active set (and range)."""
         names = self.resolve_active(active_planets, active_houses)
+        year_clause = self._year_clause(start_year, end_year)
         out = {}
         for t in range(1, 9):
             if not names:
                 out[t] = False
                 continue
             where = self._tier_where(t, names)
+            if year_clause:
+                where = f"({where}) AND {year_clause}"
             row = self.con.execute(
                 f"SELECT 1 FROM positions WHERE {where} LIMIT 1").fetchone()
             out[t] = row is not None
