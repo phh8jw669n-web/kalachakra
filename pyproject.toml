@@ -25,7 +25,8 @@ train = ["torch>=2.2"]
 # Density-based manifold clustering (Phase 3 analysis).
 cluster = ["hdbscan>=0.8.33", "scikit-learn>=1.3"]
 # Tokenized index persistence + query (Phase 3: Parquet / DuckDB / H3).
-index = ["pyarrow>=14", "duckdb>=1.0", "h3>=4.0", "pandas>=2.0"]
+# psutil is optional (Great Indexer hardware telemetry; degrades gracefully).
+index = ["pyarrow>=14", "duckdb>=1.0", "h3>=4.0", "pandas>=2.0", "psutil>=5.9"]
 # Isomorphic transducer topography channel (spherical harmonics).
 transducer = ["scipy>=1.10"]
 # REST broadcast API (Phase 4 serving).
@@ -42,6 +43,7 @@ all = [
     "duckdb>=1.0",
     "h3>=4.0",
     "pandas>=2.0",
+    "psutil>=5.9",
     "scipy>=1.10",
     "fastapi>=0.110",
     "uvicorn>=0.29",
