@@ -301,25 +301,60 @@ function animate() {
 }
 
 // ---- time driver -----------------------------------------------------------
-let liveTimer = null, playTimer = null;
-function startLive() {
-  stopTimers();
-  updateToTime(new Date(), 600);
-  liveTimer = setInterval(() => { if (app.mode === "LIVE") updateToTime(new Date(), LIVE_POLL_MS); },
-                          LIVE_POLL_MS);
+// Sequential drivers: the clock only advances once the previous grid inference +
+// WebGL upload has FULLY completed (await), so simulation time can never outrun the
+// GPU and desync at high resolutions (512x256). Recursive setTimeout, not setInterval.
+// `driverToken` is bumped on every stop; a loop that resumes from its await after a
+// restart sees a stale token and bows out, so two drivers can never run at once.
+let liveTimer = null, playTimer = null, driverToken = 0;
+
+async function playbackLoop(token) {
+  if (token !== driverToken || app.mode !== "TIMELINE" || !app.playing) return;
+  // advance time, then WAIT for the whole grid update before scheduling the next tick
+  app.simTime = new Date(app.simTime.getTime() + app.stepHours * 3600e3);
+  await updateToTime(app.simTime, app.tickMs);
+  if (token === driverToken && playTimer !== null) {
+    playTimer = setTimeout(() => playbackLoop(token), app.tickMs);
+  }
 }
+
+async function liveLoop(token) {
+  if (token !== driverToken || app.mode !== "LIVE") return;
+  await updateToTime(new Date(), LIVE_POLL_MS);
+  if (token === driverToken && liveTimer !== null) {
+    liveTimer = setTimeout(() => liveLoop(token), LIVE_POLL_MS);
+  }
+}
+
 function startPlayback() {
   stopTimers();
-  playTimer = setInterval(() => {
-    if (app.mode !== "TIMELINE" || !app.playing) return;
-    app.simTime = new Date(app.simTime.getTime() + app.stepHours * 3600e3);
-    updateToTime(app.simTime, app.tickMs);
-  }, app.tickMs);
+  const token = driverToken;
+  playTimer = setTimeout(() => playbackLoop(token), 0);       // start immediately
 }
+
+function startLive() {
+  stopTimers();
+  const token = driverToken;
+  // prime immediately, then begin sequential polling once that first frame lands
+  updateToTime(new Date(), 600).then(() => {
+    if (token === driverToken) liveTimer = setTimeout(() => liveLoop(token), LIVE_POLL_MS);
+  });
+}
+
 function stopTimers() {
-  if (liveTimer) clearInterval(liveTimer), liveTimer = null;
-  if (playTimer) clearInterval(playTimer), playTimer = null;
+  driverToken++;                                              // invalidate any in-flight loop
+  if (liveTimer) clearTimeout(liveTimer), liveTimer = null;
+  if (playTimer) clearTimeout(playTimer), playTimer = null;
 }
+
+// Play/pause must start & stop the loop itself: unlike setInterval, a recursive
+// timeout that returns on !playing does not resume on its own.
+function togglePlay() {
+  if (app.mode !== "TIMELINE") return;
+  setPlay(!app.playing);
+  if (app.playing) startPlayback(); else stopTimers();
+}
+
 function stepOnce(dir) {
   app.simTime = new Date(app.simTime.getTime() + dir * app.stepHours * 3600e3);
   updateToTime(app.simTime, 350);
@@ -355,7 +390,7 @@ function wireUI() {
   document.getElementById("btn-mode").onclick = () =>
     enterMode(app.mode === "LIVE" ? "TIMELINE" : "LIVE");
   document.getElementById("btn-live").onclick = () => enterMode("LIVE");
-  document.getElementById("btn-play").onclick = () => setPlay(!app.playing);
+  document.getElementById("btn-play").onclick = () => togglePlay();
   document.getElementById("btn-back").onclick = () => stepOnce(-1);
   document.getElementById("btn-fwd").onclick = () => stepOnce(+1);
   document.querySelectorAll("#steps button").forEach((b) => {
@@ -384,7 +419,7 @@ function wireUI() {
 
   window.addEventListener("keydown", (e) => {
     if (e.target.tagName === "INPUT") return;
-    if (e.code === "Space") { e.preventDefault(); if (app.mode === "TIMELINE") setPlay(!app.playing); }
+    if (e.code === "Space") { e.preventDefault(); togglePlay(); }
     else if (e.key === "l" || e.key === "L") enterMode("LIVE");
     else if (e.key === "r" || e.key === "R") { controls.reset(); camera.position.set(0, 0, CAM_START); }
     else if (e.key === "ArrowLeft" && app.mode === "TIMELINE") stepOnce(-1);
