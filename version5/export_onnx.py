@@ -39,23 +39,24 @@ def export(checkpoint: str, out_path: str, *, opset: int = 17,
     encoder.load_state_dict(model.encoder.state_dict())
     encoder.eval()
 
-    n_bodies, raw = cfg.model.n_bodies, cfg.model.raw_features
-    dummy = torch.randn(4, n_bodies, raw)
+    n_bodies, raw, obs_f = cfg.model.n_bodies, cfg.model.raw_features, cfg.model.obs_features
+    dummy = (torch.randn(4, n_bodies, raw), torch.randn(4, obs_f))
     out_path = str(out_path)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
 
     # dynamo=False uses the mature TorchScript exporter (no onnxscript dependency);
     # older torch that predates the ``dynamo`` kwarg exports the same way by default.
     kwargs = dict(
-        input_names=["features"], output_names=["oklab"],
-        dynamic_axes={"features": {0: "N"}, "oklab": {0: "N"}},
+        input_names=["features", "observer"], output_names=["oklab"],
+        dynamic_axes={"features": {0: "N"}, "observer": {0: "N"}, "oklab": {0: "N"}},
         opset_version=opset, do_constant_folding=True,
     )
     try:
         torch.onnx.export(encoder, dummy, out_path, dynamo=False, **kwargs)
     except TypeError:                                       # torch without ``dynamo``
         torch.onnx.export(encoder, dummy, out_path, **kwargs)
-    print(f"exported ONNX -> {out_path}  (input [N,{n_bodies},{raw}] -> output [N,3])")
+    print(f"exported ONNX -> {out_path}  (inputs [N,{n_bodies},{raw}] + [N,{obs_f}] "
+          f"-> output [N,3])")
 
     try:
         import onnx
@@ -71,10 +72,10 @@ def export(checkpoint: str, out_path: str, *, opset: int = 17,
             print("onnxruntime not installed; skipped numerical parity check")
             return out_path
         sess = ort.InferenceSession(out_path, providers=["CPUExecutionProvider"])
-        probe = torch.randn(37, n_bodies, raw)
+        pf, po = torch.randn(37, n_bodies, raw), torch.randn(37, obs_f)
         with torch.no_grad():
-            ref = encoder(probe).numpy()
-        got = sess.run(["oklab"], {"features": probe.numpy()})[0]
+            ref = encoder(pf, po).numpy()
+        got = sess.run(["oklab"], {"features": pf.numpy(), "observer": po.numpy()})[0]
         max_err = float(np.max(np.abs(ref - got)))
         print(f"parity check (PyTorch vs onnxruntime): max abs err = {max_err:.2e}")
         assert max_err < 1e-4, "ONNX output diverges from PyTorch!"
@@ -88,9 +89,10 @@ def _write_golden(encoder, cfg, path: Path) -> None:
     """Emit a golden vector so the browser can prove its JS math == the server's.
 
     Records one timestamp's telemetry and, for a handful of observers, the exact
-    ``[10,5]`` features and the encoder's OKLab. ``version5/web/main.js`` rebuilds the
-    features from the telemetry with its own spherical math and asserts a match on
-    load — the concrete form of the PRD's "client math must match server math" test.
+    ``[12,6]`` body features, the ``[3]`` observer anchors and the encoder's OKLab.
+    ``version5/web/main.js`` rebuilds these from the telemetry with its own spherical
+    math and asserts a match on load — the concrete form of the PRD's "client math
+    must match server math" test.
     """
     import json
 
@@ -107,20 +109,24 @@ def _write_golden(encoder, cfg, path: Path) -> None:
 
     jd = 2451545.0                                          # J2000.0, a stable anchor
     tel = ephem.telemetry(jd)
-    eq = ephem.equatorial_state(jd)
+    ecl = ephem.ecliptic_state(jd)
+    eps = ephem.obliquity_rad(jd)
+    eq = ephem.ecl_to_equatorial(ecl, eps)
     gast = ephem.gast_radians(jd)
     pts = [(51.5, -0.12), (-33.9, 151.2), (0.0, 0.0), (78.2, 15.6), (-89.0, 120.0)]
     lat = np.deg2rad([p[0] for p in pts])
     lon = np.deg2rad([p[1] for p in pts])
-    feats = sky_math.local_features(eq, gast, lat, lon)     # [P,10,5]
+    feats, obs = sky_math.local_features(ecl, eq, eps, gast, lat, lon)   # [P,12,6],[P,3]
     with torch.no_grad():
-        oklab = encoder(torch.from_numpy(feats)).numpy()
+        oklab = encoder(torch.from_numpy(feats), torch.from_numpy(obs)).numpy()
     record = {
         "jd": jd, "telemetry": tel,
         "n_bodies": cfg.model.n_bodies, "raw_features": cfg.model.raw_features,
+        "obs_features": cfg.model.obs_features,
         "points": [
             {"lat_deg": pts[i][0], "lon_deg": pts[i][1],
              "features": feats[i].astype(float).round(6).tolist(),
+             "observer": obs[i].astype(float).round(6).tolist(),
              "oklab": oklab[i].astype(float).round(6).tolist()}
             for i in range(len(pts))
         ],

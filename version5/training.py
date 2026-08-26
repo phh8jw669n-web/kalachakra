@@ -114,12 +114,13 @@ def train(cfg: V5Config, *, resume: str | None = None, max_steps: int | None = N
     last: dict = {}
     it = iter(loader)
     while step < steps_target:
-        feats, target, _jd = next(it)
+        feats, obs, target, _jd = next(it)
         feats = feats.to(device)
+        obs = obs.to(device)
         target = target.to(device)
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-            recon, oklab = model(feats)
+            recon, oklab = model(feats, obs)
             loss = reconstruction_loss(recon.float(), target.float(), body_w)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.grad_clip)

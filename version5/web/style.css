@@ -136,6 +136,18 @@ html, body {
 }
 #panel input[type="range"] { flex: 1; accent-color: var(--live); min-width: 120px; }
 #opacity-val { font-family: var(--mono); font-size: 12px; width: 34px; opacity: 0.8; }
+#panel .chk {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: auto;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.85;
+  cursor: pointer;
+}
+#panel .chk input { accent-color: var(--live); }
 
 #panel .status {
   font-family: var(--mono);

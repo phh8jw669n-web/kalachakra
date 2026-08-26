@@ -11,10 +11,15 @@ from dataclasses import asdict, dataclass, field
 from kalachakra.ephemeris import calendar as _cal
 
 # -- fixed geometry ----------------------------------------------------------
-N_BODIES: int = 10                 # Sun..Pluto (see kalachakra.local_autoencoder.features)
-RAW_FEATURES: int = 5              # per body: altitude, azimuth, RA, declination, hour-angle
+# 12 bodies: Sun..Pluto (0..9) + Mean Node (10) + True Node (11).
+N_BODIES: int = 12
+# per body: altitude, azimuth, ecliptic longitude, ecliptic latitude, house offset,
+# velocity (the "True Astrological Shape").
+RAW_FEATURES: int = 6
+# the <OBSERVER> token ingests the high-frequency geographic anchors Asc, MC, Vertex.
+OBS_FEATURES: int = 3
 RECON_FEATURES: int = 4            # reconstruction target per body: (sin,cos) of altitude & azimuth
-N_TOKENS: int = N_BODIES + 1       # + the learnable <OBSERVER> token
+N_TOKENS: int = N_BODIES + 1       # + the data-driven <OBSERVER> token = 13
 
 #: The 24-second astrological quantum (a Vighatika) expressed in days — the finest
 #: temporal grid the Monte-Carlo sampler ever lands on.
@@ -30,14 +35,15 @@ DEFAULT_END_JD: float = _cal.parse_datetime("7155-02-18T00:00:00")
 class ModelConfig:
     n_bodies: int = N_BODIES
     raw_features: int = RAW_FEATURES
+    obs_features: int = OBS_FEATURES
     recon_features: int = RECON_FEATURES
-    d_model: int = 96
+    d_model: int = 112
     nhead: int = 8
     num_layers: int = 3
-    dim_feedforward: int = 256
+    dim_feedforward: int = 288
     dropout: float = 0.0
     pool: str = "observer"                       # "observer" (the token) | "gap"
-    decoder_hidden: tuple[int, ...] = (64, 256)  # 3 -> 64 -> 256 -> 10*4
+    decoder_hidden: tuple[int, ...] = (64, 256)  # 3 -> 64 -> 256 -> 12*4
 
 
 @dataclass
