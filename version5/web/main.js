@@ -1,9 +1,11 @@
 // main.js — version5 client (12-body "True Astrological Shape").
 //
 // Per update: fetch the ~1.6 KB /telemetry payload (12 bodies + GAST + obliquity) ->
-// build the [N,12,6] body tensor and [N,3] observer (Asc/MC/Vertex) tensor with the
-// SAME maths the server trained on (skymath.js) -> run the ONNX encoder on the GPU
-// (onnxruntime-web) -> upload the OKLab field as a texture. The render loop samples
+// build the [N,12,6] body tensor and [N,3] observer (Asc/MC/Vertex) tensor — on the GPU
+// via a WebGPU compute shader (skycompute.wgsl / gpucompute.js) when available, else the
+// CPU skymath.js loop -> run the ONNX encoder (onnxruntime-web) -> upload the OKLab field
+// as a texture. Moving the ~1.5M-trig feature maths onto the GPU keeps the main thread
+// free so the clock never desyncs at high grid resolutions. The render loop samples
 // that neural field per-pixel, converts OKLab->sRGB on the GPU, paints a per-pixel
 // 12-body sub-planetary glow, floats the 12 bodies as 3D sprites over their own glow,
 // and interpolates everything smoothly between telemetry frames at a locked 60 FPS.
@@ -14,6 +16,7 @@ import {
   telemetryToState, localFeaturesOne, ascMcVertex, bodyDirection, lerpAngle,
   makeGeoGrid, N_BODIES, RAW_FEATURES, OBS_FEATURES, BODY_NAMES,
 } from "./skymath.js";
+import { createGpuFeatureEngine } from "./gpucompute.js";
 
 THREE.ColorManagement.enabled = false;
 
@@ -183,7 +186,18 @@ for (let i = 0; i < N_BODIES; i++) {
 let statePrev = null, stateNext = null;
 
 // ---- inference + field upload ---------------------------------------------
-function buildFeatures(state) {
+let gpu = null;                                   // WebGPU feature engine (or null -> CPU)
+
+// Fill featBuf/obsBuf for the whole grid: on the GPU when available, else the CPU loop.
+async function computeFeatures(state) {
+  if (gpu && gpu.ready) {
+    await gpu.compute(state, featBuf, obsBuf);    // 131k observers in parallel (WGSL)
+  } else {
+    buildFeaturesCPU(state);                       // sequential fallback
+  }
+}
+
+function buildFeaturesCPU(state) {
   for (let p = 0; p < N; p++) {
     localFeaturesOne(state, grid.lat[p], grid.lon[p],
                      featBuf, p * N_BODIES * RAW_FEATURES, obsBuf, p * OBS_FEATURES);
@@ -235,7 +249,7 @@ async function updateToTime(date, smoothMs) {
     if (!r.ok) { setNotice(`telemetry ${r.status}: ${await r.text()}`); return; }
     const state = telemetryToState(await r.json());
     setNotice("");
-    buildFeatures(state);
+    await computeFeatures(state);                 // WebGPU compute (or CPU fallback)
     const oklab = await inferOklab();
 
     if (stateNext === null) {                     // first frame: prime both buffers
@@ -442,6 +456,16 @@ async function main() {
     document.getElementById("backend").textContent = "backend " + info.backend;
   } catch { setNotice("cannot reach server /api/info"); }
 
+  // Move the 12-body geographic feature maths onto the GPU (skycompute.wgsl). Its own
+  // GPUDevice, separate from the Three.js WebGL context; null -> CPU fallback path.
+  try {
+    gpu = await createGpuFeatureEngine({
+      gridW: GRID_W, gridH: GRID_H, nBodies: N_BODIES,
+      rawFeatures: RAW_FEATURES, obsFeatures: OBS_FEATURES, shaderUrl: "skycompute.wgsl",
+    });
+  } catch { gpu = null; }
+  document.getElementById("fps").title = gpu ? "features: WebGPU compute" : "features: CPU";
+
   if (app.hasModel && typeof ort !== "undefined") {
     try {
       ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
@@ -456,7 +480,9 @@ async function main() {
   } else if (!app.hasModel) {
     setNotice("no model_v5.onnx yet — showing analytic fallback (train + export to enable the neural field)");
   }
-  document.getElementById("engine").textContent = session ? engineLabel : "analytic fallback";
+  const feat = gpu ? " · feat:WebGPU" : " · feat:CPU";
+  document.getElementById("engine").textContent =
+    (session ? engineLabel : "analytic fallback") + feat;
 
   enterMode("LIVE");
   boot.style.opacity = "0";

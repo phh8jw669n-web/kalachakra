@@ -254,7 +254,16 @@ pytest tests/test_version5.py -q
   only. Optimiser: AdamW with **1,000-step warmup** then cosine decay to **`lr_min=1e-6`**.
 - **Export** (`version5/export_onnx.py`): encoder only, **two dynamic-batch inputs**
   (`features [N,12,6]` + `observer [N,3]`), constant folding, PyTorch↔ONNX parity check.
-- **Render** (`version5/web/main.js`): telemetry → JS features + observer → onnxruntime-web
+- **GPU feature engine** (`version5/web/skycompute.wgsl` + `gpucompute.js`): the whole
+  12-body geographic maths (altitude, azimuth, Ascendant/MC/Vertex, house offset) runs
+  as a **WebGPU compute shader** — one thread per grid point, grid coords derived on the
+  fly from `global_invocation_id`, writing the raw `[N,12,6]` + `[N,3]` tensors straight
+  into storage buffers. It uses its own `GPUDevice` (separate from the Three.js WebGL
+  context), reads back via a staging buffer + `mapAsync`, and hands the arrays to ONNX.
+  Verified bit-for-bit against the CPU `skymath.js` math; falls back to the CPU loop when
+  `navigator.gpu` is absent. This takes the ~1.5M-trig `buildFeatures` off the main
+  thread so the clock stays locked even at 512×256.
+- **Render** (`version5/web/main.js`): telemetry → GPU/CPU features + observer → onnxruntime-web
   → OKLab grid texture. The Three.js outer shell's GLSL fragment shader samples the
   field, converts **OKLab→sRGB on the GPU**, and runs a **per-pixel 12-body spherical
   loop** that lights each body's sub-planetary point (the glow under which the matching
@@ -304,6 +313,8 @@ version5/
     index.html     HUD + import map (three.js, onnxruntime-web)
     style.css       overlay styling
     skymath.js     the JS twin of sky_math.py + ephemeris + OKLab->sRGB (ESM)
+    skycompute.wgsl WebGPU compute shader: the 12-body geographic feature maths
+    gpucompute.js  WebGPU pipeline (device, buffers, dispatch, mapAsync readback)
     main.js        Three.js dual-layer globe, 12-body 3D orbits, ONNX inference, UI
   instructions.md  this file
 ```
