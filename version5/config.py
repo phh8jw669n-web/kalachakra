@@ -59,8 +59,9 @@ class DataConfig:
 @dataclass
 class TrainConfig:
     lr: float = 3e-4
+    lr_min: float = 1e-6              # cosine-decay floor reached at the final step
     weight_decay: float = 1e-2
-    warmup_steps: int = 300
+    warmup_steps: int = 1000
     max_steps: int = 40_000
     grad_clip: float = 1.0
     amp: bool = False

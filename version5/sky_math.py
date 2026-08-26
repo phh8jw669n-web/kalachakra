@@ -80,7 +80,9 @@ def local_features(ecl: np.ndarray, eq: np.ndarray, eps: float, gast_rad: float,
     dec = np.deg2rad(eq[:, 1])[None, :]
     lam = np.deg2rad(ecl[:, 0])[None, :]
     bet = np.deg2rad(ecl[:, 1])[None, :]
-    vel = (ecl[:, 3] / ANG_VEL_SCALE)[None, :]               # normalised scalar [1,12]
+    # scaled by peak lunar speed (~15 deg/day); the encoder then tanh-bounds it to
+    # [-1,1] (kept out of the stored feature so the value is the raw pre-activation).
+    vel = (ecl[:, 3] / ANG_VEL_SCALE)[None, :]               # [1,12]
     phi = np.asarray(lat_rad, dtype=np.float64)[:, None]     # [N,1]
     lon = np.asarray(lon_rad, dtype=np.float64)[:, None]
 

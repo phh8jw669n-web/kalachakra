@@ -23,7 +23,8 @@ THREE.ColorManagement.enabled = false;
 const GRID_W = 128, GRID_H = 64;
 const N = GRID_W * GRID_H;
 const LIVE_POLL_MS = 1000;
-const CELESTIAL_R = 1.7;                          // radius of the 3D body shell
+const CELESTIAL_R = 2.5;                          // radius of the 3D celestial-body shell
+const CAM_START = 4.6;                            // frames the R=2.5 sphere at 60deg FOV
 const EARTH_SOURCES = [
   "earth.jpg",
   "https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg",
@@ -70,13 +71,13 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x04060b);
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight,
                                            0.1, 1000);
-camera.position.set(0, 0, 2.5);
+camera.position.set(0, 0, CAM_START);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.05;
 controls.autoRotate = false;
 controls.minDistance = 1.15;
-controls.maxDistance = 6.0;
+controls.maxDistance = 12.0;
 
 scene.add(makeStarfield());
 
@@ -385,7 +386,7 @@ function wireUI() {
     if (e.target.tagName === "INPUT") return;
     if (e.code === "Space") { e.preventDefault(); if (app.mode === "TIMELINE") setPlay(!app.playing); }
     else if (e.key === "l" || e.key === "L") enterMode("LIVE");
-    else if (e.key === "r" || e.key === "R") { controls.reset(); camera.position.set(0, 0, 2.5); }
+    else if (e.key === "r" || e.key === "R") { controls.reset(); camera.position.set(0, 0, CAM_START); }
     else if (e.key === "ArrowLeft" && app.mode === "TIMELINE") stepOnce(-1);
     else if (e.key === "ArrowRight" && app.mode === "TIMELINE") stepOnce(+1);
   });

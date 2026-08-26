@@ -93,17 +93,24 @@ export function buildFeatureBatch(state, latRad, lonRad) {
   return { features, observer };
 }
 
-// Sub-planetary direction on a celestial sphere of `radius`, Three.js Y-up. A body's
-// zenith point sits over geographic (lat=dec, lon=RA-GAST); the returned vector is
-// exactly the globe surface normal there, so the 3D body hovers over its own glow.
-export function bodyDirection(ra, dec, gast, radius = 1.0) {
-  const ang = ra - gast;                           // sub-point longitude
+// RA/Dec -> Three.js Y-up Cartesian on a celestial sphere of `radius`:
+//   x = -R cos(dec) sin(alpha),  y = R sin(dec),  z = R cos(dec) cos(alpha)
+// Declination is the Y elevation; the right ascension sweeps the X/Z plane.
+export function raDecToCartesian(alpha, dec, radius = 1.0) {
   const cd = Math.cos(dec);
   return {
-    x: radius * cd * Math.cos(ang),
+    x: -radius * cd * Math.sin(alpha),
     y: radius * Math.sin(dec),
-    z: -radius * cd * Math.sin(ang),
+    z: radius * cd * Math.cos(alpha),
   };
+}
+
+// Place a body over its sub-planetary point on the (Earth-fixed) globe: feed the
+// above formula the apparent hour-angle argument (GAST - RA - pi/2). Algebraically
+// identical to the globe surface normal at (lat=dec, lon=RA-GAST), so each 3D body
+// hovers exactly above its own glow. Pass raw RA instead for an inertial sky.
+export function bodyDirection(ra, dec, gast, radius = 1.0) {
+  return raDecToCartesian(gast - ra - Math.PI / 2, dec, radius);
 }
 
 // shortest-path angular interpolation (for wrap-safe RA/GAST lerp between frames)

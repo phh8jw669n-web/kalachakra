@@ -47,10 +47,18 @@ class SkyEnergyEncoder(nn.Module):
         self.to_bottleneck = nn.Linear(d, 3)
 
     def _expand_body(self, feats: torch.Tensor) -> torch.Tensor:
-        """``[B,12,6]`` -> ``[B,12,11]``: cyclic angles -> (sin,cos), velocity kept."""
+        """``[B,12,6]`` -> ``[B,12,11]``: cyclic angles -> ``(sin,cos)``, velocity
+        ``tanh``-bounded.
+
+        The five cyclic angles (altitude, azimuth, ecliptic lon/lat, house offset)
+        become ``(sin,cos)`` pairs so there is no 359->0 deg wrap. The longitude
+        velocity — already scaled by peak lunar speed (~15 deg/day) upstream — is
+        squashed by ``tanh`` so it enters the Transformer strictly within
+        ``[-1, 1]`` (baked into the ONNX graph, so the browser only supplies the
+        scaled scalar)."""
         ang = feats.index_select(-1, self._ang)                  # [B,12,5]
-        sca = feats.index_select(-1, self._sca)                  # [B,12,1]
-        return torch.cat([torch.sin(ang), torch.cos(ang), sca], dim=-1)
+        sca = feats.index_select(-1, self._sca)                  # [B,12,1] velocity/max_v
+        return torch.cat([torch.sin(ang), torch.cos(ang), torch.tanh(sca)], dim=-1)
 
     @staticmethod
     def _expand_observer(obs: torch.Tensor) -> torch.Tensor:

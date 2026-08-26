@@ -39,8 +39,10 @@ def parse_args(argv=None):
     p.add_argument("--pool", choices=["observer", "gap"], default="observer")
     # optimisation
     p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--lr-min", type=float, default=1e-6,
+                   help="cosine-decay floor reached at the final step")
     p.add_argument("--weight-decay", type=float, default=1e-2)
-    p.add_argument("--warmup", type=int, default=300)
+    p.add_argument("--warmup", type=int, default=1000)
     p.add_argument("--steps", type=int, default=40_000)
     p.add_argument("--grad-clip", type=float, default=1.0)
     p.add_argument("--amp", action="store_true", help="enable autocast (off by default)")
@@ -73,7 +75,7 @@ def build_config(args):
         data.end_jd = parse_datetime(args.end)
     model = ModelConfig(d_model=args.d_model, nhead=args.nhead, num_layers=args.layers,
                         dim_feedforward=args.dim_ff, pool=args.pool)
-    train = TrainConfig(lr=args.lr, weight_decay=args.weight_decay,
+    train = TrainConfig(lr=args.lr, lr_min=args.lr_min, weight_decay=args.weight_decay,
                         warmup_steps=args.warmup, max_steps=args.steps,
                         grad_clip=args.grad_clip, amp=args.amp,
                         mass_weighting=not args.no_mass_weighting, device=args.device,

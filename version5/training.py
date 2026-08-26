@@ -9,12 +9,13 @@ autoencoder; only the version5-specific loop lives here.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 
 import torch
 
-from kalachakra.local_autoencoder.training import cosine_warmup, select_device  # reuse
+from kalachakra.local_autoencoder.training import select_device  # reuse device pick
 
 from . import ephemeris as ephem
 from .config import V5Config
@@ -23,6 +24,26 @@ from .losses import mass_weights, oklab_stats, reconstruction_loss
 from .model import build_model
 
 CHECKPOINT_FORMAT = "kalachakra-version5"
+
+
+def cosine_warmup(optimizer, warmup_steps: int, max_steps: int,
+                  base_lr: float, lr_min: float = 1e-6):
+    """Linear warmup then cosine decay to a non-zero floor ``lr_min``.
+
+    The schedule multiplies the base LR: it ramps ``0 -> 1`` over ``warmup_steps``,
+    then cosine-decays ``1 -> lr_min/base_lr`` so the learning rate lands exactly on
+    ``lr_min`` at ``max_steps`` (not 0). Warmup defaults to 1,000 steps in the config.
+    """
+    floor = (lr_min / base_lr) if base_lr > 0 else 0.0
+
+    def lr_lambda(step: int) -> float:
+        if step < warmup_steps:
+            return (step + 1) / max(1, warmup_steps)
+        prog = (step - warmup_steps) / max(1, max_steps - warmup_steps)
+        cos = 0.5 * (1.0 + math.cos(math.pi * min(prog, 1.0)))      # 1 -> 0
+        return floor + (1.0 - floor) * cos                          # 1 -> floor
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 def setup_logger(out_dir: Path) -> logging.Logger:
@@ -77,7 +98,8 @@ def train(cfg: V5Config, *, resume: str | None = None, max_steps: int | None = N
     n_params = sum(p.numel() for p in model.parameters())
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.train.lr,
                                   weight_decay=cfg.train.weight_decay)
-    scheduler = cosine_warmup(optimizer, cfg.train.warmup_steps, steps_target)
+    scheduler = cosine_warmup(optimizer, cfg.train.warmup_steps, steps_target,
+                              base_lr=cfg.train.lr, lr_min=cfg.train.lr_min)
     body_w = mass_weights() if cfg.train.mass_weighting else None
 
     start_step = 0
@@ -101,8 +123,9 @@ def train(cfg: V5Config, *, resume: str | None = None, max_steps: int | None = N
     logger.info(f"data: jd[{cfg.data.start_jd:.1f}..{cfg.data.end_jd:.1f}] "
                 f"ephemeris={backend} locations/step={cfg.data.locations_per_step} "
                 f"workers={cfg.train.num_workers} mass_w={cfg.train.mass_weighting}")
-    logger.info(f"optim: AdamW lr={cfg.train.lr} wd={cfg.train.weight_decay} "
-                f"warmup={cfg.train.warmup_steps} amp={use_amp}")
+    logger.info(f"optim: AdamW lr={cfg.train.lr}->{cfg.train.lr_min} "
+                f"wd={cfg.train.weight_decay} warmup={cfg.train.warmup_steps} "
+                f"cosine amp={use_amp}")
     logger.info("=" * 78)
 
     loader = build_dataloader(cfg.data, num_workers=cfg.train.num_workers,

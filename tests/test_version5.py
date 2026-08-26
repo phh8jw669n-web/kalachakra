@@ -172,6 +172,46 @@ def test_mass_weights_len_12():
     assert w.shape == (12,) and float(w[-1]) == 0.5 and float(w[-2]) == 0.5
 
 
+def test_angular_features_are_sin_cos_pairs():
+    """Every cyclic angle (5 body + 3 observer) enters the Transformer as sin/cos,
+    never a raw scalar; velocity is the only raw (then tanh-bounded) channel."""
+    assert set(sky_math.ANGULAR_COLS) == {sky_math.COL_ALT, sky_math.COL_AZ,
+                                          sky_math.COL_LON, sky_math.COL_LAT,
+                                          sky_math.COL_HPOS}
+    assert sky_math.SCALAR_COLS == (sky_math.COL_VEL,)
+    m = _model()
+    body = m.encoder._expand_body(torch.zeros(1, 12, 6))          # angles=0
+    assert body.shape == (1, 12, 2 * 5 + 1)                       # 5*(sin,cos)+velocity
+    # sin(0)=0, cos(0)=1 -> first 5 channels 0, next 5 channels 1
+    assert torch.allclose(body[0, 0, :5], torch.zeros(5))
+    assert torch.allclose(body[0, 0, 5:10], torch.ones(5))
+    obs = m.encoder._expand_observer(torch.zeros(1, 3))
+    assert obs.shape == (1, 6)
+
+
+def test_velocity_is_tanh_bounded():
+    """Extreme longitude velocities are squashed strictly into [-1,1]."""
+    m = _model()
+    feats = torch.zeros(2, 12, 6)
+    feats[..., sky_math.COL_VEL] = 1000.0                         # absurd velocity
+    body = m.encoder._expand_body(feats)
+    vel = body[..., -1]                                           # the velocity channel
+    assert vel.abs().max() <= 1.0 + 1e-6 and torch.allclose(vel, torch.ones_like(vel))
+
+
+def test_cosine_warmup_hits_lr_min_at_final_step():
+    from version5.training import cosine_warmup
+    opt = torch.optim.AdamW([torch.nn.Parameter(torch.zeros(1))], lr=3e-4)
+    sch = cosine_warmup(opt, warmup_steps=1000, max_steps=8000,
+                        base_lr=3e-4, lr_min=1e-6)
+    lrs = []
+    for _ in range(8000):
+        lrs.append(opt.param_groups[0]["lr"]); opt.step(); sch.step()
+    assert abs(max(lrs) - 3e-4) < 1e-9                            # peaks at base lr
+    assert abs(lrs[999] - 3e-4) < 1e-9                            # warmup ends at 1000
+    assert abs(lrs[-1] - 1e-6) < 2e-8                             # lands on lr_min
+
+
 # ---------------------------------------------------------------------------
 # dataset
 # ---------------------------------------------------------------------------

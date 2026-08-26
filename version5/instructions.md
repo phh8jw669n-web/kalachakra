@@ -244,20 +244,25 @@ pytest tests/test_version5.py -q
   broadcasting, **no `swe.houses()` in the batch loop** (Asc/MC verified against
   `swe.houses()` to ~1e-13°). The House offset of each body = `wrap(λ_body − Ascendant)`.
   The identical formulas live in `version5/web/skymath.js`, verified bit-for-bit (~6e-7).
-- **Model** (`version5/model.py`): 12 bodies × `[alt, az, λ, β, house, v]` (angles →
-  `(sin,cos)`, velocity scalar) → `d_model`; the **data-driven `<OBSERVER>` token** is a
-  projection of `sin/cos` of Asc/MC/Vertex → self-attention (block imported from
-  `kalachakra.local_autoencoder`) → **3 OKLab neurons** (`L` sigmoid, `a,b` tanh). A
-  decoder reconstructs each body's altitude & azimuth under MSE — training only.
+- **Model** (`version5/model.py`): 12 bodies × `[alt, az, λ, β, house, v]`; the five
+  cyclic angles become `(sin,cos)` pairs (no 359→0° wrap) and the longitude velocity is
+  **`tanh(v / 15°/day)`-bounded to `[-1,1]`** inside the encoder (baked into ONNX) → all
+  6 observer/body angles reach the Transformer as sin/cos, nothing raw. The **data-driven
+  `<OBSERVER>` token** is a projection of `sin/cos` of Asc/MC/Vertex → self-attention
+  (block imported from `kalachakra.local_autoencoder`) → **3 OKLab neurons** (`L` sigmoid,
+  `a,b` tanh). A decoder reconstructs each body's altitude & azimuth under MSE — training
+  only. Optimiser: AdamW with **1,000-step warmup** then cosine decay to **`lr_min=1e-6`**.
 - **Export** (`version5/export_onnx.py`): encoder only, **two dynamic-batch inputs**
   (`features [N,12,6]` + `observer [N,3]`), constant folding, PyTorch↔ONNX parity check.
 - **Render** (`version5/web/main.js`): telemetry → JS features + observer → onnxruntime-web
   → OKLab grid texture. The Three.js outer shell's GLSL fragment shader samples the
   field, converts **OKLab→sRGB on the GPU**, and runs a **per-pixel 12-body spherical
   loop** that lights each body's sub-planetary point (the glow under which the matching
-  3D body floats). All 12 bodies are rendered as 3D sprites on a celestial sphere,
-  their RA/Dec projected to Three.js Y-up coordinates and **interpolated between
-  telemetry frames** (shortest-path angle lerp) in the `requestAnimationFrame` loop —
+  3D body floats). All 12 bodies are rendered as 3D sprites on a **radius-2.5 celestial
+  sphere**, their RA/Dec projected to Three.js Y-up coordinates
+  (`x=-R cosδ sinα, y=R sinδ, z=R cosδ cosα`, evaluated at the apparent hour angle so
+  each body locks over its sub-planetary point) and **interpolated between telemetry
+  frames** (shortest-path angle lerp) in the `requestAnimationFrame` loop —
   so at "1 Day / tick" you watch the Moon race around the Earth while Pluto barely
   creeps, perfectly synced to the energy map below.
 
