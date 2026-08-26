@@ -147,7 +147,17 @@ def train(cfg: LocalSkyConfig, *, resume: str | None = None,
     step = start_step
     t0 = time.time()
     last = {}
-    for feats, target, weight in loader:
+    it = iter(loader)
+    data_wait = 0.0
+    while step < steps_target:
+        d0 = time.time()
+        try:
+            feats, target, weight = next(it)
+        except StopIteration:                       # infinite loader; guard anyway
+            it = iter(loader)
+            feats, target, weight = next(it)
+        data_wait += time.time() - d0
+
         feats = feats.to(device)
         target = target.to(device)
         weight = weight.to(device)
@@ -172,15 +182,21 @@ def train(cfg: LocalSkyConfig, *, resume: str | None = None,
             st = oklab_stats(oklab)
             last = {"loss": float(loss.detach()), **st}
             lr = scheduler.get_last_lr()[0]
-            rate = (step - start_step) / max(time.time() - t0, 1e-9)
+            elapsed = max(time.time() - t0, 1e-9)
+            rate = (step - start_step) / elapsed
             samp = rate * cfg.train.batch_size
+            # fraction of wall time spent blocked waiting for data. Near 0% => the
+            # bottleneck is the model/optimizer step, not data (raise --batch); high
+            # => data-bound (add --workers / a --sky-cache).
+            data_pct = 100.0 * data_wait / elapsed
             collapse = " ** COLLAPSE? **" if (st["mean_chroma"] < 1e-3
                                               and st["std_L"] < 1e-3) else ""
             logger.info(
                 f"step {step:6d}/{steps_target}  loss={loss.detach():.5f}  "
                 f"L={st['mean_L']:.3f}±{st['std_L']:.3f}  chroma={st['mean_chroma']:.4f}  "
                 f"|a|={st['mean_abs_a']:.3f} |b|={st['mean_abs_b']:.3f}  "
-                f"lr={lr:.2e}  ({rate:.1f} it/s, {samp:,.0f} samp/s){collapse}")
+                f"lr={lr:.2e}  ({rate:.1f} it/s, {samp:,.0f} samp/s, "
+                f"data-wait {data_pct:.0f}%){collapse}")
         if step % cfg.train.save_every == 0:
             save_checkpoint(out_dir / f"step_{step:06d}.pt", model, optimizer,
                             scheduler, step, cfg, last)
