@@ -9,7 +9,15 @@ entire 10,256-year timeline.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
+
+#: Extended ISO-8601 for years outside datetime's 1..9999 range (BCE / far future).
+#: Astronomical numbering, optional leading '-'. e.g. ``-3101-02-18T00:00:00Z``.
+_EXT_ISO = re.compile(
+    r"^\s*(?P<y>-?\d+)-(?P<mo>\d{1,2})-(?P<d>\d{1,2})"
+    r"(?:[T ](?P<h>\d{1,2}):(?P<mi>\d{2})(?::(?P<s>\d{2}(?:\.\d+)?))?)?"
+    r"\s*(?P<tz>Z|[+-]\d{2}:?\d{2})?\s*$")
 
 
 def gregorian_to_jd(year: int, month: int, day: int,
@@ -63,18 +71,39 @@ def datetime_to_jd(dt: datetime) -> float:
 def parse_datetime(text: str) -> float:
     """Parse an ISO-8601 string (or 'now') into a Julian Day (UTC).
 
-    Accepts e.g. ``2026-08-22``, ``2026-08-22T14:30``, ``2026-08-22T14:30:00Z``.
+    Accepts e.g. ``2026-08-22``, ``2026-08-22T14:30``, ``2026-08-22T14:30:00Z``, and
+    **BCE / far-future** years outside ``datetime``'s 1..9999 range in astronomical
+    numbering (a leading ``-`` is 1 BCE == 0, 2 BCE == -1, ...), e.g.
+    ``-3101-02-18T00:00:00`` (the Kali-Yuga epoch region).
     """
     if text.strip().lower() == "now":
         return datetime_to_jd(datetime.now(timezone.utc))
     t = text.strip().replace("Z", "+00:00")
     try:
-        dt = datetime.fromisoformat(t)
-    except ValueError as exc:
-        raise ValueError(f"could not parse datetime {text!r}: {exc}") from exc
+        dt = datetime.fromisoformat(t)                      # fast path: years 1..9999
+    except ValueError:
+        return _parse_extended(text)                        # BCE / far future
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return datetime_to_jd(dt)
+
+
+def _parse_extended(text: str) -> float:
+    """Parse a date whose year falls outside ``datetime``'s range, via
+    :func:`gregorian_to_jd` (which supports any astronomical year)."""
+    m = _EXT_ISO.match(text)
+    if not m:
+        raise ValueError(f"could not parse datetime {text!r}")
+    g = m.groupdict()
+    jd = gregorian_to_jd(int(g["y"]), int(g["mo"]), int(g["d"]),
+                         int(g["h"] or 0), int(g["mi"] or 0), float(g["s"] or 0.0))
+    tz = g["tz"]
+    if tz and tz != "Z":                                    # convert local -> UTC
+        sign = 1 if tz[0] == "+" else -1
+        body = tz[1:].replace(":", "")
+        offset_hours = sign * (int(body[:2]) + int(body[2:4]) / 60.0)
+        jd -= offset_hours / 24.0
+    return jd
 
 
 def format_jd(jd: float) -> str:

@@ -51,7 +51,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--grad-clip", type=float, default=1.0)
     p.add_argument("--no-amp", action="store_true")
     p.add_argument("--device", default="")
-    p.add_argument("--workers", type=int, default=0)
+    p.add_argument("--workers", type=int, default=0,
+                   help="parallel data-generation workers (physics is CPU-bound; "
+                        "use 8-12 on an M-series/many-core machine for a big speedup)")
+    p.add_argument("--ephe-path", default=None,
+                   help="Swiss .se1 directory — required for the full BCE->CE span "
+                        "(Moshier only covers ~3000 BCE-3000 CE)")
+    p.add_argument("--jpl-file", default=None, help="JPL DE441 .bsp file (alt backend)")
     # io / resume
     p.add_argument("--out-dir", default="checkpoints/local_sky")
     p.add_argument("--save-every", type=int, default=1000)
@@ -91,7 +97,8 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 2
     from kalachakra.local_autoencoder.training import train
-    train(build_config(args), resume=args.resume)
+    train(build_config(args), resume=args.resume,
+          ephe_path=args.ephe_path, jpl_file=args.jpl_file)
     return 0
 
 

@@ -82,12 +82,14 @@ def load_checkpoint(path, map_location="cpu"):
 
 
 def train(cfg: LocalSkyConfig, *, resume: str | None = None,
-          max_steps: int | None = None, logger: logging.Logger | None = None) -> Path:
+          max_steps: int | None = None, ephe_path: str | None = None,
+          jpl_file: str | None = None,
+          logger: logging.Logger | None = None) -> Path:
     """Train the Local Sky Autoencoder; returns the final checkpoint path."""
     from ..ephemeris import global_state as gs
     if not gs.ephemeris_available():
         raise RuntimeError("pyswisseph is required for the Local Sky Autoencoder.")
-    gs.auto_configure()
+    backend = gs.configure_from_args(ephe_path=ephe_path, jpl_file=jpl_file)
 
     out_dir = Path(cfg.train.out_dir)
     logger = logger or setup_logger(out_dir)
@@ -125,14 +127,19 @@ def train(cfg: LocalSkyConfig, *, resume: str | None = None,
                 f"warmup={cfg.train.warmup_steps} grad_clip={cfg.train.grad_clip} "
                 f"amp={use_amp}({amp_dtype if use_amp else '-'})")
     logger.info(f"data: jd[{cfg.data.start_jd:.1f}..{cfg.data.end_jd:.1f}] "
-                f"batch={cfg.train.batch_size} workers={cfg.train.num_workers} "
-                f"seed={cfg.train.seed}")
+                f"ephemeris={backend} batch={cfg.train.batch_size} "
+                f"workers={cfg.train.num_workers} seed={cfg.train.seed}")
+    if cfg.train.num_workers == 0:
+        logger.info("HINT: data generation is CPU-bound; pass --workers 8-12 to "
+                    "parallelise it and keep the GPU fed (biggest speedup).")
     logger.info(f"io: out_dir={out_dir} save_every={cfg.train.save_every} "
                 f"log_every={cfg.train.log_every}")
     logger.info("=" * 78)
 
     loader = build_dataloader(cfg.data, cfg.train.batch_size,
-                              num_workers=cfg.train.num_workers, epoch=start_step)
+                              num_workers=cfg.train.num_workers, epoch=start_step,
+                              ephe_path=ephe_path, jpl_file=jpl_file,
+                              pin_memory=(device.type == "cuda"))
     model.train()
     step = start_step
     t0 = time.time()
@@ -163,13 +170,14 @@ def train(cfg: LocalSkyConfig, *, resume: str | None = None,
             last = {"loss": float(loss.detach()), **st}
             lr = scheduler.get_last_lr()[0]
             rate = (step - start_step) / max(time.time() - t0, 1e-9)
+            samp = rate * cfg.train.batch_size
             collapse = " ** COLLAPSE? **" if (st["mean_chroma"] < 1e-3
                                               and st["std_L"] < 1e-3) else ""
             logger.info(
                 f"step {step:6d}/{steps_target}  loss={loss.detach():.5f}  "
                 f"L={st['mean_L']:.3f}±{st['std_L']:.3f}  chroma={st['mean_chroma']:.4f}  "
                 f"|a|={st['mean_abs_a']:.3f} |b|={st['mean_abs_b']:.3f}  "
-                f"lr={lr:.2e}  ({rate:.1f} it/s){collapse}")
+                f"lr={lr:.2e}  ({rate:.1f} it/s, {samp:,.0f} samp/s){collapse}")
         if step % cfg.train.save_every == 0:
             save_checkpoint(out_dir / f"step_{step:06d}.pt", model, optimizer,
                             scheduler, step, cfg, last)

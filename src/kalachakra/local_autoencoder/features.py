@@ -73,19 +73,19 @@ def local_sky_matrix(jd_ut: float, lat_deg: float, lon_deg: float):
     """
     gs._require_swe()
     flags = gs._calc_flags()                        # backend + speed flag
+    jd = float(jd_ut)
     geopos = (float(lon_deg), float(lat_deg), 0.0)
     feat = np.zeros((N_BODIES, 8), dtype=np.float64)
     dist_au = np.zeros(N_BODIES, dtype=np.float64)
 
-    # Sun first (needed for the phase/elongation angle).
-    sun_vals, _ = gs.swe.calc_ut(float(jd_ut), 0, flags)
-    sun_lon, sun_lat = np.deg2rad(sun_vals[0]), np.deg2rad(sun_vals[1])
+    # One calc_ut per body (Sun is index 0; reused for the phase/elongation angle).
+    calc = [gs.swe.calc_ut(jd, sid, flags)[0] for sid in BODY_SWE_IDS]
+    sun_lon, sun_lat = np.deg2rad(calc[0][0]), np.deg2rad(calc[0][1])
 
-    for i, swe_id in enumerate(BODY_SWE_IDS):
-        vals, _ = gs.swe.calc_ut(float(jd_ut), swe_id, flags)
+    for i, vals in enumerate(calc):
         lon_deg_b, lat_deg_b, dist, lon_sp = vals[0], vals[1], vals[2], vals[3]
         az, true_alt, _app = gs.swe.azalt(
-            float(jd_ut), gs.swe.ECL2HOR, geopos, 0.0, 0.0,
+            jd, gs.swe.ECL2HOR, geopos, 0.0, 0.0,
             (lon_deg_b, lat_deg_b, dist))
         lam, bet = np.deg2rad(lon_deg_b), np.deg2rad(lat_deg_b)
         # elongation: Sun-Earth-Planet angle (geocentric angular separation to Sun)
