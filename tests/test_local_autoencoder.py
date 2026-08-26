@@ -152,6 +152,46 @@ def test_dataset_yields_batches():
 
 
 # ---------------------------------------------------------------------------
+# sky cache (fast data path)
+# ---------------------------------------------------------------------------
+def _build_small_cache(tmp_path):
+    from kalachakra.local_autoencoder.sky_cache import build_sky_cache
+    s = parse_datetime("2000-01-01T00:00:00Z")
+    e = parse_datetime("2000-01-11T00:00:00Z")
+    return build_sky_cache(tmp_path / "cache", s, e, cadence_hours=6.0,
+                           workers=0, logger=lambda *a: None)
+
+
+def test_sky_cache_matches_live_features(tmp_path):
+    _skip_no_ephem()
+    global_state.auto_configure()
+    from kalachakra.local_autoencoder.sky_cache import SkyCache
+    out = _build_small_cache(tmp_path)
+    cache = SkyCache(out)
+    assert cache.n_frames == 41 and cache.meta["n_bodies"] == 10   # 10 days @ 6h + 1
+    frame = 17
+    jd = cache.jd_of(frame)
+    ecl = cache.read(frame)
+    fc, tc, wc = F.sample_tensors_from_ecl(jd, 28.6, 77.2, ecl)
+    fl, tl, wl = F.sample_tensors(jd, 28.6, 77.2)
+    # cached path reproduces the live features to float32 precision
+    assert np.max(np.abs(fc - fl)) < 1e-4
+    assert np.max(np.abs(tc - tl)) < 1e-4 and np.max(np.abs(wc - wl)) < 1e-4
+
+
+def test_sky_cache_dataloader(tmp_path):
+    _skip_no_ephem()
+    global_state.auto_configure()
+    from kalachakra.local_autoencoder.dataset import build_dataloader
+    out = _build_small_cache(tmp_path)
+    cfg = DataConfig(sky_cache=str(out))
+    loader = build_dataloader(cfg, batch_size=4, num_workers=0, sky_cache=str(out))
+    feats, target, weight = next(iter(loader))
+    assert feats.shape == (4, 10, 8) and target.shape == (4, 11, 8)
+    assert torch.isfinite(feats).all()
+
+
+# ---------------------------------------------------------------------------
 # training + inference
 # ---------------------------------------------------------------------------
 def _tiny_cfg(tmp_path, **train_kw):
@@ -176,6 +216,17 @@ def test_training_runs_and_resumes(tmp_path):
     final2 = train(cfg, resume=str(final), max_steps=5)
     p2 = load_checkpoint(final2, map_location="cpu")[1]
     assert p2["step"] == 5
+
+
+def test_training_from_sky_cache(tmp_path):
+    _skip_no_ephem()
+    from kalachakra.local_autoencoder.training import load_checkpoint, train
+    out = _build_small_cache(tmp_path)
+    cfg = _tiny_cfg(tmp_path)
+    cfg.data.sky_cache = str(out)
+    final = train(cfg, max_steps=3)
+    assert final.exists()
+    assert load_checkpoint(final, map_location="cpu")[1]["step"] == 3
 
 
 def test_inference_returns_color_and_attribution(tmp_path):

@@ -58,6 +58,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="Swiss .se1 directory — required for the full BCE->CE span "
                         "(Moshier only covers ~3000 BCE-3000 CE)")
     p.add_argument("--jpl-file", default=None, help="JPL DE441 .bsp file (alt backend)")
+    p.add_argument("--sky-cache", default=None,
+                   help="prebuilt sky-cache dir (scripts/build_sky_cache.py) — skips "
+                        "per-sample calc_ut for a ~10x speedup; its grid sets the span")
     # io / resume
     p.add_argument("--out-dir", default="checkpoints/local_sky")
     p.add_argument("--save-every", type=int, default=1000)
@@ -72,7 +75,7 @@ def build_config(args):
     from kalachakra.local_autoencoder.config import (
         DataConfig, LocalSkyConfig, ModelConfig, TrainConfig,
     )
-    data = DataConfig(seed=args.seed)
+    data = DataConfig(seed=args.seed, sky_cache=args.sky_cache)
     if args.start:
         data.start_jd = parse_datetime(args.start)
     if args.end:

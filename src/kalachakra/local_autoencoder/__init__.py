@@ -13,8 +13,10 @@ from __future__ import annotations
 from .config import DataConfig, LocalSkyConfig, ModelConfig, TrainConfig
 from .inference import LocalSkyInference
 from .model import LocalSkyAutoencoder, build_model
+from .sky_cache import SkyCache, build_sky_cache
 
 __all__ = [
     "LocalSkyConfig", "ModelConfig", "DataConfig", "TrainConfig",
     "LocalSkyAutoencoder", "build_model", "LocalSkyInference",
+    "SkyCache", "build_sky_cache",
 ]

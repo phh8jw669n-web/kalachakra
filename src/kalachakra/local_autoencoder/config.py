@@ -37,6 +37,9 @@ class DataConfig:
     start_jd: float = C.KALI_YUGA_EPOCH_JD
     end_jd: float = C.KALI_YUGA_EPOCH_JD + C.TIMELINE_YEARS * C.DAYS_PER_YEAR
     seed: int = 0
+    #: Optional prebuilt sky-cache directory (skips per-sample calc_ut). When set,
+    #: the cache's own time grid defines the sampled span.
+    sky_cache: str | None = None
 
 
 @dataclass

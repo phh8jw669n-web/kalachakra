@@ -64,29 +64,48 @@ OBSERVER_W: float = 1.0
 # ---------------------------------------------------------------------------
 # physics
 # ---------------------------------------------------------------------------
-def local_sky_matrix(jd_ut: float, lat_deg: float, lon_deg: float):
-    """Compute the ``(10, 8)`` Local Sky Matrix and the per-body distance (AU).
+#: Columns of the compact "ecliptic state" cache row, per body.
+ECL_COLS = ("lon_deg", "lat_deg", "lon_speed_deg_per_day", "dist_au")
 
-    Returns ``(features float32 (10,8), distance_au float64 (10,))``. Angular
-    features are radians; ``ang_vel`` is deg/day / ANG_VEL_SCALE (retrograde stays
-    negative); ``dist`` is ``log10(AU)``; ``log_mass`` is the scaled constant.
+
+def ecliptic_state(jd_ut: float) -> np.ndarray:
+    """The expensive part: ``(10, 4)`` geocentric ecliptic state via ``calc_ut``.
+
+    Columns ``[lon_deg, lat_deg, lon_speed_deg_per_day, dist_au]``. This is the only
+    step that queries the ephemeris files; caching it (see :mod:`.sky_cache`) removes
+    the training loop's dependence on ``calc_ut`` entirely.
     """
     gs._require_swe()
     flags = gs._calc_flags()                        # backend + speed flag
     jd = float(jd_ut)
+    ecl = np.empty((N_BODIES, 4), dtype=np.float64)
+    for i, sid in enumerate(BODY_SWE_IDS):
+        v = gs.swe.calc_ut(jd, sid, flags)[0]
+        ecl[i] = (v[0], v[1], v[3], v[2])           # lon, lat, lon_speed, dist
+    return ecl
+
+
+def features_from_ecliptic(jd_ut: float, lat_deg: float, lon_deg: float,
+                           ecl: np.ndarray):
+    """Build the ``(10, 8)`` Local Sky Matrix from a precomputed ecliptic state.
+
+    ``ecl`` is ``(10, 4)`` ``[lon_deg, lat_deg, lon_speed_deg_per_day, dist_au]``.
+    Only ``swe_azalt`` (a pure coordinate transform, no ephemeris query) is used
+    here, so this is cheap and backend-independent. Returns
+    ``(features float32 (10,8), distance_au float64 (10,))``.
+    """
+    gs._require_swe()
+    jd = float(jd_ut)
     geopos = (float(lon_deg), float(lat_deg), 0.0)
     feat = np.zeros((N_BODIES, 8), dtype=np.float64)
     dist_au = np.zeros(N_BODIES, dtype=np.float64)
+    sun_lon, sun_lat = np.deg2rad(ecl[0, 0]), np.deg2rad(ecl[0, 1])
 
-    # One calc_ut per body (Sun is index 0; reused for the phase/elongation angle).
-    calc = [gs.swe.calc_ut(jd, sid, flags)[0] for sid in BODY_SWE_IDS]
-    sun_lon, sun_lat = np.deg2rad(calc[0][0]), np.deg2rad(calc[0][1])
-
-    for i, vals in enumerate(calc):
-        lon_deg_b, lat_deg_b, dist, lon_sp = vals[0], vals[1], vals[2], vals[3]
+    for i in range(N_BODIES):
+        lon_deg_b, lat_deg_b, lon_sp, dist = ecl[i]
         az, true_alt, _app = gs.swe.azalt(
             jd, gs.swe.ECL2HOR, geopos, 0.0, 0.0,
-            (lon_deg_b, lat_deg_b, dist))
+            (float(lon_deg_b), float(lat_deg_b), float(dist)))
         lam, bet = np.deg2rad(lon_deg_b), np.deg2rad(lat_deg_b)
         # elongation: Sun-Earth-Planet angle (geocentric angular separation to Sun)
         cos_e = (np.sin(bet) * np.sin(sun_lat)
@@ -102,6 +121,11 @@ def local_sky_matrix(jd_ut: float, lat_deg: float, lon_deg: float):
         feat[i, COL_PHASE] = phase
         dist_au[i] = dist
     return feat.astype(np.float32), dist_au
+
+
+def local_sky_matrix(jd_ut: float, lat_deg: float, lon_deg: float):
+    """Compute the ``(10, 8)`` Local Sky Matrix and per-body distance (AU), live."""
+    return features_from_ecliptic(jd_ut, lat_deg, lon_deg, ecliptic_state(jd_ut))
 
 
 def observer_row(jd_ut: float, lat_deg: float, lon_deg: float) -> np.ndarray:
@@ -127,13 +151,20 @@ def build_weight(dist_au: np.ndarray) -> np.ndarray:
     return np.concatenate([body_w, obs_w], axis=0).astype(np.float32)  # (11,8)
 
 
-def sample_tensors(jd_ut: float, lat_deg: float, lon_deg: float):
-    """One sample -> ``(features (10,8), target (11,8), weight (11,8))`` float32."""
-    feat, dist_au = local_sky_matrix(jd_ut, lat_deg, lon_deg)
+def sample_tensors_from_ecl(jd_ut: float, lat_deg: float, lon_deg: float,
+                            ecl: np.ndarray):
+    """Assemble ``(features (10,8), target (11,8), weight (11,8))`` from an ecliptic
+    state — the shared core of the live and sky-cache data paths."""
+    feat, dist_au = features_from_ecliptic(jd_ut, lat_deg, lon_deg, ecl)
     obs = observer_row(jd_ut, lat_deg, lon_deg)
-    target = np.concatenate([feat, obs[None, :]], axis=0)              # (11,8)
+    target = np.concatenate([feat, obs[None, :]], axis=0)             # (11,8)
     weight = build_weight(dist_au)
     return feat, target, weight
+
+
+def sample_tensors(jd_ut: float, lat_deg: float, lon_deg: float):
+    """One live sample -> ``(features (10,8), target (11,8), weight (11,8))``."""
+    return sample_tensors_from_ecl(jd_ut, lat_deg, lon_deg, ecliptic_state(jd_ut))
 
 
 def circular_mask() -> np.ndarray:

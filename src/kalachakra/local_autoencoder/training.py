@@ -126,12 +126,14 @@ def train(cfg: LocalSkyConfig, *, resume: str | None = None,
     logger.info(f"optim: AdamW lr={cfg.train.lr} wd={cfg.train.weight_decay} "
                 f"warmup={cfg.train.warmup_steps} grad_clip={cfg.train.grad_clip} "
                 f"amp={use_amp}({amp_dtype if use_amp else '-'})")
+    src = f"sky_cache={cfg.data.sky_cache}" if cfg.data.sky_cache else "live calc_ut"
     logger.info(f"data: jd[{cfg.data.start_jd:.1f}..{cfg.data.end_jd:.1f}] "
-                f"ephemeris={backend} batch={cfg.train.batch_size} "
+                f"ephemeris={backend} source={src} batch={cfg.train.batch_size} "
                 f"workers={cfg.train.num_workers} seed={cfg.train.seed}")
-    if cfg.train.num_workers == 0:
-        logger.info("HINT: data generation is CPU-bound; pass --workers 8-12 to "
-                    "parallelise it and keep the GPU fed (biggest speedup).")
+    if cfg.data.sky_cache is None:
+        logger.info("HINT: with the Swiss backend calc_ut dominates each sample; "
+                    "prebuild a sky cache (scripts/build_sky_cache.py) and pass "
+                    "--sky-cache for a ~10x speedup, plus --workers 8-12.")
     logger.info(f"io: out_dir={out_dir} save_every={cfg.train.save_every} "
                 f"log_every={cfg.train.log_every}")
     logger.info("=" * 78)
@@ -139,7 +141,8 @@ def train(cfg: LocalSkyConfig, *, resume: str | None = None,
     loader = build_dataloader(cfg.data, cfg.train.batch_size,
                               num_workers=cfg.train.num_workers, epoch=start_step,
                               ephe_path=ephe_path, jpl_file=jpl_file,
-                              pin_memory=(device.type == "cuda"))
+                              pin_memory=(device.type == "cuda"),
+                              sky_cache=cfg.data.sky_cache)
     model.train()
     step = start_step
     t0 = time.time()
