@@ -31,6 +31,11 @@ index = ["pyarrow>=14", "duckdb>=1.0", "h3>=4.0", "pandas>=2.0", "psutil>=5.9"]
 transducer = ["scipy>=1.10"]
 # REST broadcast API (Phase 4 serving).
 serve = ["fastapi>=0.110", "uvicorn>=0.29"]
+# version5: GPU-native client engine — train + export the ONNX bottleneck and run
+# the stateless telemetry server. (onnxruntime is only needed for the optional
+# export-time numerical parity check; the browser uses onnxruntime-web from a CDN.)
+version5 = ["torch>=2.2", "onnx>=1.15", "onnxruntime>=1.17",
+            "fastapi>=0.110", "uvicorn>=0.29"]
 # Typed gRPC control plane (Phase 4 serving, §7.2). grpcio-tools only needed to
 # regenerate stubs from proto/kalachakra.proto; committed stubs run on grpcio alone.
 grpc = ["grpcio>=1.60", "grpcio-tools>=1.60"]

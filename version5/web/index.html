@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Kalachakra · version5 — Live Celestial Weather</title>
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- onnxruntime-web (UMD -> window.ort); WebGPU bundle with a wasm fallback. -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.webgpu.min.js"></script>
+
+  <!-- three.js as an ES module via an import map so OrbitControls resolves 'three'. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="canvas-wrap"></div>
+
+  <!-- ================= HUD overlay ================= -->
+  <div id="hud">
+    <header id="readout">
+      <div id="clock" class="live">--:--:--</div>
+      <div id="date">— — —</div>
+      <div id="mode-badge" class="live">LIVE</div>
+    </header>
+
+    <section id="panel">
+      <div class="row">
+        <button id="btn-mode" class="primary">Enter Time Machine</button>
+        <button id="btn-play" disabled>⏸ Pause</button>
+        <button id="btn-live" title="Jump to now (L)">◉ Live</button>
+      </div>
+
+      <div class="row">
+        <label>Step / tick</label>
+        <div id="steps">
+          <button data-h="0.00667">24s</button>
+          <button data-h="1">1h</button>
+          <button data-h="24" class="sel">1d</button>
+          <button data-h="730">1mo</button>
+          <button data-h="8760">1yr</button>
+        </div>
+      </div>
+      <div class="row">
+        <label>Custom step (h)</label>
+        <input id="step-input" type="number" value="24" step="any" />
+        <button id="btn-back" title="Step back (←)">←</button>
+        <button id="btn-fwd" title="Step forward (→)">→</button>
+      </div>
+
+      <div class="row">
+        <label>Field opacity</label>
+        <input id="opacity" type="range" min="0" max="1" step="0.01" value="0.68" />
+        <span id="opacity-val">0.68</span>
+      </div>
+
+      <div class="row status">
+        <span id="fps">-- fps</span>
+        <span id="engine">engine …</span>
+        <span id="backend">backend …</span>
+      </div>
+      <div class="row status">
+        <span id="notice"></span>
+      </div>
+    </section>
+
+    <footer id="help">
+      <b>Space</b> play/pause · <b>L</b> live · <b>←/→</b> step · <b>R</b> reset view
+    </footer>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
