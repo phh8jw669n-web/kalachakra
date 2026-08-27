@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Kalachakra v7 · Regional Energy Atlas</title>
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="canvas-wrap"></div>
+
+  <!-- top readout -->
+  <header id="topbar">
+    <div id="clock" class="mono">— — —</div>
+    <div id="date" class="mono">—</div>
+    <div id="mode-badge" class="mono">LIVE</div>
+  </header>
+
+  <!-- ===== control panel (draggable / hideable) ===== -->
+  <section id="panel">
+    <div id="panel-header" title="Drag to move">
+      <span class="grip">⠿ CONTROLS</span>
+      <button id="panel-hide" title="Hide">▾</button>
+    </div>
+    <div id="panel-body">
+      <div class="row">
+        <button id="btn-mode" class="primary">Enter Time Machine</button>
+        <button id="btn-play" disabled>⏸ Pause</button>
+        <button id="btn-live" title="Jump to now (L)">◉ Now</button>
+      </div>
+
+      <div class="row">
+        <label>Clock zone</label>
+        <select id="tz" title="Display timezone (clock only)"></select>
+      </div>
+
+      <div class="row">
+        <label>Speed</label>
+        <input id="speed" type="range" min="-7" max="7" step="0.01" value="0" />
+        <span id="speed-val" class="mono">1×</span>
+      </div>
+
+      <div class="row">
+        <label>Step / tick</label>
+        <div id="steps">
+          <button data-h="0.00667">24s</button>
+          <button data-h="1">1h</button>
+          <button data-h="24" class="sel">1d</button>
+          <button data-h="730">1mo</button>
+          <button data-h="8760">1yr</button>
+        </div>
+      </div>
+      <div class="row">
+        <label>Custom step (h)</label>
+        <input id="step-input" type="number" value="24" step="any" />
+        <button id="btn-back" title="Step back (←)">←</button>
+        <button id="btn-fwd" title="Step forward (→)">→</button>
+      </div>
+
+      <div class="row">
+        <input id="scrub" type="range" step="any" />
+        <span id="scrub-label" class="mono">—</span>
+      </div>
+      <div class="row">
+        <label>Jump to</label>
+        <input id="dt" type="datetime-local" step="1" />
+        <button id="go">Go</button>
+      </div>
+
+      <div class="row">
+        <label>Zoom</label>
+        <button id="zoom-in" title="Zoom in (↑ / scroll)">＋</button>
+        <button id="zoom-out" title="Zoom out (↓ / scroll)">－</button>
+        <span class="hint">↑ / ↓ · scroll · drag</span>
+      </div>
+      <div class="row">
+        <label>Field opacity</label>
+        <input id="opacity" type="range" min="0" max="1" step="0.01" value="0.72" />
+        <span id="opacity-val" class="mono">0.72</span>
+      </div>
+      <div class="row">
+        <label>Field detail</label>
+        <select id="res" title="Regional grid resolution">
+          <option value="120x60">Regional · 120×60</option>
+          <option value="180x90" selected>Balanced · 180×90</option>
+          <option value="256x128">Fine · 256×128</option>
+        </select>
+      </div>
+      <div class="row">
+        <label>Overlays</label>
+        <label class="chk"><input id="markers" type="checkbox" checked /> city hubs</label>
+        <label class="chk"><input id="graticule" type="checkbox" /> graticule</label>
+      </div>
+
+      <div class="row status">
+        <span id="fps">-- fps</span>
+        <span id="field-rate">field --</span>
+        <span id="backend">engine …</span>
+      </div>
+      <div class="row"><span id="notice" class="mono"></span></div>
+    </div>
+  </section>
+  <button id="panel-show" title="Show controls">⚙ Controls</button>
+
+  <!-- ===== observer HUD (lower-left) ===== -->
+  <section id="hud">
+    <div id="hud-head">
+      <span class="grip">◎ OBSERVER</span>
+      <button id="hud-toggle" title="collapse">▾</button>
+    </div>
+    <div id="hud-body">
+      <div class="hud-row">
+        <span class="k">LAT</span><span id="pin-lat" class="v">—</span>
+        <span class="k">LON</span><span id="pin-lon" class="v">—</span>
+      </div>
+      <div class="hud-row"><span class="k">NEAR</span><span id="pin-city" class="v">—</span></div>
+      <div class="hud-sub">33-D LOCAL SKY · (North, East, Up)</div>
+      <div id="matrix" class="mono"></div>
+      <div class="hud-sub">COLOUR SIGNATURE · CIE L*a*b*</div>
+      <div class="hud-row">
+        <span id="swatch"></span>
+        <span id="lab" class="v">L* — a* — b* —</span>
+        <span id="hex" class="v">#—</span>
+      </div>
+    </div>
+  </section>
+
+  <footer id="help">
+    11 bodies · <b>Space</b> play · <b>L</b> now · <b>←/→</b> step · <b>↑/↓</b> zoom · <b>G</b> grid · <b>R</b> reset
+  </footer>
+
+  <div id="boot" class="mono">baking regional field…</div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
