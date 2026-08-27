@@ -1,11 +1,11 @@
 // main.js — version5 client (12-body "True Astrological Shape").
 //
 // Per update: fetch the ~1.6 KB /telemetry payload (12 bodies + GAST + obliquity) ->
-// build the [N,12,6] body tensor and [N,3] observer (Asc/MC/Vertex) tensor — on the GPU
-// via a WebGPU compute shader (skycompute.wgsl / gpucompute.js) when available, else the
-// CPU skymath.js loop -> run the ONNX encoder (onnxruntime-web) -> upload the OKLab field
-// as a texture. Moving the ~1.5M-trig feature maths onto the GPU keeps the main thread
-// free so the clock never desyncs at high grid resolutions. The render loop samples
+// build the Zero-Redundancy [N,50] physical state — on the GPU via a WebGPU compute
+// shader (skycompute.wgsl / gpucompute.js) when available, else the CPU skymath.js loop
+// -> run the ONNX metric encoder (onnxruntime-web) which maps the 50-D state directly to
+// 3 OKLab colours -> upload the field as a texture. The 3D orbits + sub-planetary glow
+// read the 12 bodies' RA/Dec straight from telemetry. The render loop samples
 // that neural field per-pixel, converts OKLab->sRGB on the GPU, paints a per-pixel
 // 12-body sub-planetary glow, floats the 12 bodies as 3D sprites over their own glow,
 // and interpolates everything smoothly between telemetry frames at a locked 60 FPS.
@@ -13,8 +13,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import {
-  telemetryToState, localFeaturesOne, ascMcVertex, bodyDirection, lerpAngle,
-  makeGeoGrid, N_BODIES, RAW_FEATURES, OBS_FEATURES, BODY_NAMES,
+  telemetryToState, mlBodyState, localStateOne, bodyDirection, lerpAngle,
+  makeGeoGrid, N_BODIES, STATE_DIM, BODY_NAMES,
 } from "./skymath.js";
 import { createGpuFeatureEngine } from "./gpucompute.js";
 
@@ -66,8 +66,7 @@ function savePrefs(patch) {
 let session = null, engineLabel = "analytic fallback";
 
 const grid = makeGeoGrid(GRID_W, GRID_H);
-const featBuf = new Float32Array(N * N_BODIES * RAW_FEATURES);
-const obsBuf = new Float32Array(N * OBS_FEATURES);
+const stateBuf = new Float32Array(N * STATE_DIM);       // the [N,50] ONNX input
 const rgbaA = new Uint8Array(N * 4), rgbaB = new Uint8Array(N * 4);
 
 // ---- three.js scene --------------------------------------------------------
@@ -194,47 +193,41 @@ for (let i = 0; i < N_BODIES; i++) {
 let statePrev = null, stateNext = null;
 
 // ---- inference + field upload ---------------------------------------------
-let gpu = null;                                   // WebGPU feature engine (or null -> CPU)
+let gpu = null;                                   // WebGPU state engine (or null -> CPU)
 
-// Fill featBuf/obsBuf for the whole grid: on the GPU when available, else the CPU loop.
-async function computeFeatures(state) {
+// Fill stateBuf ([N,50]) for the whole grid: on the GPU when available, else CPU.
+async function computeState(tstate) {
   if (gpu && gpu.ready) {
-    await gpu.compute(state, featBuf, obsBuf);    // 131k observers in parallel (WGSL)
+    await gpu.compute(tstate, stateBuf);          // 131k observers in parallel (WGSL)
   } else {
-    buildFeaturesCPU(state);                       // sequential fallback
-  }
-}
-
-function buildFeaturesCPU(state) {
-  for (let p = 0; p < N; p++) {
-    localFeaturesOne(state, grid.lat[p], grid.lon[p],
-                     featBuf, p * N_BODIES * RAW_FEATURES, obsBuf, p * OBS_FEATURES);
+    const body44 = mlBodyState(tstate);           // 44 time-only dims, computed once
+    for (let p = 0; p < N; p++) {
+      localStateOne(body44, tstate, grid.lat[p], grid.lon[p], stateBuf, p * STATE_DIM);
+    }
   }
 }
 
 async function inferOklab() {
   if (session) {
-    const f = new ort.Tensor("float32", featBuf, [N, N_BODIES, RAW_FEATURES]);
-    const o = new ort.Tensor("float32", obsBuf, [N, OBS_FEATURES]);
-    const res = await session.run({ features: f, observer: o });
+    const s = new ort.Tensor("float32", stateBuf, [N, STATE_DIM]);
+    const res = await session.run({ state: s });
     return res[session.outputNames ? session.outputNames[0] : "oklab"].data;
   }
   return analyticFallback();
 }
 
-// physics-only pseudo-colour before a model is trained: L from Sun altitude,
-// hue from the Moon & Jupiter — using the same [N,12,6] feature buffer.
+// Physics-only pseudo-colour before a model is trained, from the 50-D state: L from
+// the Sun's ecliptic Z, hue from the location-dependent Ascendant vector (so it still
+// varies across the globe). Bounded to the OKLab box.
 function analyticFallback() {
-  const out = new Float32Array(N * 3), S = N_BODIES * RAW_FEATURES;
+  const out = new Float32Array(N * 3);
   for (let p = 0; p < N; p++) {
-    const o = p * S;
-    const sunAlt = featBuf[o + 0 * RAW_FEATURES + 0];
-    const moonAlt = featBuf[o + 1 * RAW_FEATURES + 0], moonAz = featBuf[o + 1 * RAW_FEATURES + 1];
-    const jupAlt = featBuf[o + 5 * RAW_FEATURES + 0], jupAz = featBuf[o + 5 * RAW_FEATURES + 1];
-    const day = Math.max(0, Math.min(1, (sunAlt + 0.15) / 0.6));
-    out[p * 3 + 0] = 0.12 + 0.78 * day;
-    out[p * 3 + 1] = 0.32 * Math.sin(moonAz) * Math.cos(moonAlt);
-    out[p * 3 + 2] = 0.32 * Math.sin(jupAz) * Math.cos(jupAlt);
+    const o = p * STATE_DIM;
+    const sunZ = stateBuf[o + 2];                 // Sun ecliptic latitude ~ season proxy
+    const ascX = stateBuf[o + 44], ascY = stateBuf[o + 45];
+    out[p * 3 + 0] = 0.5 + 0.35 * sunZ;           // L
+    out[p * 3 + 1] = 0.45 * ascX;                 // a
+    out[p * 3 + 2] = 0.45 * ascY;                 // b
   }
   return out;
 }
@@ -255,15 +248,15 @@ async function updateToTime(date, smoothMs) {
   try {
     const r = await fetch("/telemetry?time=" + encodeURIComponent(date.toISOString()));
     if (!r.ok) { setNotice(`telemetry ${r.status}: ${await r.text()}`); return; }
-    const state = telemetryToState(await r.json());
+    const tstate = telemetryToState(await r.json());
     setNotice("");
-    await computeFeatures(state);                 // WebGPU compute (or CPU fallback)
+    await computeState(tstate);                   // WebGPU compute (or CPU fallback) -> stateBuf
     const oklab = await inferOklab();
 
     if (stateNext === null) {                     // first frame: prime both buffers
       encodeField(oklab, rgbaA); encodeField(oklab, rgbaB);
       texPrev.needsUpdate = texNext.needsUpdate = true;
-      statePrev = stateNext = state;
+      statePrev = stateNext = tstate;
       fieldUniforms.u_blend.value = 1.0;
       return;
     }
@@ -274,7 +267,7 @@ async function updateToTime(date, smoothMs) {
     showing = { prev: showing.next, next: incoming };
     fieldUniforms.u_prev.value = showing.prev;
     fieldUniforms.u_next.value = showing.next;
-    statePrev = stateNext; stateNext = state;
+    statePrev = stateNext; stateNext = tstate;
     blendStart = performance.now();
     blendDur = Math.max(1, smoothMs ?? 500);
   } catch (e) {
@@ -566,12 +559,11 @@ async function main() {
     document.getElementById("backend").textContent = "backend " + info.backend;
   } catch { setNotice("cannot reach server /api/info"); }
 
-  // Move the 12-body geographic feature maths onto the GPU (skycompute.wgsl). Its own
-  // GPUDevice, separate from the Three.js WebGL context; null -> CPU fallback path.
+  // Build the 50-D physical state on the GPU (skycompute.wgsl). Its own GPUDevice,
+  // separate from the Three.js WebGL context; null -> CPU fallback path.
   try {
     gpu = await createGpuFeatureEngine({
-      gridW: GRID_W, gridH: GRID_H, nBodies: N_BODIES,
-      rawFeatures: RAW_FEATURES, obsFeatures: OBS_FEATURES, shaderUrl: "skycompute.wgsl",
+      gridW: GRID_W, gridH: GRID_H, stateDim: STATE_DIM, shaderUrl: "skycompute.wgsl",
     });
   } catch { gpu = null; }
   document.getElementById("fps").title = gpu ? "features: WebGPU compute" : "features: CPU";
@@ -599,23 +591,20 @@ async function main() {
   setTimeout(() => boot.remove(), 700);
 }
 
-// Prove in-browser that the JS math matches the server: rebuild golden.json's body
-// features + observer anchors from its telemetry and compare.
+// Prove in-browser that the JS math matches the server: rebuild golden.json's 50-D
+// state from its telemetry and compare.
 async function verifyGolden() {
   try {
     const g = await (await fetch("golden.json")).json();
-    const st = telemetryToState(g.telemetry);
-    const f = new Float32Array(N_BODIES * RAW_FEATURES), o = new Float32Array(OBS_FEATURES);
+    const ts = telemetryToState(g.telemetry);
+    const body44 = mlBodyState(ts);
+    const s = new Float32Array(STATE_DIM);
     let maxErr = 0;
     for (const p of g.points) {
-      localFeaturesOne(st, p.lat_deg * Math.PI / 180, p.lon_deg * Math.PI / 180, f, 0, o, 0);
-      for (let i = 0; i < N_BODIES; i++)
-        for (let k = 0; k < RAW_FEATURES; k++)
-          maxErr = Math.max(maxErr, Math.abs(f[i * RAW_FEATURES + k] - p.features[i][k]));
-      for (let k = 0; k < OBS_FEATURES; k++)
-        maxErr = Math.max(maxErr, Math.abs(o[k] - p.observer[k]));
+      localStateOne(body44, ts, p.lat_deg * Math.PI / 180, p.lon_deg * Math.PI / 180, s, 0);
+      for (let k = 0; k < STATE_DIM; k++) maxErr = Math.max(maxErr, Math.abs(s[k] - p.state[k]));
     }
-    console.log(`[version5] JS<->server parity: max abs err = ${maxErr.toExponential(2)} ` +
+    console.log(`[version5.1] JS<->server state parity: max abs err = ${maxErr.toExponential(2)} ` +
                 (maxErr < 1e-4 ? "PASS" : "FAIL"));
   } catch { /* golden.json optional */ }
 }

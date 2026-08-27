@@ -1,56 +1,46 @@
-"""Vectorised spherical-trigonometry engine (no Python ``for`` loops over points).
+"""Vectorised builder of the Zero-Redundancy 50-D physical state (version5.1).
 
-Given the twelve bodies' absolute coordinates for one timestamp and a batch of ``N``
-geographic observers, this computes — in a single broadcasted pass of shape
-``[N, 12]`` — every observer's local horizon (altitude, azimuth), the high-frequency
-geographic resolvers (Ascendant, Midheaven, Vertex), and each body's House offset
-relative to the Ascendant. The batch dimension is pure tensor broadcasting so the
-~80k samples/s throughput is preserved; the identical formulas are re-implemented in
-``version5/web/skymath.js`` so the browser's maths is bit-for-bit the server's.
+For a batch of ``N`` geographic observers at one timestamp this assembles, by pure
+tensor broadcasting (no Python loop over the points), the strictly non-redundant
+``[N, 50]`` state fed to the metric-learning encoder AND to the isometric distance
+loss:
 
-Angles in / out are **radians**. NumPy only (the CPU data workers stay torch-free);
-every operation is a broadcast that maps 1:1 to ``torch`` if run on the GPU.
+* 11 bodies (Sun..Pluto + True Node) x 4 = 44 dims: each body's ecliptic direction as
+  a 3D Cartesian **unit vector** ``(X,Y,Z)`` plus its ``tanh``-normalised longitude
+  velocity ``V`` — these depend on time only, so they are identical across the batch.
+* 2 observer anchors (Ascendant, Midheaven) x 3 = 6 dims: each as a 3D **ecliptic**
+  Cartesian unit vector (``beta = 0``) — these depend on the observer's location.
+
+The identical formulas live in ``version5/web/skymath.js`` so the browser's state is
+bit-for-bit the server's. NumPy only (the CPU data workers stay torch-free).
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from kalachakra.local_autoencoder.features import ANG_VEL_SCALE   # reuse velocity scale
+from kalachakra.local_autoencoder.features import ANG_VEL_SCALE   # peak lunar speed ~15 deg/day
 
-from .config import VIGHATIKA_DAYS
+from .config import BODY_FEATURES, N_ML_BODIES, OBS_FEATURES, STATE_DIM, VIGHATIKA_DAYS
 
-# raw feature layout of the [N,12,6] body tensor fed to the encoder
-COL_ALT, COL_AZ, COL_LON, COL_LAT, COL_HPOS, COL_VEL = 0, 1, 2, 3, 4, 5
-#: body columns that are cyclic angles (expanded to sin/cos by the encoder)
-ANGULAR_COLS: tuple[int, ...] = (COL_ALT, COL_AZ, COL_LON, COL_LAT, COL_HPOS)
-SCALAR_COLS: tuple[int, ...] = (COL_VEL,)
+#: Indices into the 12-body ecliptic array selecting the 11 ML bodies — the Mean Node
+#: (index 10) is dropped as geometrically redundant with the True Node.
+ML_BODY_INDICES: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11)
+_BODY_DIM = N_ML_BODIES * BODY_FEATURES                         # 44
 
 __all__ = [
-    "COL_ALT", "COL_AZ", "COL_LON", "COL_LAT", "COL_HPOS", "COL_VEL",
-    "ANGULAR_COLS", "SCALAR_COLS", "ascendant_mc_vertex", "local_features",
-    "recon_target", "sample_locations", "random_jd_quantized",
+    "ML_BODY_INDICES", "STATE_DIM", "ascendant_mc_vertex", "body_state_flat",
+    "local_state", "sample_locations", "random_jd_quantized",
 ]
-
-
-def _wrap_pi(a: np.ndarray) -> np.ndarray:
-    """Wrap an angle to the canonical ``(-pi, pi]`` (matches JS ``atan2``)."""
-    return np.arctan2(np.sin(a), np.cos(a))
 
 
 def ascendant_mc_vertex(ramc: np.ndarray, phi: np.ndarray, eps: float):
     """Vectorised Ascendant, Midheaven and Vertex (ecliptic longitudes, radians).
 
-    Pure spherical trig from the Local Sidereal Time ``ramc`` (= RA of the meridian)
-    and observer latitude ``phi`` (both broadcastable ``[N,1]``) and obliquity
-    ``eps`` — **not** ``swe.houses()``, so 2,048 observers cost one broadcast, not
-    2,048 C calls. The ``cos phi`` / ``sin phi`` factored forms stay finite at the
-    poles (no ``tan phi`` blow-up).
-
-    * MC   = atan2(sin θ, cos θ cos ε)
-    * Asc  = atan2(cos θ cos φ, −(sin θ cos ε cos φ + sin φ sin ε))
-    * Vx   = the co-latitude Ascendant (φ → 90°−φ), the ecliptic point on the prime
-             vertical — a smooth latitude-sensitive spatial anchor.
+    Pure spherical trig from the Local Sidereal Time ``ramc`` and observer latitude
+    ``phi`` (both broadcastable ``[N,1]``) and obliquity ``eps`` — **not**
+    ``swe.houses()``. The ``cos phi`` / ``sin phi`` factored forms stay finite at the
+    poles. Asc & MC match pyswisseph's native ``swe.houses`` to ~1e-13 deg.
     """
     st, ct = np.sin(ramc), np.cos(ramc)
     sp, cp = np.sin(phi), np.cos(phi)
@@ -61,67 +51,42 @@ def ascendant_mc_vertex(ramc: np.ndarray, phi: np.ndarray, eps: float):
     return asc, mc, vx
 
 
-def local_features(ecl: np.ndarray, eq: np.ndarray, eps: float, gast_rad: float,
-                   lat_rad: np.ndarray, lon_rad: np.ndarray):
-    """Local sky matrix ``[N,12,6]`` + observer anchors ``[N,3]`` for one timestamp.
+def body_state_flat(ecl: np.ndarray) -> np.ndarray:
+    """The 44 location-independent body dims ``[X,Y,Z,V] x 11`` for one timestamp.
 
-    Parameters
-    ----------
-    ecl : ``(12,4)`` ecliptic state ``[lon_deg, lat_deg, dist_au, lon_speed]``.
-    eq  : ``(12,2)`` equatorial ``[ra_deg, dec_deg]`` (from ``ecl_to_equatorial``).
-    eps : true obliquity (radians).
-    gast_rad : Greenwich Apparent Sidereal Time (radians).
-    lat_rad, lon_rad : ``(N,)`` observer latitude / longitude (radians).
-
-    Body columns: ``[altitude, azimuth, ecl_longitude, ecl_latitude, house_offset,
-    velocity]``. Observer anchors: ``[Ascendant, Midheaven, Vertex]``.
+    ``ecl`` is the ``(12,4)`` ecliptic state ``[lon_deg, lat_deg, dist_au, lon_speed]``.
     """
-    ra = np.deg2rad(eq[:, 0])[None, :]                       # [1,12]
-    dec = np.deg2rad(eq[:, 1])[None, :]
-    lam = np.deg2rad(ecl[:, 0])[None, :]
-    bet = np.deg2rad(ecl[:, 1])[None, :]
-    # scaled by peak lunar speed (~15 deg/day); the encoder then tanh-bounds it to
-    # [-1,1] (kept out of the stored feature so the value is the raw pre-activation).
-    vel = (ecl[:, 3] / ANG_VEL_SCALE)[None, :]               # [1,12]
-    phi = np.asarray(lat_rad, dtype=np.float64)[:, None]     # [N,1]
+    e = ecl[ML_BODY_INDICES, :]                                # (11,4)
+    lam = np.deg2rad(e[:, 0])
+    bet = np.deg2rad(e[:, 1])
+    vel = np.tanh(e[:, 3] / ANG_VEL_SCALE)                     # V = tanh(v_raw / v_max)
+    cb = np.cos(bet)
+    x = cb * np.cos(lam)                                        # ecliptic Cartesian unit vec
+    y = cb * np.sin(lam)
+    z = np.sin(bet)
+    return np.stack([x, y, z, vel], axis=1).reshape(-1).astype(np.float64)   # (44,)
+
+
+def local_state(ecl: np.ndarray, eps: float, gast_rad: float,
+                lat_rad: np.ndarray, lon_rad: np.ndarray) -> np.ndarray:
+    """Assemble the ``[N, 50]`` non-redundant physical state for one timestamp."""
+    phi = np.asarray(lat_rad, dtype=np.float64)[:, None]       # [N,1]
     lon = np.asarray(lon_rad, dtype=np.float64)[:, None]
-
-    ramc = gast_rad + lon                                    # local sidereal time [N,1]
-    ha = _wrap_pi(ramc - ra)                                 # hour angle [N,12]
-
-    sin_phi, cos_phi = np.sin(phi), np.cos(phi)
-    sin_dec, cos_dec = np.sin(dec), np.cos(dec)
-    sin_ha, cos_ha = np.sin(ha), np.cos(ha)
-    alt = np.arcsin(np.clip(sin_phi * sin_dec + cos_phi * cos_dec * cos_ha, -1.0, 1.0))
-    az = np.arctan2(sin_ha * cos_dec,
-                    cos_ha * sin_phi * cos_dec - sin_dec * cos_phi)      # [N,12]
-
-    asc, mc, vx = ascendant_mc_vertex(ramc, phi, eps)        # each [N,1]
-    hpos = _wrap_pi(lam - asc)                               # house offset [N,12]
-
     n = phi.shape[0]
-    feats = np.empty((n, ra.shape[1], 6), dtype=np.float32)
-    feats[:, :, COL_ALT] = alt
-    feats[:, :, COL_AZ] = az
-    feats[:, :, COL_LON] = np.broadcast_to(lam, (n, lam.shape[1]))
-    feats[:, :, COL_LAT] = np.broadcast_to(bet, (n, bet.shape[1]))
-    feats[:, :, COL_HPOS] = hpos
-    feats[:, :, COL_VEL] = np.broadcast_to(vel, (n, vel.shape[1]))
-    obs = np.concatenate([asc, mc, vx], axis=1).astype(np.float32)       # [N,3]
-    return feats, obs
 
+    asc, mc, _vx = ascendant_mc_vertex(gast_rad + lon, phi, eps)   # each [N,1]
 
-def recon_target(feats: np.ndarray) -> np.ndarray:
-    """Reconstruction target ``[N,12,4]`` = ``(sin,cos)`` of altitude & azimuth.
-
-    Representing the two local horizon angles by their sine and cosine makes the
-    autoencoder's MSE loss wrap-safe and proves the 3 OKLab neurons fully describe
-    the local geometry.
-    """
-    alt = feats[..., COL_ALT]
-    az = feats[..., COL_AZ]
-    out = np.stack([np.sin(alt), np.cos(alt), np.sin(az), np.cos(az)], axis=-1)
-    return out.astype(np.float32)
+    state = np.empty((n, STATE_DIM), dtype=np.float32)
+    state[:, :_BODY_DIM] = body_state_flat(ecl)[None, :]       # broadcast time-only bodies
+    # observer anchors as 3D ecliptic Cartesian unit vectors (beta = 0 -> Z = 0)
+    state[:, _BODY_DIM + 0] = np.cos(asc)[:, 0]
+    state[:, _BODY_DIM + 1] = np.sin(asc)[:, 0]
+    state[:, _BODY_DIM + 2] = 0.0
+    state[:, _BODY_DIM + 3] = np.cos(mc)[:, 0]
+    state[:, _BODY_DIM + 4] = np.sin(mc)[:, 0]
+    state[:, _BODY_DIM + 5] = 0.0
+    assert state.shape[1] == STATE_DIM and OBS_FEATURES == 6   # layout guard
+    return state
 
 
 def sample_locations(rng: np.random.Generator, n: int) -> tuple[np.ndarray, np.ndarray]:

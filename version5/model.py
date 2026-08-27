@@ -1,17 +1,16 @@
-"""The Sky-Energy Autoencoder (12-body "True Astrological Shape").
+"""The Sky-Energy metric encoder (version5.1).
 
-Encoder: each of the 12 bodies carries ``[alt, az, ecl_lon, ecl_lat, house_offset,
-velocity]``; the five cyclic angles are expanded to ``(sin, cos)`` (seamless 0/2pi
-wrap) and the velocity is kept as a scalar, then projected to ``d_model``. The 13th
-``<OBSERVER>`` token is **data-driven**: a projection of the observer's high-frequency
-geographic anchors ``[Ascendant, Midheaven, Vertex]`` (also as ``sin/cos``), so the
-bottleneck can resolve city-level geography. A self-attention Transformer (block
-imported from the root package) mixes the sequence; the observer token is funnelled
-through a **3-neuron** OKLab head (``L`` sigmoid ``[0,1]``, ``a,b`` tanh ``[-1,1]``).
+A pure forward-pass encoder — no decoder. It maps the Zero-Redundancy 50-D physical
+state to a 3D OKLab colour, trained by a distance-preserving (isometric) loss rather
+than reconstruction, so pairwise colour distances match pairwise physical distances.
 
-Decoder (training only): an MLP ``3 -> 64 -> 256 -> 12*4`` reconstructs the
-``(sin,cos)`` of every body's altitude and azimuth. Loss falling proves the three
-colours contain the entire local geometry.
+The 50-D state is read as a sequence of tokens: 11 body tokens (each already a 3D
+ecliptic Cartesian unit vector + normalised velocity) and 1 observer token (Ascendant
++ Midheaven Cartesian). Because the inputs are already bounded Cartesian coordinates
+there is no sin/cos expansion — each token is projected straight to ``d_model``. The
+self-attention Transformer block is imported from the root package; the observer token
+is pooled and projected to 3 OKLab neurons (``L`` sigmoid ``[0,1]``, ``a,b`` tanh
+``[-1,1]``) so the output stays inside the colour gamut.
 """
 
 from __future__ import annotations
@@ -22,23 +21,19 @@ from torch import nn
 from kalachakra.local_autoencoder.model import AttentionEncoderLayer  # reuse, don't rewrite
 
 from .config import ModelConfig
-from .sky_math import ANGULAR_COLS, SCALAR_COLS
 
 
 class SkyEnergyEncoder(nn.Module):
-    """``(features [B,12,6], observer [B,3]) -> OKLab [B,3]`` (the exported half)."""
+    """``state [N,50] -> OKLab [N,3]``. This *is* the whole model (encoder only)."""
 
     def __init__(self, cfg: ModelConfig):
         super().__init__()
         self.cfg = cfg
         d = cfg.d_model
-        self.register_buffer("_ang", torch.tensor(ANGULAR_COLS, dtype=torch.long))
-        self.register_buffer("_sca", torch.tensor(SCALAR_COLS, dtype=torch.long))
-        body_in = 2 * len(ANGULAR_COLS) + len(SCALAR_COLS)       # 2*5 + 1 = 11
-        self.input_proj = nn.Linear(body_in, d)
-        self.input_norm = nn.LayerNorm(d)
-        # data-driven <OBSERVER> token: sin/cos of Asc, MC, Vertex -> d_model
-        self.observer_proj = nn.Linear(2 * cfg.obs_features, d)  # 2*3 = 6 -> d
+        self.body_dim = cfg.n_bodies * cfg.body_features          # 44
+        self.body_proj = nn.Linear(cfg.body_features, d)          # 4 -> d (per body token)
+        self.body_norm = nn.LayerNorm(d)
+        self.observer_proj = nn.Linear(cfg.obs_features, d)       # 6 -> d (observer token)
         self.observer_norm = nn.LayerNorm(d)
         self.layers = nn.ModuleList([
             AttentionEncoderLayer(d, cfg.nhead, cfg.dim_feedforward, cfg.dropout)
@@ -46,85 +41,30 @@ class SkyEnergyEncoder(nn.Module):
         ])
         self.to_bottleneck = nn.Linear(d, 3)
 
-    def _expand_body(self, feats: torch.Tensor) -> torch.Tensor:
-        """``[B,12,6]`` -> ``[B,12,11]``: cyclic angles -> ``(sin,cos)``, velocity
-        ``tanh``-bounded.
-
-        The five cyclic angles (altitude, azimuth, ecliptic lon/lat, house offset)
-        become ``(sin,cos)`` pairs so there is no 359->0 deg wrap. The longitude
-        velocity — already scaled by peak lunar speed (~15 deg/day) upstream — is
-        squashed by ``tanh`` so it enters the Transformer strictly within
-        ``[-1, 1]`` (baked into the ONNX graph, so the browser only supplies the
-        scaled scalar)."""
-        ang = feats.index_select(-1, self._ang)                  # [B,12,5]
-        sca = feats.index_select(-1, self._sca)                  # [B,12,1] velocity/max_v
-        return torch.cat([torch.sin(ang), torch.cos(ang), torch.tanh(sca)], dim=-1)
-
-    @staticmethod
-    def _expand_observer(obs: torch.Tensor) -> torch.Tensor:
-        """``[B,3]`` angles (Asc,MC,Vx) -> ``[B,6]`` = ``[sin, cos]``."""
-        return torch.cat([torch.sin(obs), torch.cos(obs)], dim=-1)
-
     @staticmethod
     def _bound_oklab(h: torch.Tensor) -> torch.Tensor:
-        L = torch.sigmoid(h[..., :1])                            # [0,1]
-        ab = torch.tanh(h[..., 1:])                              # [-1,1]
+        L = torch.sigmoid(h[..., :1])                             # [0,1]
+        ab = torch.tanh(h[..., 1:])                               # [-1,1]
         return torch.cat([L, ab], dim=-1)
 
-    def forward(self, features: torch.Tensor, observer: torch.Tensor,
-                return_attention: bool = False):
-        tok = self.input_norm(self.input_proj(self._expand_body(features)))   # [B,12,d]
-        obs = self.observer_norm(
-            self.observer_proj(self._expand_observer(observer))).unsqueeze(1)  # [B,1,d]
-        seq = torch.cat([tok, obs], dim=1)                       # [B,13,d]  obs = idx 12
+    def forward(self, state: torch.Tensor, return_attention: bool = False):
+        b = state.shape[0]
+        bodies = state[:, :self.body_dim].view(b, self.cfg.n_bodies, self.cfg.body_features)
+        observer = state[:, self.body_dim:]                       # [B,6]
+        tok = self.body_norm(self.body_proj(bodies))              # [B,11,d]
+        obs = self.observer_norm(self.observer_proj(observer)).unsqueeze(1)   # [B,1,d]
+        seq = torch.cat([tok, obs], dim=1)                        # [B,12,d]  obs = idx 11
         attns = []
         for layer in self.layers:
             seq, attn = layer(seq, need_weights=return_attention)
             if return_attention:
                 attns.append(attn)
         pooled = seq[:, -1] if self.cfg.pool == "observer" else seq.mean(dim=1)
-        oklab = self._bound_oklab(self.to_bottleneck(pooled))    # [B,3]
+        oklab = self._bound_oklab(self.to_bottleneck(pooled))     # [B,3]
         if return_attention:
-            return oklab, torch.stack(attns, dim=1)              # [B,L,H,13,13]
+            return oklab, torch.stack(attns, dim=1)               # [B,L,H,12,12]
         return oklab
 
 
-class SkyEnergyAutoencoder(nn.Module):
-    """Encoder + decoder. ``forward -> (recon_body [B,12,4], recon_obs [B,3,2], oklab [B,3])``.
-
-    The decoder reconstructs both the 12 celestial bodies' ``(sin,cos)`` altitude &
-    azimuth **and** the ``<OBSERVER>`` anchors' ``(sin,cos)`` (Ascendant, Midheaven,
-    Vertex). Reconstructing the observer — not just the bodies — lets the loss weight
-    the local-horizon geometry up (see ``losses.reconstruction_loss``), forcing the
-    3-neuron bottleneck to preserve city-level Asc/MC rather than average it away.
-    Training-only; the exported encoder is unchanged.
-    """
-
-    def __init__(self, cfg: ModelConfig):
-        super().__init__()
-        self.cfg = cfg
-        self.encoder = SkyEnergyEncoder(cfg)
-        self._body_out = cfg.n_bodies * cfg.recon_features       # 12*4 = 48
-        self._obs_out = cfg.obs_features * 2                     # 3*(sin,cos) = 6
-        dims = [3, *cfg.decoder_hidden, self._body_out + self._obs_out]   # -> 54
-        dec: list[nn.Module] = []
-        for i in range(len(dims) - 1):
-            dec.append(nn.Linear(dims[i], dims[i + 1]))
-            if i < len(dims) - 2:
-                dec.append(nn.GELU())
-        self.decoder = nn.Sequential(*dec)
-
-    def encode(self, features, observer, return_attention: bool = False):
-        return self.encoder(features, observer, return_attention=return_attention)
-
-    def forward(self, features: torch.Tensor, observer: torch.Tensor):
-        oklab = self.encoder(features, observer)
-        out = self.decoder(oklab)
-        recon_body = out[:, :self._body_out].view(-1, self.cfg.n_bodies,
-                                                  self.cfg.recon_features)
-        recon_obs = out[:, self._body_out:].view(-1, self.cfg.obs_features, 2)
-        return recon_body, recon_obs, oklab
-
-
-def build_model(cfg: ModelConfig) -> SkyEnergyAutoencoder:
-    return SkyEnergyAutoencoder(cfg)
+def build_model(cfg: ModelConfig) -> SkyEnergyEncoder:
+    return SkyEnergyEncoder(cfg)

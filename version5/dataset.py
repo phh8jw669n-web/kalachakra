@@ -43,7 +43,7 @@ def _worker_init(worker_id: int, ephe_path: str | None, jpl_file: str | None) ->
 
 
 class MonteCarloSky(IterableDataset):
-    """Yields ``(feats [B,12,6], obs [B,3], target [B,12,4], jd)`` — one timestamp/step."""
+    """Yields ``(state [B,50], jd)`` — one Monte-Carlo timestamp per step."""
 
     def __init__(self, cfg: DataConfig):
         super().__init__()
@@ -62,13 +62,10 @@ class MonteCarloSky(IterableDataset):
             jd = sky_math.random_jd_quantized(rng, cfg.start_jd, cfg.end_jd)
             ecl = ephem.ecliptic_state(jd)                  # the single query (12 bodies)
             eps = ephem.obliquity_rad(jd)
-            eq = ephem.ecl_to_equatorial(ecl, eps)          # vectorised rotation
             gast = ephem.gast_radians(jd)
             lat, lon = sky_math.sample_locations(rng, b)
-            feats, obs = sky_math.local_features(ecl, eq, eps, gast, lat, lon)
-            target = sky_math.recon_target(feats)
-            yield (torch.from_numpy(feats), torch.from_numpy(obs),
-                   torch.from_numpy(target), float(jd))
+            state = sky_math.local_state(ecl, eps, gast, lat, lon)   # [B,50]
+            yield (torch.from_numpy(state), float(jd))
 
 
 def build_dataloader(cfg: DataConfig, *, num_workers: int = 0,

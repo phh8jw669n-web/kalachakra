@@ -20,7 +20,7 @@ from kalachakra.local_autoencoder.training import select_device  # reuse device 
 from . import ephemeris as ephem
 from .config import V5Config
 from .dataset import build_dataloader
-from .losses import mass_weights, oklab_stats, reconstruction_loss
+from .losses import isometric_loss, oklab_stats
 from .model import build_model
 
 CHECKPOINT_FORMAT = "kalachakra-version5"
@@ -100,7 +100,6 @@ def train(cfg: V5Config, *, resume: str | None = None, max_steps: int | None = N
                                   weight_decay=cfg.train.weight_decay)
     scheduler = cosine_warmup(optimizer, cfg.train.warmup_steps, steps_target,
                               base_lr=cfg.train.lr, lr_min=cfg.train.lr_min)
-    body_w = mass_weights() if cfg.train.mass_weighting else None
 
     start_step = 0
     if resume:
@@ -114,17 +113,17 @@ def train(cfg: V5Config, *, resume: str | None = None, max_steps: int | None = N
     amp_dtype = torch.bfloat16 if device.type == "cuda" else torch.float16
 
     logger.info("=" * 78)
-    logger.info("SKY-ENERGY AUTOENCODER (version5)")
+    logger.info("SKY-ENERGY METRIC ENCODER (version5.1)")
     logger.info(f"device={device}  params={n_params:,}  steps={start_step}->{steps_target}"
                 f"{'  (RESUMED)' if resume else ''}")
-    logger.info(f"model: d_model={cfg.model.d_model} heads={cfg.model.nhead} "
+    logger.info(f"model: encoder-only  d_model={cfg.model.d_model} heads={cfg.model.nhead} "
                 f"layers={cfg.model.num_layers} ff={cfg.model.dim_feedforward} "
-                f"pool={cfg.model.pool}")
+                f"pool={cfg.model.pool}  state_dim={cfg.model.state_dim}")
     logger.info(f"data: jd[{cfg.data.start_jd:.1f}..{cfg.data.end_jd:.1f}] "
                 f"ephemeris={backend} locations/step={cfg.data.locations_per_step} "
                 f"workers={cfg.train.num_workers}")
-    logger.info(f"loss: mass_w={cfg.train.mass_weighting} "
-                f"obs_weight={cfg.train.obs_weight} (per-token MSE, equal bodies)")
+    logger.info(f"loss: isometric (normalised pairwise-distance MSE, "
+                f"{cfg.model.n_bodies} bodies + Asc/MC, no decoder)")
     logger.info(f"optim: AdamW lr={cfg.train.lr}->{cfg.train.lr_min} "
                 f"wd={cfg.train.weight_decay} warmup={cfg.train.warmup_steps} "
                 f"cosine amp={use_amp}")
@@ -139,18 +138,12 @@ def train(cfg: V5Config, *, resume: str | None = None, max_steps: int | None = N
     last: dict = {}
     it = iter(loader)
     while step < steps_target:
-        feats, obs, target, _jd = next(it)
-        feats = feats.to(device)
-        obs = obs.to(device)
-        target = target.to(device)
-        # observer reconstruction target: (sin,cos) of Asc/MC/Vertex  -> [B,3,2]
-        obs_target = torch.stack([torch.sin(obs), torch.cos(obs)], dim=-1)
+        state, _jd = next(it)
+        state = state.to(device)
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-            recon_body, recon_obs, oklab = model(feats, obs)
-            loss = reconstruction_loss(recon_body.float(), target.float(),
-                                       recon_obs.float(), obs_target.float(),
-                                       obs_weight=cfg.train.obs_weight, body_w=body_w)
+            oklab = model(state)
+            loss = isometric_loss(state.float(), oklab.float())
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.grad_clip)
         optimizer.step()

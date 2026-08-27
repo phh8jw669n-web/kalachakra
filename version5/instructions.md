@@ -1,29 +1,31 @@
-# Kalachakra `version5` — Run Book
+# Kalachakra `version5.1` — Run Book
 
-A complete, GPU-native rebuild of the celestial-weather visualiser. The astrophysics
-is **decoupled** from rendering: a Transformer autoencoder is trained on a Monte-Carlo
-random walk across the 10,256-year timeline, its 3-neuron **OKLab** bottleneck is
-exported to **ONNX**, and the browser runs that neural field on the GPU while a
-stateless server ships only a ~1.6 KB payload of the twelve bodies' coordinates.
+A GPU-native celestial-weather visualiser built on **Zero-Redundancy Metric Learning**.
+The autoencoder is gone: a pure Transformer **encoder** maps a strictly non-redundant
+**50-D physical state** to a 3D **OKLab** colour, trained by a **distance-preserving
+(isometric) loss** — pairwise colour distances match pairwise physical distances — so
+no bottleneck can "solar-overfit" by ignoring the outer planets. It is exported to
+**ONNX** and run on the client GPU; a stateless server ships a ~1.6 KB coordinate
+payload.
 
-**12 bodies** for the "True Astrological Shape": Sun..Pluto plus the **Mean Node** and
-**True Node**. Each body carries `[altitude, azimuth, ecliptic longitude, ecliptic
-latitude, house offset, velocity]`; the 13th `<OBSERVER>` token ingests the
-high-frequency geographic anchors **Ascendant, Midheaven, Vertex** — computed by pure
-vectorised spherical trig (never `swe.houses()` in the batch loop) so city-level
-resolution costs one broadcast, not 2,048 C calls.
+**The 50-D state:** 11 bodies (Sun..Pluto + True Node) × `[X, Y, Z, V]` = 44, where
+`(X,Y,Z)` is the body's ecliptic direction as a **Cartesian unit vector** and
+`V = tanh(v/15°·d⁻¹)`; plus the **Ascendant** and **Midheaven** as ecliptic Cartesian
+unit vectors (6). Computed by pure vectorised trig (Asc/MC never via `swe.houses()` in
+the batch loop). The frontend still fetches all **12** bodies for the 3D orbits + glow.
 
 ```
                          ┌──────────────────────── training (offline, once) ─────────────────────────┐
-  Swiss/Moshier   ──►   Monte-Carlo sampler ──► single ephemeris query ──► vectorised horizon + Asc/MC/Vx
-  ephemeris             (24-s quantum, 10,256 yr)   (12 calc_ut / step)     ([N,12,6] + [N,3] broadcast)
+  Swiss/Moshier   ──►   Monte-Carlo sampler ──► single ephemeris query ──► 50-D Cartesian state
+  ephemeris             (24-s quantum, 10,256 yr)   (12 calc_ut / step)     ([N,50] broadcast)
                                                                                    │
-                                        Transformer + data-driven <OBSERVER> ──► 3-neuron OKLab ──► decoder
-                                                                                   │  export encoder only
+                        Transformer encoder (11 body + 1 observer token) ──► 3-neuron OKLab
+                                                                                   │  isometric loss:
+                                                                                   │  MSE(‖ΔOKLab‖, ‖Δstate‖)
                                                                                    ▼
                                                                            version5/web/model_v5.onnx
   ┌──────────────────────────── runtime (live) ───────────────────────────────────┴───────────────┐
-  browser ── GET /telemetry ──► FastAPI (12 calc_ut, ~1.6 KB JSON) ──► onnxruntime-web (OKLab grid)
+  browser ── GET /telemetry ──► FastAPI (12 calc_ut, ~1.6 KB JSON) ──► onnxruntime-web (50-D → OKLab)
           ├─ Three.js dual-layer globe ◄── OKLab→sRGB + 12-body glow GLSL shader ◄── field texture ─┤
           └─ 12 celestial-body sprites orbit the Earth, synced to the same interpolated telemetry ──┘
 ```
@@ -76,10 +78,11 @@ overrides the environment.
 
 ## 2. Train the model
 
-Each step draws one random 24-second-quantised timestamp from the whole span, runs a
-single ten-call ephemeris query, and reconstructs the local sky for a batch of
-sphere-uniform observers — all compressed through the 3-neuron OKLab bottleneck. Loss
-falling proves the three colours describe the entire local geometry.
+Each step draws one random 24-second-quantised timestamp, runs a single ephemeris query,
+and builds the 50-D physical state for a batch of sphere-uniform observers. The encoder
+maps each to an OKLab colour and the **isometric loss** matches the normalised pairwise
+colour distances to the physical ones. Loss falling means the 3 colours preserve the
+50-D geometry (no reconstruction/decoder involved).
 
 **Quick run (no data files, bounded to Moshier's range, auto-exports the ONNX):**
 
@@ -134,9 +137,9 @@ python -m version5.export_onnx \
     --out version5/web/model_v5.onnx
 ```
 
-This strips the training decoder, exports **only** the encoder + 3-neuron OKLab head
-with a **dynamic batch axis** and **constant folding**, checks the graph, and — if
-`onnxruntime` is installed — verifies the ONNX output matches PyTorch to < 1e-4. It also
+This exports the encoder (`state [N,50]` → `oklab [N,3]`) with a **dynamic batch axis**
+and **constant folding**, checks the graph, and — if `onnxruntime` is installed —
+verifies the ONNX output matches PyTorch to < 1e-4. It also
 writes `version5/web/golden.json`, a parity vector the browser re-checks on load.
 
 ---
@@ -241,37 +244,31 @@ pytest tests/test_version5.py -q
   velocity); the equatorial `(RA, Dec)` is derived by one vectorised obliquity rotation
   (matches pyswisseph's native output to ~1e-13°). The block is broadcast over every
   observer / pixel.
-- **Vectorised horizon + resolvers** (`version5/sky_math.py`): the horizon
-  (`sin a = sin φ sin δ + cos φ cos δ cos H`, azimuth via `atan2`) **plus** the
-  Ascendant, Midheaven and Vertex from Local Sidereal Time + obliquity — pure tensor
-  broadcasting, **no `swe.houses()` in the batch loop** (Asc/MC verified against
-  `swe.houses()` to ~1e-13°). The House offset of each body = `wrap(λ_body − Ascendant)`.
-  The identical formulas live in `version5/web/skymath.js`, verified bit-for-bit (~6e-7).
-- **Model** (`version5/model.py`): 12 bodies × `[alt, az, λ, β, house, v]`; the five
-  cyclic angles become `(sin,cos)` pairs (no 359→0° wrap) and the longitude velocity is
-  **`tanh(v / 15°/day)`-bounded to `[-1,1]`** inside the encoder (baked into ONNX) → all
-  6 observer/body angles reach the Transformer as sin/cos, nothing raw. The **data-driven
-  `<OBSERVER>` token** is a projection of `sin/cos` of Asc/MC/Vertex → self-attention
-  (block imported from `kalachakra.local_autoencoder`) → **3 OKLab neurons** (`L` sigmoid,
-  `a,b` tanh). A decoder reconstructs each body's altitude & azimuth **and** the
-  `<OBSERVER>` anchors (Asc/MC/Vertex) — training only. **Rebalanced loss:** every body
-  carries an equal per-token MSE (physical **mass weighting off by default**, `--mass-w`
-  to re-enable), and the observer token is upweighted by **`--obs-weight` (default 3.0)**
-  — `L = (Σ L_bodyᵢ + w_obs·L_obs)/(12 + w_obs)` — so the 3-neuron bottleneck is forced
-  to resolve local-horizon geography instead of washing continents into one colour.
-  Optimiser: AdamW with **1,000-step warmup** then cosine decay to **`lr_min=1e-6`**.
-- **Export** (`version5/export_onnx.py`): encoder only, **two dynamic-batch inputs**
-  (`features [N,12,6]` + `observer [N,3]`), constant folding, PyTorch↔ONNX parity check.
-- **GPU feature engine** (`version5/web/skycompute.wgsl` + `gpucompute.js`): the whole
-  12-body geographic maths (altitude, azimuth, Ascendant/MC/Vertex, house offset) runs
-  as a **WebGPU compute shader** — one thread per grid point, grid coords derived on the
-  fly from `global_invocation_id`, writing the raw `[N,12,6]` + `[N,3]` tensors straight
-  into storage buffers. It uses its own `GPUDevice` (separate from the Three.js WebGL
-  context), reads back via a staging buffer + `mapAsync`, and hands the arrays to ONNX.
-  Verified bit-for-bit against the CPU `skymath.js` math; falls back to the CPU loop when
-  `navigator.gpu` is absent. This takes the ~1.5M-trig `buildFeatures` off the main
-  thread so the clock stays locked even at 512×256.
-- **Render** (`version5/web/main.js`): telemetry → GPU/CPU features + observer → onnxruntime-web
+- **50-D state builder** (`version5/sky_math.py`): each body's ecliptic longitude/latitude
+  → Cartesian unit vector `(X,Y,Z)` + `V=tanh(v/15)`, plus the Ascendant & Midheaven from
+  Local Sidereal Time + obliquity (**no `swe.houses()` in the batch loop**; Asc/MC verified
+  against `swe.houses()` to ~1e-13°). Pure tensor broadcasting into `[N,50]`. The identical
+  formulas live in `version5/web/skymath.js`, verified bit-for-bit (~5e-7).
+- **Model** (`version5/model.py`): a **pure encoder** — no decoder. The 50-D state is read
+  as 11 body tokens (`[X,Y,Z,V]`, already bounded Cartesian → no sin/cos expansion) + 1
+  observer token (Asc+MC Cartesian); the self-attention Transformer block (imported from
+  `kalachakra.local_autoencoder`) pools the observer token into **3 OKLab neurons**
+  (`L` sigmoid, `a,b` tanh). Optimiser: AdamW, **1,000-step warmup** → cosine to `lr_min=1e-6`.
+- **Isometric loss** (`version5/losses.py`): `torch.cdist` gives the `[N,N]` pairwise
+  distance matrices of the 50-D state and the 3-D colour; each is normalised by its max to
+  `[0,1]` and matched by MSE. If a body moves, the physical distances change and the colour
+  *must* move to compensate — no bottleneck can ignore the outer planets, and a collapsed
+  (constant) colour is heavily penalised.
+- **Export** (`version5/export_onnx.py`): the whole encoder, **one dynamic-batch input**
+  `state [N,50]` → `oklab [N,3]`, constant folding, PyTorch↔ONNX parity check (~3e-7).
+- **GPU state engine** (`version5/web/skycompute.wgsl` + `gpucompute.js`): builds the
+  `[N,50]` state as a **WebGPU compute shader** — one thread per grid point; the 44
+  time-only body dims are precomputed on the CPU and copied, and each thread derives its
+  own Ascendant/Midheaven. Own `GPUDevice` (separate from the Three.js WebGL context),
+  reads back via a staging buffer + `mapAsync`, hands the `[N,50]` array to ONNX. Verified
+  bit-for-bit against the CPU `skymath.js` (0.0) and validated with `naga`; falls back to
+  the CPU loop when `navigator.gpu` is absent.
+- **Render** (`version5/web/main.js`): telemetry → GPU/CPU 50-D state → onnxruntime-web
   → OKLab grid texture. The Three.js outer shell's GLSL fragment shader samples the
   field, converts **OKLab→sRGB on the GPU**, and runs a **per-pixel 12-body spherical
   loop** that lights each body's sub-planetary point (the glow under which the matching
@@ -309,10 +306,10 @@ pytest tests/test_version5.py -q
 ```
 version5/
   ephemeris.py     single 12-call ecliptic query -> +equatorial +obliquity +GAST
-  sky_math.py      vectorised horizon + Ascendant/MC/Vertex + house offset (numpy)
+  sky_math.py      builds the Zero-Redundancy 50-D state (Cartesian + Asc/MC) (numpy)
   dataset.py       infinite Monte-Carlo IterableDataset (one timestamp × N observers)
-  model.py         Sky-Energy Autoencoder, data-driven observer token (reuses root block)
-  losses.py        mass-weighted MSE (12 bodies) + OKLab health (reuses root oklab_stats)
+  model.py         Sky-Energy metric encoder (state -> OKLab; reuses root Transformer)
+  losses.py        isometric distance-preserving loss + OKLab health (reuses oklab_stats)
   training.py      loop, checkpoints, logging (reuses select_device/cosine_warmup)
   train.py         CLI: python -m version5.train
   export_onnx.py   CLI: encoder -> model_v5.onnx (2 inputs) + golden.json parity vector
@@ -320,8 +317,8 @@ version5/
   web/
     index.html     HUD + import map (three.js, onnxruntime-web)
     style.css       overlay styling
-    skymath.js     the JS twin of sky_math.py + ephemeris + OKLab->sRGB (ESM)
-    skycompute.wgsl WebGPU compute shader: the 12-body geographic feature maths
+    skymath.js     the JS twin of sky_math.py (50-D state) + telemetry + OKLab->sRGB
+    skycompute.wgsl WebGPU compute shader: builds the 50-D state per grid point
     gpucompute.js  WebGPU pipeline (device, buffers, dispatch, mapAsync readback)
     main.js        Three.js dual-layer globe, 12-body 3D orbits, ONNX inference, UI
   instructions.md  this file

@@ -1,17 +1,20 @@
-// skymath.js — the browser's copy of version5/sky_math.py + ephemeris.py maths.
+// skymath.js — the browser's copy of version5/sky_math.py (v5.1 metric encoder).
 //
-// Dependency-free ES module: the same spherical trigonometry the server trains on,
-// re-implemented line for line so the client's neural input is bit-for-bit identical
-// (PRD "client math must match server math"). Imported by main.js and unit-tested
-// against golden.json in Node.
+// Dependency-free ES module: builds the Zero-Redundancy 50-D physical state exactly
+// as the server does, so the client's ONNX input is bit-for-bit identical. Also holds
+// the telemetry parser (12 bodies, for the 3D orbits + glow) and OKLab->sRGB.
 //
-// Body feature order per body (== sky_math.COL_*):
-//   [ altitude, azimuth, ecl_longitude, ecl_latitude, house_offset, velocity ]
-// Observer anchors: [ Ascendant, Midheaven, Vertex ] (radians).
+// 50-D state layout:
+//   [0..43]  11 ML bodies (Sun..Pluto + True Node), each [X, Y, Z, V]:
+//            X=cos(β)cos(λ), Y=cos(β)sin(λ), Z=sin(β), V=tanh(v_raw / 15°/day)
+//   [44..46] Ascendant  as ecliptic Cartesian unit vector [cos, sin, 0]
+//   [47..49] Midheaven  as ecliptic Cartesian unit vector [cos, sin, 0]
 
-export const N_BODIES = 12;
-export const RAW_FEATURES = 6;
-export const OBS_FEATURES = 3;
+export const N_BODIES = 12;                 // telemetry / 3D orbits / glow keep all 12
+export const N_ML_BODIES = 11;              // ML state drops the Mean Node
+export const STATE_DIM = 50;
+// indices into the 12-body telemetry that feed the 50-D state (skip 10 = Mean Node)
+export const ML_BODY_INDICES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11];
 const ANG_VEL_SCALE = 15.0;                 // == kalachakra ...features.ANG_VEL_SCALE
 // Canonical body order (== version5.ephemeris.BODY_NAMES): 10 primaries + 2 nodes.
 export const BODY_NAMES = [
@@ -55,42 +58,39 @@ export function ascMcVertex(ramc, phi, eps) {
   return { asc, mc, vx };
 }
 
-// Local sky matrix for ONE observer -> writes 12*6 body features into `feat` at
-// `fo` and the 3 observer anchors into `obs` at `oo`. Body-major layout.
-export function localFeaturesOne(state, latRad, lonRad, feat, fo, obs, oo) {
-  const { ra, dec, lam, bet, vel, gast, eps } = state;
-  const sinPhi = Math.sin(latRad), cosPhi = Math.cos(latRad);
-  const ramc = gast + lonRad;
-  const { asc, mc, vx } = ascMcVertex(ramc, latRad, eps);
-  for (let i = 0; i < N_BODIES; i++) {
-    const ha = wrapPi(ramc - ra[i]);
-    const sinDec = Math.sin(dec[i]), cosDec = Math.cos(dec[i]);
-    const sinHa = Math.sin(ha), cosHa = Math.cos(ha);
-    let sinAlt = sinPhi * sinDec + cosPhi * cosDec * cosHa;
-    if (sinAlt > 1) sinAlt = 1; else if (sinAlt < -1) sinAlt = -1;
-    const alt = Math.asin(sinAlt);
-    const az = Math.atan2(sinHa * cosDec, cosHa * sinPhi * cosDec - sinDec * cosPhi);
-    const o = fo + i * RAW_FEATURES;
-    feat[o + 0] = alt;
-    feat[o + 1] = az;
-    feat[o + 2] = lam[i];
-    feat[o + 3] = bet[i];
-    feat[o + 4] = wrapPi(lam[i] - asc);           // house offset
-    feat[o + 5] = vel[i];
+// The 44 location-independent body dims [X,Y,Z,V] x 11 for the current timestamp.
+// (state.vel is already v_raw/15; tanh here completes V = tanh(v_raw / v_max).)
+export function mlBodyState(tstate) {
+  const out = new Float32Array(N_ML_BODIES * 4);
+  for (let k = 0; k < N_ML_BODIES; k++) {
+    const i = ML_BODY_INDICES[k];
+    const cb = Math.cos(tstate.bet[i]);
+    const o = k * 4;
+    out[o + 0] = cb * Math.cos(tstate.lam[i]);
+    out[o + 1] = cb * Math.sin(tstate.lam[i]);
+    out[o + 2] = Math.sin(tstate.bet[i]);
+    out[o + 3] = Math.tanh(tstate.vel[i]);
   }
-  obs[oo + 0] = asc; obs[oo + 1] = mc; obs[oo + 2] = vx;
+  return out;
 }
 
-// Build the [N,12,6] body tensor and [N,3] observer tensor for a grid of observers.
-export function buildFeatureBatch(state, latRad, lonRad) {
+// Write the 50-D state for ONE observer into `out` at `off`, given precomputed body44.
+export function localStateOne(body44, tstate, latRad, lonRad, out, off) {
+  out.set(body44, off);                              // 44 time-only body dims
+  const { asc, mc } = ascMcVertex(tstate.gast + lonRad, latRad, tstate.eps);
+  out[off + 44] = Math.cos(asc); out[off + 45] = Math.sin(asc); out[off + 46] = 0;
+  out[off + 47] = Math.cos(mc); out[off + 48] = Math.sin(mc); out[off + 49] = 0;
+}
+
+// Build the [N,50] state tensor (flat Float32Array) for a grid of observers.
+export function buildStateBatch(tstate, latRad, lonRad) {
   const n = latRad.length;
-  const features = new Float32Array(n * N_BODIES * RAW_FEATURES);
-  const observer = new Float32Array(n * OBS_FEATURES);
+  const body44 = mlBodyState(tstate);
+  const state = new Float32Array(n * STATE_DIM);
   for (let p = 0; p < n; p++) {
-    localFeaturesOne(state, latRad[p], lonRad[p],
-                     features, p * N_BODIES * RAW_FEATURES, observer, p * OBS_FEATURES);
+    localStateOne(body44, tstate, latRad[p], lonRad[p], state, p * STATE_DIM);
   }
-  return { features, observer };
+  return state;
 }
 
 // RA/Dec -> Three.js Y-up Cartesian on a celestial sphere of `radius`:
