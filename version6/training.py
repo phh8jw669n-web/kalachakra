@@ -153,28 +153,14 @@ def train(cfg: V6Config, *, resume: str | None = None, max_steps: int | None = N
 def export_weights_json(checkpoint: str, out_path: str) -> str:
     """Load a checkpoint and dump the SIREN weights (+ metadata) as JSON for the shader.
 
-    Also stores ``lab_offset`` — the rigid shift that moves the network's mean output to
-    neutral L*=60. The isometric loss is translation-invariant, so this display gauge is
-    fixed here (post-hoc) instead of fought during training. The shader/HUD add it before
-    the L*a*b*->sRGB conversion.
+    The network's bounded ``lab_tanh`` head already emits displayable L*a*b* (L* in (0,100),
+    a*/b* in +/-lab_ab), centred near L*=60 by the anchor, so no post-hoc gauge shift is
+    needed — the shader and HUD re-run the exported weights verbatim.
     """
-    import numpy as np
-
-    from . import ephemeris as ephem
     model, _payload, cfg = load_checkpoint(checkpoint, map_location="cpu")
     model.eval()
-    rng = np.random.default_rng(0)
-    lat = rng.uniform(cfg.data.lat_min, cfg.data.lat_max, 8192)
-    lon = rng.uniform(cfg.data.lon_min, cfg.data.lon_max, 8192)
-    jd = rng.uniform(cfg.data.jd_start, cfg.data.jd_end, 8192)
-    sky = ephem.topocentric_tensor(lat, lon, jd)
-    with torch.no_grad():
-        mean = model(torch.from_numpy(sky)).mean(dim=0).numpy()
-    offset = (np.array([60.0, 0.0, 0.0]) - mean).astype(float).tolist()
-
     payload = model.export_weights()
     payload["color_scale"] = cfg.train.color_scale
-    payload["lab_offset"] = offset                   # displayed L*a*b* = network output + offset
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_text(json.dumps(payload))
     return out_path

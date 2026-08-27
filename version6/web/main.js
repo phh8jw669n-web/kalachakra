@@ -2,20 +2,26 @@
 //
 // Module 2: a Three.js sphere whose ShaderMaterial runs the FULL topocentric ephemeris
 //           + SIREN + L*a*b*->sRGB per pixel (shader6.js) — infinite resolution.
-// Module 3: a double-precision Julian-Date master clock, split into u_baseDays +
-//           u_timeOffset uniforms; play/rewind velocity multiplier; fluid scrubber;
-//           exact timestamp injection.
+// Module 3: a double-precision Julian-Date master clock; the ephemeris is evaluated ONCE
+//           per frame on the CPU (equatorialDirs / gmstRad) and handed to the shader as a
+//           tiny uniform array, so the fragment shader does only the cheap per-pixel
+//           projection; play/rewind velocity multiplier; fluid scrubber; timestamp injection.
 // Module 4: a raycaster picks the floating-point lat/lon under the cursor; a JS port of
 //           the same ephemeris + SIREN (ephemeris6.js / siren6.js) fills the HUD matrix.
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { buildShaders, packWeights } from "./shader6.js";
-import { topocentricTensor, BODY_NAMES, J2000, N_BODIES } from "./ephemeris6.js";
-import { makeSiren, applyOffset, labToSrgb, srgbToHex } from "./siren6.js";
+import {
+  topocentricTensor, equatorialDirs, gmstRad, BODY_NAMES, J2000, N_BODIES,
+} from "./ephemeris6.js";
+import { makeSiren, boundLab, labToSrgb, srgbToHex } from "./siren6.js";
 
 const SEG = 256;                         // sphere segments (silhouette only; colour is per-pixel)
-const DEFAULT_ARCH = { in_features: 33, hidden: 48, hidden_layers: 2, out_features: 3, omega0: 30 };
+const DEFAULT_ARCH = {
+  in_features: 33, hidden: 48, hidden_layers: 2, out_features: 3, omega0: 30,
+  lab_center: 50, lab_lspan: 50, lab_ab: 90,
+};
 const JD_MIN = J2000 - 5000 * 365.25, JD_MAX = J2000 + 5000 * 365.25;
 
 // ---- boot overlay ----------------------------------------------------------
@@ -30,7 +36,7 @@ const app = {
   playing: false,
   speed: 1,                              // real-time multiplier (negative = rewind)
   pin: { lat: 48.8566, lon: 2.3522 },    // pinned observer (Module 4)
-  weights: null, siren: null, exposure: 2.5,
+  weights: null, siren: null,
 };
 
 // ---- three.js scene --------------------------------------------------------
@@ -50,16 +56,20 @@ controls.dampingFactor = 0.06;
 controls.minDistance = 1.02;             // down to street-level micro-zoom
 controls.maxDistance = 8.0;
 controls.rotateSpeed = 0.6;
+controls.addEventListener("change", () => { renderDirty = true; });   // render-on-demand
 
+// the 11 geocentric equatorial body directions, recomputed once per frame on the CPU and
+// handed to the shader (see shader6.js / ephemeris6.js::equatorialDirs).
+const bodyEq = Array.from({ length: N_BODIES }, () => new THREE.Vector3());
 const uniforms = {
-  u_baseDays: { value: 0 },
-  u_timeOffset: { value: 0 },
+  u_bodyEq: { value: bodyEq },
+  u_gmst: { value: 0 },
   u_weights: { value: null },
   u_wtexW: { value: 64 },
-  u_labOffset: { value: new THREE.Vector3(60, 0, 0) },
-  u_exposure: { value: app.exposure },
 };
 let globe = null;                        // the shader sphere (built once weights are known)
+let renderDirty = true;                  // camera / visual state changed -> redraw
+let hudDirty = true;                     // pin / time / colour changed -> refresh HUD
 
 // reticle (Module 4 spatial anchor)
 const reticle = new THREE.Mesh(
@@ -89,7 +99,7 @@ function randomWeights(a) {
   const layers = [layer(a.in_features, a.hidden, true, "sin")];
   for (let k = 1; k < a.hidden_layers; k++) layers.push(layer(a.hidden, a.hidden, false, "sin"));
   layers.push(layer(a.hidden, a.out_features, false, "linear"));
-  return { ...a, layers, lab_offset: [60, 0, 0], color_scale: 20 };
+  return { ...a, layers, output_activation: "lab_tanh", color_scale: 20 };
 }
 
 function makeWeightTexture(weights) {
@@ -108,13 +118,17 @@ function buildGlobe(weights) {
     in_features: weights.in_features ?? 33, hidden: weights.hidden,
     hidden_layers: weights.hidden_layers, out_features: weights.out_features ?? 3,
     omega0: weights.omega0,
+    lab_center: weights.lab_center ?? 50, lab_lspan: weights.lab_lspan ?? 50,
+    lab_ab: weights.lab_ab ?? 90,
   };
   const { vertex, fragment } = buildShaders(arch);
   const { tex, W } = makeWeightTexture(weights);
   uniforms.u_weights.value = tex;
   uniforms.u_wtexW.value = W;
-  uniforms.u_labOffset.value.fromArray(weights.lab_offset || [60, 0, 0]);
-  const mat = new THREE.ShaderMaterial({ uniforms, vertexShader: vertex, fragmentShader: fragment });
+  const mat = new THREE.ShaderMaterial({
+    uniforms, vertexShader: vertex, fragmentShader: fragment,
+    glslVersion: THREE.GLSL3,            // texelFetch + sized uniform arrays need GLSL ES 3.00
+  });
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, SEG, SEG), mat);
   scene.add(mesh);
   return mesh;
@@ -153,55 +167,85 @@ function jdLabel(jd) {
 }
 
 // ---- render loop -----------------------------------------------------------
+// Render-on-demand: we only redraw when something actually changed (camera, time, pin,
+// colour). When the clock is paused and the camera is still, the GPU idles completely.
 let last = performance.now();
+let prevJD = NaN;
 function animate() {
   requestAnimationFrame(animate);
   const now = performance.now();
   const dt = (now - last) / 1000; last = now;
 
-  if (app.playing) app.jd += app.speed * dt / 86400.0;   // multiplier x real-time
-  app.jd = Math.min(JD_MAX, Math.max(JD_MIN, app.jd));
+  if (app.playing) {
+    app.jd = Math.min(JD_MAX, Math.max(JD_MIN, app.jd + app.speed * dt / 86400.0));
+    renderDirty = hudDirty = true;                 // the sky moves every frame while playing
+  }
+  controls.update();                               // damping emits "change" -> renderDirty
 
-  // Module 3 precision split: exact integer days + small offset
-  const d = app.jd - J2000;
-  const base = Math.round(d);
-  uniforms.u_baseDays.value = base;
-  uniforms.u_timeOffset.value = d - base;
-  uniforms.u_exposure.value = app.exposure;
-
-  controls.update();
-  renderer.render(scene, camera);
+  if (renderDirty) {
+    if (app.jd !== prevJD) {                        // refresh the once-per-frame ephemeris
+      const eq = equatorialDirs(app.jd);            // 11 equatorial dirs, CPU, double precision
+      for (let b = 0; b < N_BODIES; b++) bodyEq[b].set(eq[3 * b], eq[3 * b + 1], eq[3 * b + 2]);
+      uniforms.u_gmst.value = gmstRad(app.jd);
+      prevJD = app.jd;
+    }
+    renderer.render(scene, camera);
+    renderDirty = false;
+  }
 
   updateReadouts();
 }
 
 // ---- HUD (Module 4) --------------------------------------------------------
-let hudTick = 0;
-function updateReadouts() {
-  const lab = jdLabel(app.jd);
-  document.getElementById("clock").textContent = lab.clock;
-  document.getElementById("date").textContent = lab.date;
-  if (!app.playing) syncScrub();
+// DOM nodes are cached and the 11 matrix rows are built ONCE; each refresh only rewrites
+// text (no innerHTML re-parse), and the whole thing is gated on hudDirty + throttled, so a
+// still, paused globe does zero HUD work.
+const el = {};
+const matRows = [];
+const HUD_INTERVAL_MS = 66;               // ~15 Hz max HUD refresh
+let lastHud = 0;
 
-  if (app.siren && (hudTick++ % 3 === 0)) {              // ~20 Hz HUD refresh
-    const sky = topocentricTensor(app.pin.lat, app.pin.lon, app.jd);
-    let s = "";
-    for (let b = 0; b < N_BODIES; b++) {
-      const N = sky[b * 3], E = sky[b * 3 + 1], U = sky[b * 3 + 2];
-      s += `<span class="body">${BODY_NAMES[b].padEnd(8)}</span>` +
-           `${fmt(N)} ${fmt(E)} ${fmt(U)}\n`;
-    }
-    document.getElementById("matrix").innerHTML = s;
-    const lab3 = applyOffset(app.weights, app.siren(sky));
-    const rgb = labToSrgb(lab3[0], lab3[1], lab3[2]);
-    document.getElementById("lab").textContent =
-      `L* ${lab3[0].toFixed(1)}  a* ${lab3[1].toFixed(1)}  b* ${lab3[2].toFixed(1)}`;
-    const hex = srgbToHex(rgb);
-    document.getElementById("hex").textContent = hex;
-    document.getElementById("swatch").style.background = hex;
-    document.getElementById("pin-lat").textContent = app.pin.lat.toFixed(5);
-    document.getElementById("pin-lon").textContent = app.pin.lon.toFixed(5);
+function buildHud() {
+  for (const id of ["clock", "date", "matrix", "lab", "hex", "swatch", "pin-lat", "pin-lon"]) {
+    el[id] = document.getElementById(id);
   }
+  el.matrix.textContent = "";
+  for (let b = 0; b < N_BODIES; b++) {
+    const row = document.createElement("div");
+    const name = document.createElement("span");
+    name.className = "body"; name.textContent = BODY_NAMES[b].padEnd(8);
+    const vals = document.createElement("span");
+    row.append(name, vals);
+    el.matrix.appendChild(row);
+    matRows.push(vals);
+  }
+}
+
+function updateReadouts() {
+  if (!(app.playing || hudDirty)) return;
+  const now = performance.now();
+  if (now - lastHud < HUD_INTERVAL_MS) return;
+  lastHud = now;
+
+  const lab = jdLabel(app.jd);
+  el.clock.textContent = lab.clock;
+  el.date.textContent = lab.date;
+  syncScrub();
+
+  if (app.siren) {
+    const sky = topocentricTensor(app.pin.lat, app.pin.lon, app.jd);
+    for (let b = 0; b < N_BODIES; b++) {
+      matRows[b].textContent = ` ${fmt(sky[b * 3])} ${fmt(sky[b * 3 + 1])} ${fmt(sky[b * 3 + 2])}`;
+    }
+    const lab3 = boundLab(app.weights, app.siren(sky));
+    const hex = srgbToHex(labToSrgb(lab3[0], lab3[1], lab3[2]));
+    el.lab.textContent = `L* ${lab3[0].toFixed(1)}  a* ${lab3[1].toFixed(1)}  b* ${lab3[2].toFixed(1)}`;
+    el.hex.textContent = hex;
+    el.swatch.style.background = hex;
+    el["pin-lat"].textContent = app.pin.lat.toFixed(5);
+    el["pin-lon"].textContent = app.pin.lon.toFixed(5);
+  }
+  hudDirty = false;
 }
 function fmt(x) { const s = x >= 0 ? " " : "-"; return s + Math.abs(x).toFixed(3); }
 
@@ -225,7 +269,10 @@ function setPin(pick) {
   const v = pick.vec.clone().normalize();
   reticle.position.copy(v.multiplyScalar(1.003));
   reticle.lookAt(0, 0, 0);
+  renderDirty = true;                    // reticle moved
+  hudDirty = true;                       // pinned point changed
 }
+function jumpTo(jd) { app.jd = Math.min(JD_MAX, Math.max(JD_MIN, jd)); renderDirty = hudDirty = true; }
 
 // ---- Module 3 controls -----------------------------------------------------
 function speedFromSlider(v) { return v >= 0 ? Math.pow(10, v) : -Math.pow(10, -v); }
@@ -242,6 +289,7 @@ function wireControls() {
     app.playing = !app.playing;
     playBtn.textContent = app.playing ? "⏸ Pause" : "▶ Play";
     playBtn.classList.toggle("on", app.playing);
+    renderDirty = hudDirty = true;
     badge();
   };
   const sp = document.getElementById("speed");
@@ -250,22 +298,22 @@ function wireControls() {
     document.getElementById("speed-val").textContent = fmtSpeed(app.speed);
     badge();
   };
-  document.getElementById("now").onclick = () => { app.jd = nowJD(); syncScrub(); };
+  document.getElementById("now").onclick = () => { jumpTo(nowJD()); syncScrub(); };
 
   const scrub = document.getElementById("scrub");
   scrub.min = String(JD_MIN); scrub.max = String(JD_MAX);
-  scrub.oninput = () => { app.jd = parseFloat(scrub.value); };
-  scrub.addEventListener("input", () => {
-    const g = jdLabel(app.jd); document.getElementById("scrub-label").textContent = `${g.date} ${g.clock}`;
-  });
+  scrub.oninput = () => {
+    jumpTo(parseFloat(scrub.value));
+    const g = jdLabel(app.jd);
+    document.getElementById("scrub-label").textContent = `${g.date} ${g.clock}`;
+  };
 
   document.getElementById("go").onclick = () => {
     const v = document.getElementById("dt").value;    // YYYY-MM-DDTHH:MM:SS (treated as UTC)
     const m = v && v.match(/^(-?\d+)-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
     if (!m) { setNotice("enter a date/time"); return; }
     setNotice("");
-    app.jd = gregorianToJD(+m[1], +m[2], +m[3], +m[4], +m[5], +(m[6] || 0));
-    app.jd = Math.min(JD_MAX, Math.max(JD_MIN, app.jd));
+    jumpTo(gregorianToJD(+m[1], +m[2], +m[3], +m[4], +m[5], +(m[6] || 0)));
     syncScrub();
   };
 
@@ -288,6 +336,7 @@ function wireControls() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+    renderDirty = true;
   });
 }
 function badge() {
@@ -297,6 +346,7 @@ function badge() {
 
 // ---- bootstrap -------------------------------------------------------------
 async function main() {
+  buildHud();
   wireControls();
   app.weights = await loadWeights();
   app.siren = makeSiren(app.weights);

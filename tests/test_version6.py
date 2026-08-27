@@ -107,7 +107,8 @@ def test_siren_shapes_and_export_structure():
 
 
 def _numpy_siren(weights, x):
-    """A dependency-free re-run of the exported weights — mirrors siren6.js / the shader."""
+    """A dependency-free re-run of the exported weights — mirrors makeSiren + boundLab in
+    siren6.js and the shader (linear logits, then the bounded L*a*b* head)."""
     omega0 = weights["omega0"]
     h = np.asarray(x, dtype=np.float64)
     for layer in weights["layers"]:
@@ -116,6 +117,11 @@ def _numpy_siren(weights, x):
         h = h @ W.T + b
         if layer["activation"] == "sin":
             h = np.sin(omega0 * h)
+    if weights.get("output_activation") == "lab_tanh":
+        lc, ls, ab = weights["lab_center"], weights["lab_lspan"], weights["lab_ab"]
+        h = np.stack([lc + ls * np.tanh(h[..., 0] / ls),
+                      ab * np.tanh(h[..., 1] / ab),
+                      ab * np.tanh(h[..., 2] / ab)], axis=-1)
     return h
 
 
@@ -129,6 +135,27 @@ def test_export_weights_match_torch_forward():
     got = _numpy_siren(w, x.numpy())
     # this parity is exactly what lets the browser/GLSL reproduce PyTorch bit-for-bit
     assert np.max(np.abs(ref - got)) < 1e-4
+
+
+def test_bounded_lab_head_is_in_gamut_and_near_identity():
+    from version6.siren import bound_lab
+    # extreme logits must still land inside (0,100) x (-90,90)^2
+    z = torch.randn(20000, 3) * 40.0
+    lab = bound_lab(z, 50.0, 50.0, 90.0)
+    assert lab[:, 0].min() > 0.0 and lab[:, 0].max() < 100.0
+    assert lab[:, 1].abs().max() < 90.0 and lab[:, 2].abs().max() < 90.0
+    # slope-1 (near-identity) around the centre so the metric is preserved for small colours
+    small = torch.tensor([[2.0, 1.0, -1.5]])
+    out = bound_lab(small, 50.0, 50.0, 90.0)
+    assert abs(float(out[0, 0]) - 52.0) < 0.05     # L ~= 50 + z
+    assert abs(float(out[0, 1]) - 1.0) < 0.02 and abs(float(out[0, 2]) + 1.5) < 0.02
+
+
+def test_siren_forward_is_bounded():
+    net = build_siren(hidden=16).eval()
+    lab = net(torch.randn(256, 33) * 5.0)
+    assert lab[:, 0].min() > 0.0 and lab[:, 0].max() < 100.0
+    assert lab[:, 1:].abs().max() < 90.0
 
 
 def test_siren_init_is_bounded():
@@ -224,8 +251,9 @@ def test_weight_export_and_golden(tmp_path):
     assert out.exists() and (tmp_path / "golden.json").exists()
 
     weights = json.loads(out.read_text())
-    assert "lab_offset" in weights and len(weights["lab_offset"]) == 3
     assert weights["color_scale"] == cfg.train.color_scale
+    assert weights["output_activation"] == "lab_tanh"
+    assert weights["lab_center"] == 50.0 and weights["lab_ab"] == 90.0
     assert [ly["activation"] for ly in weights["layers"]] == ["sin", "sin", "linear"]
 
     # golden points: the browser re-runs its own ephemeris + SIREN and must reproduce these
@@ -234,18 +262,13 @@ def test_weight_export_and_golden(tmp_path):
     model.eval()
     for pt in golden["points"]:
         assert len(pt["sky"]) == 33 and len(pt["lab"]) == 3
+        # the stored colour is bounded/displayable
+        assert 0.0 < pt["lab"][0] < 100.0 and abs(pt["lab"][1]) < 90.0 and abs(pt["lab"][2]) < 90.0
         # our ephemeris reproduces the stored 33-D state for that (lat,lon,jd)
         sky = ephem.topocentric_tensor(np.array([pt["lat"]]), np.array([pt["lon"]]),
                                        np.array([pt["jd"]]))[0]
         assert np.allclose(sky, np.array(pt["sky"]), atol=1e-4)
-        # the exported weights, re-run in pure numpy, reproduce the network colour
+        # the exported weights, re-run in pure numpy (matmul+sin then the bounded head),
+        # reproduce the network colour — this is the JS/GLSL parity contract
         got = _numpy_siren(weights, np.array(pt["sky"]))
         assert np.allclose(got, np.array(pt["lab"]), atol=1e-3)
-
-    # the display gauge shifts the mean output to neutral L*=60
-    rng = np.random.default_rng(0)
-    probe = ephem.topocentric_tensor(rng.uniform(-90, 90, 4096), rng.uniform(-180, 180, 4096),
-                                     rng.uniform(cfg.data.jd_start, cfg.data.jd_end, 4096))
-    with torch.no_grad():
-        mean = model(torch.from_numpy(probe)).mean(0).numpy()
-    assert abs(mean[0] + weights["lab_offset"][0] - 60.0) < 1e-3

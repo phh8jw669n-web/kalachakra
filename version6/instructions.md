@@ -14,6 +14,21 @@ network is exported to a tiny JSON of weights and re-executed *per pixel* inside
 shader, so the globe has literally infinite resolution: zoom from the whole Earth down to a
 single street and the colour is always evaluated exactly, never interpolated from a texture.
 
+The SIREN's output is a **bounded** L\*a\*b\* head — `L* = 50 + 50·tanh(zL/50)` and
+`a*,b* = 90·tanh(z/90)` — so every colour is guaranteed displayable (L\* in (0,100), a\*/b\*
+in ±90). The tanh is slope-1 near the centre, so the isometric metric is preserved for
+typical colours and only the rare extremes are softly compressed. At the very end the shader
+applies a **hue- and luminance-preserving gamut compression** so out-of-gamut resonance
+spikes glow toward white organically instead of hard-clipping to a neon primary.
+
+**Performance.** The celestial ephemeris depends only on *time*, not on the observer, so the
+full Kepler/lunar solve for all 11 bodies is computed **once per frame on the CPU** and
+handed to the shader as a tiny uniform array; the fragment shader then does only the cheap
+per-pixel horizontal projection + SIREN. The globe also renders **on demand** — when the
+clock is paused and the camera is still, the GPU idles completely. Both are exact refactors:
+the maths is identical (verified to float32 against the reference), just without the
+per-pixel redundancy.
+
 | Module | What it is | Where it lives |
 | --- | --- | --- |
 | **1 · Core Engine** | ephemeris + SIREN + isometric training | `ephemeris.py`, `siren.py`, `losses.py`, `dataset.py`, `training.py` |
@@ -85,10 +100,10 @@ python -m version6.export_weights \
 This writes two files next to the web client:
 
 - **`web/weights.json`** — every layer's weights/biases, `omega0`, the architecture, the
-  `color_scale`, and a `lab_offset`. The isometric loss is translation-invariant (a rigid
-  shift of the whole colour cloud costs nothing), so the export computes the one shift that
-  moves the network's mean output to a neutral **L\*=60** and stores it as `lab_offset`. The
-  shader and the HUD add it back before converting to sRGB, guaranteeing displayable colour.
+  `color_scale`, and the bounded-head constants (`output_activation`, `lab_center`,
+  `lab_lspan`, `lab_ab`). No display gauge is needed: the bounded L\*a\*b\* head already emits
+  displayable colour centred near L\*=60 by the anchor, and the shader/HUD re-run the weights
+  verbatim.
 - **`web/golden.json`** — a handful of `(lat, lon, jd)` points with their 33-D tensor and the
   network's L\*a\*b\* output, used to verify the JS/GLSL ports (see §6).
 
@@ -108,8 +123,9 @@ python -m http.server 8080
 # then open http://localhost:8080/  in a WebGL2 browser
 ```
 
-You should see the SIREN globe. The entire ephemeris + network runs in the fragment shader,
-so panning and zooming re-evaluate every visible pixel exactly.
+You should see the SIREN globe. The SIREN colour field runs in the fragment shader, so
+panning and zooming re-evaluate every visible pixel exactly (the ephemeris is refreshed once
+per frame on the CPU — see **Performance** above).
 
 ### Module 2 — navigating the globe
 - **Drag** to orbit, **scroll / pinch** to zoom. Damping gives it inertia.
@@ -144,10 +160,13 @@ runs, the swatch in the panel matches the pixel under the reticle.
 
 ## 4 · Tuning the look
 
-- **More vivid** → retrain with a larger `--color-scale` (e.g. `40`).
+- **More vivid** → retrain with a larger `--color-scale` (e.g. `40`). Vividness is now set at
+  train time and stays inside the gamut (the bounded head + soft compression handle the rest);
+  there is no view-time exposure hack to blow colours out.
 - **Finer detail** → larger `--hidden` / `--hidden-layers`, or a higher `--omega0`.
-- **Colour gain at view time** → `u_exposure` in `web/main.js` (`app.exposure`, default `2.5`)
-  scales `a*/b*` in the shader for extra saturation without retraining.
+- **Wider / narrower colour box** → the bounded-head constants (`lab_center`, `lab_lspan`,
+  `lab_ab`) live in `version6/config.py::SirenConfig` and are exported into `weights.json`, so
+  the JS/GLSL ports pick them up automatically.
 - **Different time window** → `--jd-start` / `--jd-end` narrow or widen the training span; keep
   the web client's `JD_MIN/JD_MAX` in `main.js` consistent if you change it drastically.
 
@@ -182,9 +201,11 @@ absent), the SIREN export→re-run parity, the isometric loss and gauge anchor, 
 generator, and a tiny train → checkpoint → resume → weight/golden export cycle.
 
 **Cross-language parity (optional, needs Node):** after an export exists, the JS ports
-reproduce the Python engine — the ephemeris matches to float32 exactly and the SIREN to ~1e-8,
-which is why the HUD swatch equals the shader pixel. The `web/golden.json` file is the shared
-reference for these checks.
+reproduce the Python engine — the ephemeris matches to float32 exactly and the bounded SIREN
+colour to ~1e-6, which is why the HUD swatch equals the shader pixel. The `web/golden.json`
+file is the shared reference for these checks. The GLSL fragment (bounded head + soft gamut
+compression included) has been verified to reproduce the JS pipeline exactly (0/255 per
+channel) in a real WebGL2 context.
 
 ---
 
@@ -195,9 +216,9 @@ reference for these checks.
 | "no weights.json — showing an UNTRAINED SIREN" notice | You opened the page before exporting. Do §1–§2, then reload. |
 | Blank page / WebGL error in the console | Browser lacks WebGL2. Use a current desktop browser. |
 | `import` or `fetch` errors in the console | You opened `index.html` over `file://`. Serve `web/` over HTTP (§3). |
-| Globe looks flat grey / washed out | The run was too short — the output layer starts near zero. Train for tens of thousands of steps and re-export. |
-| Colours too dull / too intense | Retrain with a different `--color-scale`, or nudge `app.exposure` in `main.js`. |
-| Faint stepping in the Moon far from today | Expected fp32 limit of the on-GPU time split; the present-day view is smooth. |
+| Globe looks flat grey / washed out | The run was too short — the bounded head starts at neutral L\*=50 and only spreads as it learns. Train for tens of thousands of steps and re-export. |
+| Colours too dull / too intense | Retrain with a different `--color-scale` (vividness is set at train time and stays in-gamut). |
+| High CPU/GPU while idle | Shouldn't happen — the globe renders on demand. If it does, a control or extension may be forcing continuous redraws; check the console. |
 
 ---
 

@@ -123,6 +123,30 @@ export function gmstDeg(jd) {
   return ((g % 360.0) + 360.0) % 360.0;
 }
 
+export function gmstRad(jd) { return gmstDeg(jd) * DEG; }
+
+// Geocentric EQUATORIAL unit vectors of the 11 bodies -> Float32Array(33) as 11 x (x,y,z),
+// where (x,y,z) = (cosδ·cosα, cosδ·sinα, sinδ). These depend only on time (NOT on the
+// observer), so the shader computes them ONCE per frame instead of redoing the whole
+// Kepler/lunar ephemeris for every pixel. The cheap per-pixel horizontal projection is:
+//   sL=sin(lst), cL=cos(lst), sφ=sin(lat), cφ=cos(lat);  cdcosH = cL*x + sL*y;
+//   North = z*cφ - sφ*cdcosH;  East = cL*y - sL*x;  Up = z*sφ + cφ*cdcosH;
+// which is algebraically identical to topocentricTensor()'s per-body block.
+export function equatorialDirs(jd) {
+  const T = (jd - J2000) / 36525.0;
+  const dirs = eclDirs(jd);
+  const eps = obliquity(T);
+  const ce = Math.cos(eps), se = Math.sin(eps);
+  const out = new Float32Array(STATE_DIM);
+  for (let k = 0; k < N_BODIES; k++) {
+    const xe = dirs[k][0], ye = dirs[k][1], ze = dirs[k][2];
+    out[k * 3 + 0] = xe;                        // x_eq (obliquity leaves x unchanged)
+    out[k * 3 + 1] = ye * ce - ze * se;         // y_eq
+    out[k * 3 + 2] = ye * se + ze * ce;         // z_eq = sin(dec)
+  }
+  return out;
+}
+
 // The 33-D topocentric tensor for one observer -> Float32Array(33) (North,East,Up)x11.
 export function topocentricTensor(latDeg, lonDeg, jd) {
   const lat = latDeg * DEG, lon = lonDeg * DEG;

@@ -19,6 +19,14 @@ class SirenConfig:
     hidden_layers: int = 2
     out_features: int = 3             # CIE L*a*b*
     omega0: float = 30.0
+    #: Bounded output gauge. The linear head's raw logits are squashed so the colour is
+    #: ALWAYS displayable — L* in (0,100), a*/b* in (-lab_ab, lab_ab) — via a tanh that is
+    #: slope-1 (near-identity) around the centre, so the isometric metric is preserved for
+    #: typical colours and only the rare extremes are softly compressed:
+    #:   L* = lab_center + lab_lspan*tanh(zL/lab_lspan);  a* = lab_ab*tanh(za/lab_ab); ...
+    lab_center: float = 50.0
+    lab_lspan: float = 50.0           # L* spans (center-lspan, center+lspan) = (0,100)
+    lab_ab: float = 90.0              # comfortable a*/b* perceptual bound
 
 
 @dataclass
