@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Kalachakra v6 · Continuous SIREN Globe</title>
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="canvas-wrap"></div>
+
+  <!-- top readout -->
+  <header id="topbar">
+    <div id="clock">— — —</div>
+    <div id="date">—</div>
+    <div id="speed-badge">1× · paused</div>
+  </header>
+
+  <!-- Module 4 — Observer's HUD (glass panel) -->
+  <section id="hud">
+    <div id="hud-head">
+      <span class="grip">◎ OBSERVER</span>
+      <button id="hud-toggle" title="collapse">▾</button>
+    </div>
+    <div id="hud-body">
+      <div class="hud-row">
+        <span class="k">LAT</span><span id="pin-lat" class="v">—</span>
+        <span class="k">LON</span><span id="pin-lon" class="v">—</span>
+      </div>
+      <div class="hud-sub">33-D LOCAL SKY  ·  (North, East, Up)</div>
+      <div id="matrix"></div>
+      <div class="hud-sub">COLOUR SIGNATURE  ·  CIE L*a*b*</div>
+      <div class="hud-row">
+        <span id="swatch"></span>
+        <span id="lab" class="v">L* — a* — b* —</span>
+        <span id="hex" class="v">#—</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Module 3 — Temporal Helm -->
+  <footer id="helm">
+    <div class="helm-row">
+      <button id="play">▶ Play</button>
+      <label>Speed</label>
+      <input id="speed" type="range" min="-7" max="7" step="0.01" value="0" />
+      <span id="speed-val" class="mono">1×</span>
+      <button id="now">◉ Now</button>
+    </div>
+    <div class="helm-row">
+      <input id="scrub" type="range" step="any" />
+      <span id="scrub-label" class="mono">—</span>
+    </div>
+    <div class="helm-row">
+      <label>Jump to</label>
+      <input id="dt" type="datetime-local" step="1" />
+      <button id="go">Go</button>
+      <span id="notice" class="mono"></span>
+    </div>
+  </footer>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
