@@ -179,10 +179,13 @@ Controls (bottom-left panel) and keyboard:
 | Play / Pause playback | *Play/Pause* | `Space` |
 | Step size / tick | `24s · 1h · 1d · 1mo · 1yr` presets or custom hours | — |
 | Step once (paused) | `←` / `→` | `←` `→` |
+| Clock timezone | *Clock zone* selector (Local, UTC, IST +5:30, any offset — display only) | — |
+| Zoom in / out | `＋` / `－` buttons, mouse wheel, or | `↑` / `↓` |
+| Move / hide the panel | drag its header; `▾` hides, `⚙ Controls` restores (position remembered) | — |
 | Field opacity | slider (drives the shader `u_opacity`) | — |
 | Sub-planetary glow / body labels | checkboxes | — |
 | Reset camera | — | `R` |
-| Rotate / zoom | click-drag / scroll (OrbitControls, damped) | — |
+| Rotate | click-drag (OrbitControls, damped) | — |
 
 The status line shows live **fps**, the inference **engine** (WebGPU or wasm, or
 `analytic fallback` if no model is loaded), and the ephemeris **backend**.

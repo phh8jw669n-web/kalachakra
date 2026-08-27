@@ -31,52 +31,72 @@
     </header>
 
     <section id="panel">
-      <div class="row">
-        <button id="btn-mode" class="primary">Enter Time Machine</button>
-        <button id="btn-play" disabled>⏸ Pause</button>
-        <button id="btn-live" title="Jump to now (L)">◉ Live</button>
+      <div id="panel-header" title="Drag to move">
+        <span class="grip">⠿ Controls</span>
+        <button id="panel-hide" title="Hide panel">▾</button>
       </div>
-
-      <div class="row">
-        <label>Step / tick</label>
-        <div id="steps">
-          <button data-h="0.00667">24s</button>
-          <button data-h="1">1h</button>
-          <button data-h="24" class="sel">1d</button>
-          <button data-h="730">1mo</button>
-          <button data-h="8760">1yr</button>
+      <div id="panel-body">
+        <div class="row">
+          <button id="btn-mode" class="primary">Enter Time Machine</button>
+          <button id="btn-play" disabled>⏸ Pause</button>
+          <button id="btn-live" title="Jump to now (L)">◉ Live</button>
         </div>
-      </div>
-      <div class="row">
-        <label>Custom step (h)</label>
-        <input id="step-input" type="number" value="24" step="any" />
-        <button id="btn-back" title="Step back (←)">←</button>
-        <button id="btn-fwd" title="Step forward (→)">→</button>
-      </div>
 
-      <div class="row">
-        <label>Field opacity</label>
-        <input id="opacity" type="range" min="0" max="1" step="0.01" value="0.68" />
-        <span id="opacity-val">0.68</span>
-      </div>
-      <div class="row">
-        <label>Overlays</label>
-        <label class="chk"><input id="glow" type="checkbox" checked /> sub-planetary glow</label>
-        <label class="chk"><input id="labels" type="checkbox" checked /> body labels</label>
-      </div>
+        <div class="row">
+          <label>Clock zone</label>
+          <select id="tz" title="Show the clock in this timezone"></select>
+        </div>
 
-      <div class="row status">
-        <span id="fps">-- fps</span>
-        <span id="engine">engine …</span>
-        <span id="backend">backend …</span>
-      </div>
-      <div class="row status">
-        <span id="notice"></span>
+        <div class="row">
+          <label>Step / tick</label>
+          <div id="steps">
+            <button data-h="0.00667">24s</button>
+            <button data-h="1">1h</button>
+            <button data-h="24" class="sel">1d</button>
+            <button data-h="730">1mo</button>
+            <button data-h="8760">1yr</button>
+          </div>
+        </div>
+        <div class="row">
+          <label>Custom step (h)</label>
+          <input id="step-input" type="number" value="24" step="any" />
+          <button id="btn-back" title="Step back (←)">←</button>
+          <button id="btn-fwd" title="Step forward (→)">→</button>
+        </div>
+
+        <div class="row">
+          <label>Zoom</label>
+          <button id="zoom-in" title="Zoom in (↑ / scroll)">＋</button>
+          <button id="zoom-out" title="Zoom out (↓ / scroll)">－</button>
+          <span class="hint">↑ / ↓ · scroll · drag to rotate</span>
+        </div>
+
+        <div class="row">
+          <label>Field opacity</label>
+          <input id="opacity" type="range" min="0" max="1" step="0.01" value="0.68" />
+          <span id="opacity-val">0.68</span>
+        </div>
+        <div class="row">
+          <label>Overlays</label>
+          <label class="chk"><input id="glow" type="checkbox" checked /> sub-planetary glow</label>
+          <label class="chk"><input id="labels" type="checkbox" checked /> body labels</label>
+        </div>
+
+        <div class="row status">
+          <span id="fps">-- fps</span>
+          <span id="engine">engine …</span>
+          <span id="backend">backend …</span>
+        </div>
+        <div class="row status">
+          <span id="notice"></span>
+        </div>
       </div>
     </section>
 
+    <button id="panel-show" title="Show controls">⚙ Controls</button>
+
     <footer id="help">
-      12 bodies · <b>Space</b> play/pause · <b>L</b> live · <b>←/→</b> step · <b>R</b> reset view
+      12 bodies · <b>Space</b> play/pause · <b>L</b> live · <b>←/→</b> step · <b>↑/↓</b> zoom · <b>R</b> reset
     </footer>
   </div>
 

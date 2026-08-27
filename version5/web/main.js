@@ -54,7 +54,15 @@ const app = {
   mode: "LIVE", playing: true, simTime: new Date(),
   stepHours: 24.0, tickMs: 120, opacity: 0.68, glow: 0.9,
   backend: "…", hasModel: false,
+  tzMode: "local", tzOffsetMin: 0,               // clock display timezone (display only)
 };
+
+// tiny localStorage wrapper (private mode / blocked storage must not break the UI)
+const PREFS_KEY = "kalachakra_v5_ui";
+function loadPrefs() { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch { return {}; } }
+function savePrefs(patch) {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify({ ...loadPrefs(), ...patch })); } catch { /* ignore */ }
+}
 let session = null, engineLabel = "analytic fallback";
 
 const grid = makeGeoGrid(GRID_W, GRID_H);
@@ -392,15 +400,115 @@ function setPlay(p) {
   app.playing = p;
   document.getElementById("btn-play").textContent = p ? "⏸ Pause" : "▶ Play";
 }
+// display-only timezone offset (minutes). "local" tracks the browser zone for the
+// instant being shown; a fixed choice is a constant offset. Never affects the UTC
+// timestamps sent to /telemetry — purely how the clock is written.
+function tzOffsetMin() {
+  return app.tzMode === "local" ? -app.simTime.getTimezoneOffset() : app.tzOffsetMin;
+}
+function tzSuffix(off) {
+  if (app.tzMode === "local") return "Local";
+  if (off === 0) return "UTC";
+  if (off === 330) return "IST";
+  const s = off < 0 ? "-" : "+", a = Math.abs(off);
+  return `UTC${s}${String((a / 60) | 0).padStart(2, "0")}:${String(a % 60).padStart(2, "0")}`;
+}
 function updateClock() {
-  const d = app.simTime;
+  const off = tzOffsetMin();
+  const d = new Date(app.simTime.getTime() + off * 60000);   // shift so getUTC* = wall clock
   const p = (x) => String(x).padStart(2, "0");
   document.getElementById("clock").textContent =
-    `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} UTC`;
+    `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} ${tzSuffix(off)}`;
   document.getElementById("date").textContent = fmtDate(d);
 }
 
+// ---- item 1: timezone selector --------------------------------------------
+// Common world offsets in minutes (incl. the half/quarter-hour zones).
+const TZ_OFFSETS = [
+  -720, -660, -600, -570, -540, -480, -420, -360, -300, -240, -210, -180, -120, -60,
+  0, 60, 120, 180, 210, 240, 270, 300, 330, 345, 360, 390, 420, 480, 525, 540, 570,
+  600, 630, 660, 720, 765, 780, 840,
+];
+const TZ_NAMES = { 0: "UTC", 330: "IST", 345: "NPT", 210: "IRST", 270: "AFT" };
+function tzLabel(off) {
+  const s = off < 0 ? "-" : "+", a = Math.abs(off);
+  const base = `UTC${s}${String((a / 60) | 0).padStart(2, "0")}:${String(a % 60).padStart(2, "0")}`;
+  return TZ_NAMES[off] ? `${base} · ${TZ_NAMES[off]}` : base;
+}
+function buildTzSelect() {
+  const sel = document.getElementById("tz");
+  const opt = (v, t) => { const o = document.createElement("option"); o.value = v; o.textContent = t; sel.appendChild(o); };
+  opt("local", "Local (this device)");
+  for (const off of TZ_OFFSETS) opt(String(off), off === 0 ? "UTC" : tzLabel(off));
+  const pref = loadPrefs().tz;
+  sel.value = pref ?? "local";
+  applyTz(sel.value);
+  sel.onchange = () => { applyTz(sel.value); savePrefs({ tz: sel.value }); };
+}
+function applyTz(value) {
+  if (value === "local") { app.tzMode = "local"; }
+  else { app.tzMode = "fixed"; app.tzOffsetMin = parseInt(value, 10); }
+  updateClock();
+}
+
+// ---- item 2: draggable + hideable panel -----------------------------------
+function setupPanel() {
+  const panel = document.getElementById("panel");
+  const header = document.getElementById("panel-header");
+  const hideBtn = document.getElementById("panel-hide");
+  const showBtn = document.getElementById("panel-show");
+  const prefs = loadPrefs();
+
+  // restore parked position (clamped into view), else default bottom-left
+  function place(left, top) {
+    const maxL = window.innerWidth - panel.offsetWidth - 8;
+    const maxT = window.innerHeight - 44;                     // keep the header grabbable
+    panel.style.left = Math.max(8, Math.min(maxL, left)) + "px";
+    panel.style.top = Math.max(8, Math.min(maxT, top)) + "px";
+    panel.style.bottom = "auto";
+  }
+  if (prefs.px != null && prefs.py != null) place(prefs.px, prefs.py);
+  else place(22, window.innerHeight - panel.offsetHeight - 60);
+  if (prefs.hidden) panel.classList.add("hidden");
+
+  // drag by the header (pointer events cover mouse + touch)
+  let dragging = false, ox = 0, oy = 0;
+  header.addEventListener("pointerdown", (e) => {
+    if (e.target === hideBtn) return;
+    dragging = true;
+    ox = e.clientX - panel.offsetLeft;
+    oy = e.clientY - panel.offsetTop;
+    header.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  header.addEventListener("pointermove", (e) => { if (dragging) place(e.clientX - ox, e.clientY - oy); });
+  header.addEventListener("pointerup", (e) => {
+    if (!dragging) return;
+    dragging = false;
+    header.releasePointerCapture(e.pointerId);
+    savePrefs({ px: panel.offsetLeft, py: panel.offsetTop });
+  });
+
+  hideBtn.onclick = () => { panel.classList.add("hidden"); savePrefs({ hidden: true }); };
+  showBtn.onclick = () => { panel.classList.remove("hidden"); savePrefs({ hidden: false }); };
+  window.addEventListener("resize", () => place(panel.offsetLeft, panel.offsetTop));
+}
+
+// ---- item 3: zoom (buttons + keys; mouse wheel stays with OrbitControls) ---
+function zoom(factor) {
+  const t = controls.target;
+  const offset = camera.position.clone().sub(t);
+  const dist = Math.max(controls.minDistance,
+                        Math.min(controls.maxDistance, offset.length() * factor));
+  camera.position.copy(t).add(offset.setLength(dist));
+  controls.update();
+}
+
 function wireUI() {
+  buildTzSelect();
+  setupPanel();
+  document.getElementById("zoom-in").onclick = () => zoom(0.82);
+  document.getElementById("zoom-out").onclick = () => zoom(1.22);
   document.getElementById("btn-mode").onclick = () =>
     enterMode(app.mode === "LIVE" ? "TIMELINE" : "LIVE");
   document.getElementById("btn-live").onclick = () => enterMode("LIVE");
@@ -432,12 +540,14 @@ function wireUI() {
   if (lb) lb.onchange = () => labelSprites.forEach((s) => (s.visible = lb.checked));
 
   window.addEventListener("keydown", (e) => {
-    if (e.target.tagName === "INPUT") return;
+    if (["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return;
     if (e.code === "Space") { e.preventDefault(); togglePlay(); }
     else if (e.key === "l" || e.key === "L") enterMode("LIVE");
     else if (e.key === "r" || e.key === "R") { controls.reset(); camera.position.set(0, 0, CAM_START); }
     else if (e.key === "ArrowLeft" && app.mode === "TIMELINE") stepOnce(-1);
     else if (e.key === "ArrowRight" && app.mode === "TIMELINE") stepOnce(+1);
+    else if (e.key === "ArrowUp") { e.preventDefault(); zoom(0.9); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); zoom(1.1); }
   });
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
