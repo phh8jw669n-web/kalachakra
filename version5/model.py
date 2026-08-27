@@ -90,14 +90,23 @@ class SkyEnergyEncoder(nn.Module):
 
 
 class SkyEnergyAutoencoder(nn.Module):
-    """Encoder + decoder. ``forward -> (recon [B,12,4], oklab [B,3])``."""
+    """Encoder + decoder. ``forward -> (recon_body [B,12,4], recon_obs [B,3,2], oklab [B,3])``.
+
+    The decoder reconstructs both the 12 celestial bodies' ``(sin,cos)`` altitude &
+    azimuth **and** the ``<OBSERVER>`` anchors' ``(sin,cos)`` (Ascendant, Midheaven,
+    Vertex). Reconstructing the observer — not just the bodies — lets the loss weight
+    the local-horizon geometry up (see ``losses.reconstruction_loss``), forcing the
+    3-neuron bottleneck to preserve city-level Asc/MC rather than average it away.
+    Training-only; the exported encoder is unchanged.
+    """
 
     def __init__(self, cfg: ModelConfig):
         super().__init__()
         self.cfg = cfg
         self.encoder = SkyEnergyEncoder(cfg)
-        out = cfg.n_bodies * cfg.recon_features                  # 12*4 = 48
-        dims = [3, *cfg.decoder_hidden, out]
+        self._body_out = cfg.n_bodies * cfg.recon_features       # 12*4 = 48
+        self._obs_out = cfg.obs_features * 2                     # 3*(sin,cos) = 6
+        dims = [3, *cfg.decoder_hidden, self._body_out + self._obs_out]   # -> 54
         dec: list[nn.Module] = []
         for i in range(len(dims) - 1):
             dec.append(nn.Linear(dims[i], dims[i + 1]))
@@ -110,8 +119,11 @@ class SkyEnergyAutoencoder(nn.Module):
 
     def forward(self, features: torch.Tensor, observer: torch.Tensor):
         oklab = self.encoder(features, observer)
-        recon = self.decoder(oklab).view(-1, self.cfg.n_bodies, self.cfg.recon_features)
-        return recon, oklab
+        out = self.decoder(oklab)
+        recon_body = out[:, :self._body_out].view(-1, self.cfg.n_bodies,
+                                                  self.cfg.recon_features)
+        recon_obs = out[:, self._body_out:].view(-1, self.cfg.obs_features, 2)
+        return recon_body, recon_obs, oklab
 
 
 def build_model(cfg: ModelConfig) -> SkyEnergyAutoencoder:

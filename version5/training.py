@@ -122,7 +122,9 @@ def train(cfg: V5Config, *, resume: str | None = None, max_steps: int | None = N
                 f"pool={cfg.model.pool}")
     logger.info(f"data: jd[{cfg.data.start_jd:.1f}..{cfg.data.end_jd:.1f}] "
                 f"ephemeris={backend} locations/step={cfg.data.locations_per_step} "
-                f"workers={cfg.train.num_workers} mass_w={cfg.train.mass_weighting}")
+                f"workers={cfg.train.num_workers}")
+    logger.info(f"loss: mass_w={cfg.train.mass_weighting} "
+                f"obs_weight={cfg.train.obs_weight} (per-token MSE, equal bodies)")
     logger.info(f"optim: AdamW lr={cfg.train.lr}->{cfg.train.lr_min} "
                 f"wd={cfg.train.weight_decay} warmup={cfg.train.warmup_steps} "
                 f"cosine amp={use_amp}")
@@ -141,10 +143,14 @@ def train(cfg: V5Config, *, resume: str | None = None, max_steps: int | None = N
         feats = feats.to(device)
         obs = obs.to(device)
         target = target.to(device)
+        # observer reconstruction target: (sin,cos) of Asc/MC/Vertex  -> [B,3,2]
+        obs_target = torch.stack([torch.sin(obs), torch.cos(obs)], dim=-1)
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-            recon, oklab = model(feats, obs)
-            loss = reconstruction_loss(recon.float(), target.float(), body_w)
+            recon_body, recon_obs, oklab = model(feats, obs)
+            loss = reconstruction_loss(recon_body.float(), target.float(),
+                                       recon_obs.float(), obs_target.float(),
+                                       obs_weight=cfg.train.obs_weight, body_w=body_w)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.grad_clip)
         optimizer.step()

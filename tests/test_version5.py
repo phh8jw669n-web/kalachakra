@@ -143,8 +143,9 @@ def _model(**kw):
 def test_model_shapes_and_oklab_bounds():
     m = _model()
     feats, obs = torch.randn(5, 12, 6), torch.randn(5, 3)
-    recon, oklab = m(feats, obs)
-    assert recon.shape == (5, 12, 4) and oklab.shape == (5, 3)
+    recon_body, recon_obs, oklab = m(feats, obs)
+    assert recon_body.shape == (5, 12, 4) and recon_obs.shape == (5, 3, 2)
+    assert oklab.shape == (5, 3)
     L, a, b = oklab[:, 0], oklab[:, 1], oklab[:, 2]
     assert (L >= 0).all() and (L <= 1).all()
     assert a.abs().max() <= 1.0 + 1e-6 and b.abs().max() <= 1.0 + 1e-6
@@ -162,8 +163,35 @@ def test_encoder_attention_and_wrap_continuity():
 
 def test_gap_pool_builds():
     m = _model(pool="gap")
-    recon, oklab = m(torch.randn(2, 12, 6), torch.randn(2, 3))
-    assert recon.shape == (2, 12, 4) and oklab.shape == (2, 3)
+    recon_body, recon_obs, oklab = m(torch.randn(2, 12, 6), torch.randn(2, 3))
+    assert recon_body.shape == (2, 12, 4) and recon_obs.shape == (2, 3, 2)
+    assert oklab.shape == (2, 3)
+
+
+def test_reconstruction_loss_rebalances_observer():
+    """The observer term must scale with obs_weight; equal-body (mass_w off) is the
+    default and each body contributes an equal per-token loss."""
+    from version5.losses import reconstruction_loss
+    torch.manual_seed(0)
+    rb, tb = torch.randn(4, 12, 4), torch.randn(4, 12, 4)
+    ro, to = torch.randn(4, 3, 2), torch.randn(4, 3, 2)
+    # closed-form: L = (sum_body + w*obs) / (12 + w)
+    body = ((rb - tb) ** 2).mean(-1).sum(-1)
+    obs = ((ro - to) ** 2).mean((-1, -2))
+    for w in (0.0, 3.0, 10.0):
+        want = ((body + w * obs) / (12 + w)).mean()
+        got = reconstruction_loss(rb, tb, ro, to, obs_weight=w)
+        assert torch.allclose(got, want, atol=1e-6)
+    # a larger obs_weight pulls the total toward the observer's error
+    near = reconstruction_loss(rb, tb, ro, to, obs_weight=0.0)
+    far = reconstruction_loss(rb, tb, ro, to, obs_weight=50.0)
+    assert abs(float(far) - float(obs.mean())) < abs(float(near) - float(obs.mean()))
+
+
+def test_defaults_disable_mass_and_set_obs_weight():
+    from version5.config import TrainConfig
+    tc = TrainConfig()
+    assert tc.mass_weighting is False and tc.obs_weight == 3.0
 
 
 def test_mass_weights_len_12():

@@ -250,8 +250,13 @@ pytest tests/test_version5.py -q
   6 observer/body angles reach the Transformer as sin/cos, nothing raw. The **data-driven
   `<OBSERVER>` token** is a projection of `sin/cos` of Asc/MC/Vertex → self-attention
   (block imported from `kalachakra.local_autoencoder`) → **3 OKLab neurons** (`L` sigmoid,
-  `a,b` tanh). A decoder reconstructs each body's altitude & azimuth under MSE — training
-  only. Optimiser: AdamW with **1,000-step warmup** then cosine decay to **`lr_min=1e-6`**.
+  `a,b` tanh). A decoder reconstructs each body's altitude & azimuth **and** the
+  `<OBSERVER>` anchors (Asc/MC/Vertex) — training only. **Rebalanced loss:** every body
+  carries an equal per-token MSE (physical **mass weighting off by default**, `--mass-w`
+  to re-enable), and the observer token is upweighted by **`--obs-weight` (default 3.0)**
+  — `L = (Σ L_bodyᵢ + w_obs·L_obs)/(12 + w_obs)` — so the 3-neuron bottleneck is forced
+  to resolve local-horizon geography instead of washing continents into one colour.
+  Optimiser: AdamW with **1,000-step warmup** then cosine decay to **`lr_min=1e-6`**.
 - **Export** (`version5/export_onnx.py`): encoder only, **two dynamic-batch inputs**
   (`features [N,12,6]` + `observer [N,3]`), constant folding, PyTorch↔ONNX parity check.
 - **GPU feature engine** (`version5/web/skycompute.wgsl` + `gpucompute.js`): the whole

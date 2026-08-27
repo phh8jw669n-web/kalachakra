@@ -46,7 +46,11 @@ def parse_args(argv=None):
     p.add_argument("--steps", type=int, default=40_000)
     p.add_argument("--grad-clip", type=float, default=1.0)
     p.add_argument("--amp", action="store_true", help="enable autocast (off by default)")
-    p.add_argument("--no-mass-weighting", action="store_true")
+    p.add_argument("--mass-w", "--mass_w", dest="mass_w", action="store_true",
+                   help="re-enable physical mass weighting (off by default: equal bodies)")
+    p.add_argument("--obs-weight", "--obs_weight", dest="obs_weight",
+                   type=float, default=3.0,
+                   help="loss weight of the <OBSERVER> (Asc/MC/Vertex) token (default 3.0)")
     p.add_argument("--device", default="")
     p.add_argument("--workers", type=int, default=0)
     p.add_argument("--ephe-path", default=None, help="Swiss .se1 dir (full span)")
@@ -78,10 +82,10 @@ def build_config(args):
     train = TrainConfig(lr=args.lr, lr_min=args.lr_min, weight_decay=args.weight_decay,
                         warmup_steps=args.warmup, max_steps=args.steps,
                         grad_clip=args.grad_clip, amp=args.amp,
-                        mass_weighting=not args.no_mass_weighting, device=args.device,
-                        num_workers=args.workers, out_dir=args.out_dir,
-                        save_every=args.save_every, log_every=args.log_every,
-                        seed=args.seed)
+                        mass_weighting=args.mass_w, obs_weight=args.obs_weight,
+                        device=args.device, num_workers=args.workers,
+                        out_dir=args.out_dir, save_every=args.save_every,
+                        log_every=args.log_every, seed=args.seed)
     return V5Config(model=model, data=data, train=train)
 
 

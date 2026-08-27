@@ -67,7 +67,8 @@ class TrainConfig:
     amp: bool = False
     device: str = ""                             # "" -> auto (mps/cuda/cpu)
     num_workers: int = 0
-    mass_weighting: bool = True
+    mass_weighting: bool = False                  # off: every body has equal weight 1.0
+    obs_weight: float = 3.0                       # upweight the <OBSERVER> reconstruction
     out_dir: str = "version5/checkpoints"
     save_every: int = 2000
     log_every: int = 25
