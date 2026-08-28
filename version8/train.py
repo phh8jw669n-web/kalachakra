@@ -27,7 +27,12 @@ def parse_args(argv=None):
     p.add_argument("--lr-min", type=float, default=1e-6)
     p.add_argument("--warmup", type=int, default=500)
     p.add_argument("--steps", type=int, default=40_000)
-    p.add_argument("--gamma", type=float, default=15.0, help="colour scale ||dLab|| = gamma*d_sky")
+    p.add_argument("--gamma", type=float, default=32.0, help="colour scale ||dLab|| = gamma*d_sky")
+    p.add_argument("--w-local", type=float, default=0.7,
+                   help="weight on the 33-D local (spatial) distance; the ONLY source of "
+                        "across-globe colour variation — keep it dominant for a vivid globe")
+    p.add_argument("--w-chord", type=float, default=0.3,
+                   help="weight on the 55-D chord (observer-independent) distance")
     p.add_argument("--anchor-weight", type=float, default=0.05)
     p.add_argument("--device", default="")
     p.add_argument("--workers", type=int, default=0)
@@ -50,7 +55,8 @@ def build_config(args):
     if args.jd_end is not None:
         data.jd_end = args.jd_end
     train = TrainConfig(lr=args.lr, lr_min=args.lr_min, warmup_steps=args.warmup,
-                        max_steps=args.steps, gamma=args.gamma, anchor_weight=args.anchor_weight,
+                        max_steps=args.steps, gamma=args.gamma, w_local=args.w_local,
+                        w_chord=args.w_chord, anchor_weight=args.anchor_weight,
                         device=args.device, num_workers=args.workers, out_dir=args.out_dir,
                         save_every=args.save_every, log_every=args.log_every, seed=args.seed)
     return V8Config(siren=siren, data=data, train=train)

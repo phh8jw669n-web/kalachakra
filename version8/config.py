@@ -45,7 +45,13 @@ class TrainConfig:
     warmup_steps: int = 500
     max_steps: int = 40_000
     grad_clip: float = 1.0
-    gamma: float = 15.0               # colour scale: ||dLab|| = gamma * d_sky
+    gamma: float = 32.0               # colour scale: ||dLab|| = gamma * d_sky
+    #: balanced-distance weights. The 55 chords are rotation-invariant -> identical for every
+    #: location at a fixed instant, so they add ZERO spatial variation. Local-dominant weights
+    #: keep the globe's geography vivid at a fixed time while the chords still tint the palette
+    #: as it animates over time/eras. (0.5/0.5 washed geography out into a near-flat gradient.)
+    w_local: float = 0.7
+    w_chord: float = 0.3
     anchor_weight: float = 0.05
     device: str = ""
     num_workers: int = 0

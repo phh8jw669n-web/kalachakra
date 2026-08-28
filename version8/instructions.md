@@ -26,10 +26,20 @@ break). Train it, export it, serve `version8/web/` on its own.
   explicitly, so it need not learn cross-products internally.
 * Concatenated → an **88-D** flat tensor. (`version8/state.py`, mirrored in `web/state8.js`.)
 
-The **balanced isometric loss** RMS-normalises the two halves so the 55 chords can't dominate
-the 33 local vectors:
-`d_sky = 0.5·‖ΔV‖/√33 + 0.5·‖ΔC‖/√55`, and the colour must be isometric to it:
-`MSE(‖ΔLab‖, γ·d_sky)` with `γ=15`. (Taken over all pairs in the batch via `cdist`.)
+The **balanced isometric loss** RMS-normalises the two halves, then combines them
+**local-dominant**:
+`d_sky = 0.7·‖ΔV‖/√33 + 0.3·‖ΔC‖/√55`, and the colour must be isometric to it:
+`MSE(‖ΔLab‖, γ·d_sky)` with `γ=32`. (Taken over all pairs in the batch via `cdist`.)
+
+> **Why local-dominant, not 0.5/0.5?** The 55 chords are pairwise **dot products of unit
+> vectors**, so they are *rotation-invariant* — identical for every observer on Earth at a
+> fixed instant (their std across the whole globe is ~`3e-6`). They add **zero** spatial
+> variation: *all* of the globe's geographic colour structure lives in the 33 local vectors.
+> A 0.5/0.5 split halved that lone spatial signal, capping fixed-time globe contrast at
+> ~`8.6 dE` — the near-flat gradient. Weighting local to 0.7 (with `γ=32`) restores a vivid
+> globe (~`24 dE` mean contrast) while the chords still carry ~a third of the *temporal*
+> signal, tinting the palette as the sky animates over time and eras. Both weights are
+> configurable (`--w-local` / `--w-chord`).
 
 ---
 
@@ -59,7 +69,8 @@ python -m version8.train --steps 40000 --batch 2048 --export version8/web/weight
 | `--steps` | `40000` | training steps. **Use real steps** — the isometric loss grows chroma gradually; a few thousand is muted, tens of thousands are vivid. |
 | `--batch` | `2048` | random skies per step (more pairs = more signal). |
 | `--hidden` / `--hidden-layers` / `--omega0` | `128` / `4` / `30` | SIREN size / frequency. |
-| `--gamma` | `15.0` | colour scale `‖ΔLab‖ = γ·d_sky` (10–15 is the sweet spot). |
+| `--gamma` | `32.0` | colour scale `‖ΔLab‖ = γ·d_sky`. Bigger = more vivid; ~30–35 keeps the globe rich without saturating the gamut. |
+| `--w-local` / `--w-chord` | `0.7` / `0.3` | balanced-distance weights. `--w-local` is the **only** source of across-globe variation — keep it dominant or the globe flattens. |
 | `--out-dir` | `version8/checkpoints` | checkpoints + `train_v8.log`. |
 
 Watch the log: `loss` falls while `L*`, `a*±`, `b*±` (the colour spread) grow.
@@ -75,7 +86,9 @@ python -m version8.export --checkpoint version8/checkpoints/model_final.pt --out
 ```
 
 `weights.json` carries the SIREN weights + the gamut-head constants (`output_activation`,
-`lab_l0`, `lab_lspan`, `lab_ab`); the shader and HUD re-run them verbatim.
+`lab_l0`, `lab_lspan`, `lab_ab`); the shader and HUD re-run them verbatim. It also records the
+training scales (`gamma`, `w_local`, `w_chord`) for provenance — inference is a plain forward,
+so the shader ignores them.
 
 ---
 
@@ -140,7 +153,7 @@ version8/
   ephemeris.py     analytic topocentric ephemeris (self-contained copy)
   state.py         88-D state: 33 local + 55 chords
   siren.py         4×128 SIREN + gamut-bounded head (L=5+90·sigmoid, a/b=80·tanh)
-  losses.py        balanced isometric loss (0.5 local + 0.5 chord)
+  losses.py        balanced isometric loss (local-dominant: 0.7 local + 0.3 chord)
   config.py        SirenConfig / DataConfig / TrainConfig / V8Config
   dataset.py       stochastic (lat,lon,jd) -> 88-D generator
   training.py      training loop, checkpoints, export_weights_json()

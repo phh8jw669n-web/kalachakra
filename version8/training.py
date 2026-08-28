@@ -105,7 +105,9 @@ def train(cfg: V8Config, *, resume: str | None = None, max_steps: int | None = N
                 f"{cfg.siren.hidden_layers} out={cfg.siren.out_features} omega0={cfg.siren.omega0}"
                 f"  Lab-head=(L {cfg.siren.lab_l0:.0f}..{cfg.siren.lab_l0 + cfg.siren.lab_lspan:.0f},"
                 f" ab +/-{cfg.siren.lab_ab:.0f})")
-    logger.info(f"loss: balanced-isometric gamma={cfg.train.gamma} anchor={cfg.train.anchor_weight}"
+    logger.info(f"loss: balanced-isometric gamma={cfg.train.gamma}"
+                f"  d_sky={cfg.train.w_local}*local+{cfg.train.w_chord}*chord (local-dominant)"
+                f"  anchor={cfg.train.anchor_weight}"
                 f"  optim=AdamW lr={cfg.train.lr}->{cfg.train.lr_min}  batch={cfg.data.batch}")
     logger.info("=" * 78)
 
@@ -120,7 +122,8 @@ def train(cfg: V8Config, *, resume: str | None = None, max_steps: int | None = N
         state = state.to(device)
         optimizer.zero_grad(set_to_none=True)
         color = model(state)
-        loss = (isometric_loss(state, color, cfg.train.gamma)
+        loss = (isometric_loss(state, color, cfg.train.gamma,
+                               cfg.train.w_local, cfg.train.w_chord)
                 + cfg.train.anchor_weight * anchor_loss(color))
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.grad_clip)
@@ -154,6 +157,8 @@ def export_weights_json(checkpoint: str, out_path: str) -> str:
     model.eval()
     payload = model.export_weights()
     payload["gamma"] = cfg.train.gamma
+    payload["w_local"] = cfg.train.w_local     # provenance only (inference is a plain forward)
+    payload["w_chord"] = cfg.train.w_chord
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_text(json.dumps(payload))
     return out_path

@@ -132,6 +132,28 @@ def test_balanced_sky_distance_split():
     assert torch.allclose(d, d.T, atol=1e-5)          # symmetric
 
 
+def test_chords_carry_no_spatial_signal_so_local_must_dominate():
+    """Regression for the near-flat globe: the 55 chords are rotation-invariant, so at a
+    fixed instant they are identical for every observer and add ZERO across-globe variation.
+    All geographic colour structure therefore lives in the 33 local vectors, and the balanced
+    distance must weight them dominantly (the old 0.5/0.5 split washed the globe out)."""
+    jd0 = 2451545.0
+    lat = np.repeat(np.linspace(-80, 80, 12), 24)
+    lon = np.tile(np.linspace(-175, 175, 24), 12)
+    state = st.topocentric_state(lat, lon, np.full(lat.shape, jd0))   # fixed time
+    _local, chords = st.split_state(state)
+    # chords are effectively constant across the whole globe at a fixed instant
+    assert chords.std(axis=0).mean() < 1e-4
+
+    stt = torch.from_numpy(state)
+    # with the chord weight the fixed-time distance is (numerically) all local
+    d_full = balanced_sky_distance(stt)                       # defaults 0.7 / 0.3
+    d_local_only = balanced_sky_distance(stt, w_local=1.0, w_chord=0.0)
+    assert torch.allclose(d_full, 0.7 * d_local_only, atol=1e-4)
+    # the default weighting is local-dominant, so the globe has real contrast to show
+    assert float(d_full.max()) > 0.3
+
+
 def test_isometric_loss_properties():
     torch.manual_seed(0)
     state = torch.rand(48, 88)
@@ -182,6 +204,7 @@ def test_training_runs_resumes_and_exports(tmp_path):
     export_weights_json(str(final2), str(out))
     w = json.loads(out.read_text())
     assert w["output_activation"] == "v8_gamut" and "gamma" in w
+    assert w["w_local"] == 0.7 and w["w_chord"] == 0.3       # local-dominant provenance
     model, _p, _c = load_checkpoint(final2, map_location="cpu")
     model.eval()
     x = st.topocentric_state(np.array([10.0, -40.0]), np.array([20.0, 100.0]), np.array([2451545.0, 2460000.0]))
