@@ -35,7 +35,7 @@ function clearBoot() { if (boot) { boot.remove(); boot = null; } }
 
 const app = {
   mode: "live", jd: nowJD(), playing: false, speed: 10000, stepHours: 24,
-  opacity: 0.85, tzMode: "local", tzOffsetMin: 0, seg: 96,
+  opacity: 0.85, tzMode: "local", tzOffsetMin: 0, fieldW: 192, fieldH: 96,
   pin: { lat: 48.8566, lon: 2.3522 },
   weights: null, model: null,
 };
@@ -95,13 +95,16 @@ const starGeo = new THREE.BufferGeometry();
   scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0x8ea6c8, size: 0.13, transparent: true, opacity: 0.7 })));
 }
 
-// ---- field uniforms + globe -------------------------------------------------
+// ---- field render target + globe -------------------------------------------
+// The heavy attention net runs in an OFFSCREEN full-screen pass into an equirectangular
+// (lon,lat) texture, recomputed only when the time changes; the globe just samples it. So
+// rotating/zooming is a cheap texture lookup and never overloads the GPU.
+const SPHERE_SEG = 128;
 const bodyEcef = Array.from({ length: N_BODIES }, () => new THREE.Vector3());
-const uniforms = {
-  u_bodyEcef: { value: bodyEcef }, u_weights: { value: null }, u_wtexW: { value: 64 },
-  u_opacity: { value: app.opacity },
-};
-let globe = null, fieldMat = null;
+const fieldUniforms = { u_bodyEcef: { value: bodyEcef }, u_weights: { value: null }, u_wtexW: { value: 64 } };
+const globeUniforms = { u_field: { value: null }, u_opacity: { value: app.opacity } };
+let globe = null, fieldMat = null, fieldScene = null, fieldCam = null, fieldRT = null;
+let fieldDirty = true;
 
 const ocean = buildOcean(0.997); ocean.renderOrder = 0; scene.add(ocean);
 let coastMesh = null;
@@ -148,22 +151,49 @@ function archOf(w) {
     vis_bias: w.vis_bias ?? 3.0, out_features: w.out_features ?? 2, lab_l: w.lab_l ?? 50, lab_ab: w.lab_ab ?? 80,
   };
 }
-function buildGlobe(weights) {
-  const { vertex, fragment } = buildShaders(archOf(weights));
-  const { tex, W } = makeWeightTexture(weights);
-  uniforms.u_weights.value = tex; uniforms.u_wtexW.value = W;
-  fieldMat = new THREE.ShaderMaterial({
-    uniforms, vertexShader: vertex, fragmentShader: fragment, glslVersion: THREE.GLSL3,
-    transparent: true, depthWrite: false,
+function makeFieldRT(w, h) {
+  if (fieldRT) fieldRT.dispose();
+  fieldRT = new THREE.WebGLRenderTarget(w, h, {
+    minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+    wrapS: THREE.RepeatWrapping, wrapT: THREE.ClampToEdgeWrapping,
+    depthBuffer: false, format: THREE.RGBAFormat, type: THREE.UnsignedByteType,
   });
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, app.seg, app.seg), fieldMat);
+  fieldRT.texture.colorSpace = THREE.NoColorSpace;   // we store display-ready sRGB ourselves
+  globeUniforms.u_field.value = fieldRT.texture;
+  fieldDirty = true;
+}
+function renderField() {
+  const prev = renderer.getRenderTarget();
+  renderer.setRenderTarget(fieldRT);
+  renderer.render(fieldScene, fieldCam);
+  renderer.setRenderTarget(prev);
+  fieldDirty = false;
+}
+function buildGlobe(weights) {
+  const sh = buildShaders(archOf(weights));
+  const { tex, W } = makeWeightTexture(weights);
+  fieldUniforms.u_weights.value = tex; fieldUniforms.u_wtexW.value = W;
+  // offscreen full-screen field pass (runs the network once per time change)
+  fieldMat = new THREE.ShaderMaterial({
+    uniforms: fieldUniforms, vertexShader: sh.field.vertex, fragmentShader: sh.field.fragment,
+    glslVersion: THREE.GLSL3, depthTest: false, depthWrite: false,
+  });
+  fieldScene = new THREE.Scene();
+  fieldScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), fieldMat));
+  fieldCam = new THREE.Camera();
+  makeFieldRT(app.fieldW, app.fieldH);
+  // globe: cheap per-pixel sample of the field texture
+  const globeMat = new THREE.ShaderMaterial({
+    uniforms: globeUniforms, vertexShader: sh.globe.vertex, fragmentShader: sh.globe.fragment,
+    glslVersion: THREE.GLSL3, transparent: true, depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, SPHERE_SEG, SPHERE_SEG), globeMat);
   mesh.renderOrder = 1; scene.add(mesh);
   return mesh;
 }
-function rebuildGeometry() {
-  if (!globe) return;
-  globe.geometry.dispose();
-  globe.geometry = new THREE.SphereGeometry(1, app.seg, app.seg);
+function setFieldRes(w, h) {
+  app.fieldW = w; app.fieldH = h;
+  if (fieldRT) makeFieldRT(w, h);
   renderDirty = true;
 }
 
@@ -192,8 +222,10 @@ function animate() {
       }
       planets.update(bodyEcef);
       prevJD = app.jd;
+      fieldDirty = true;                                    // sky changed -> recompute the field
     }
-    renderer.render(scene, camera);
+    if (fieldDirty && fieldRT) renderField();               // heavy net: ONCE per time change
+    renderer.render(scene, camera);                         // cheap textured globe: every frame
     renderDirty = false;
     clearBoot();
     fpsFrames++;
@@ -203,7 +235,7 @@ function animate() {
   if (now - fpsT >= 500) {
     const fps = Math.round(fpsFrames * 1000 / (now - fpsT));
     $("fps").textContent = fps > 0 ? `${fps} fps` : "idle";
-    $("render-info").textContent = `vertex ${app.seg}²`;
+    $("render-info").textContent = `field ${app.fieldW}×${app.fieldH}`;
     fpsFrames = 0; fpsT = now;
   }
 }
@@ -335,8 +367,8 @@ function wireControls() {
   $("zoom-out").onclick = () => zoom(1.22);
 
   const op = $("opacity");
-  op.oninput = () => { app.opacity = parseFloat(op.value); uniforms.u_opacity.value = app.opacity; $("opacity-val").textContent = app.opacity.toFixed(2); renderDirty = true; };
-  $("quality").onchange = (e) => { app.seg = parseInt(e.target.value, 10); rebuildGeometry(); };
+  op.oninput = () => { app.opacity = parseFloat(op.value); globeUniforms.u_opacity.value = app.opacity; $("opacity-val").textContent = app.opacity.toFixed(2); renderDirty = true; };
+  $("quality").onchange = (e) => { const [w, h] = e.target.value.split("x").map(Number); setFieldRes(w, h); };
 
   $("ov-map").onchange = (e) => { ocean.visible = e.target.checked; renderDirty = true; };
   $("ov-coast").onchange = (e) => { if (coastMesh) coastMesh.visible = e.target.checked; renderDirty = true; };

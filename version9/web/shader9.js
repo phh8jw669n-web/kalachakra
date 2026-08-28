@@ -1,18 +1,22 @@
-// shader9.js — the version9 Topocentric Self-Attention field, run PER VERTEX.
+// shader9.js — the version9 Topocentric Self-Attention field, rendered OFF the hot path.
 //
-// The WHOLE micro-transformer (11 body tokens -> embed -> N attention+FFN blocks -> learned-
-// query pool -> head -> gamut L*a*b*) runs per vertex on a SphereGeometry(seg,seg); the GPU
-// interpolates colour across triangles. Per vertex:
-//   1. singularity-free local basis from the surface normal (matches topocentric_tensor);
-//   2. project the 11 Earth-fixed body vectors -> 33 local (North,East,Zenith);
-//   3. run the attention network from shader9's weight texture (identical maths to attn9.js
-//      and attention.py: matmul / tanh / softmax, with the horizon-visibility score bias);
-//   4. pure a*,b* chroma at a FIXED neutral L* -> linear sRGB (no luminance from the model).
-// The field frame negates z (N.x, N.y, -N.z) so the world map reads un-mirrored while the
-// field stays physically exact. Requires WebGL2 (GLSL ES 3.00): texelFetch in the vertex stage.
+// The micro-transformer is expensive (~10^5 ops/sample), so running it per vertex on every
+// frame overloads weak GPUs / software renderers and hangs the tab during rotation. Instead we
+// DECOUPLE compute from framerate with two programs:
+//
+//   • FIELD  (buildShaders().field): a full-screen pass that, for each texel of an
+//     equirectangular (lon,lat) render target, builds the local horizon basis, runs the WHOLE
+//     network from the weight texture (identical maths to attn9.js / attention.py) and writes
+//     the a*,b*-at-fixed-L* colour as sRGB. Rendered ONCE per time change (not per frame).
+//   • GLOBE  (buildShaders().globe): a trivial pass on the sphere that just samples that field
+//     texture by (lon,lat) derived from the surface point. This is what runs every frame, so
+//     rotating/zooming is nearly free and can never overload the GPU.
+//
+// The globe reads lon = atan2(-z, x) so the world map stays un-mirrored while the field is
+// physically exact. Requires WebGL2 (GLSL ES 3.00): texelFetch.
 //
 // Weights are packed by packWeights() in the EXACT order the shader reads them; buildShaders()
-// injects the matching byte offsets as #defines so the shader indexes the texture directly.
+// injects the matching offsets as #defines so the shader indexes the texture directly.
 
 export function packWeights(w) {
   const out = [];
@@ -86,17 +90,16 @@ export function buildShaders(arch) {
     #define BB2 ${BB2}
     #define BTAU ${BTAU}`;
 
-  const vertex = /* glsl */`
-    precision highp float;
+  // Shared GLSL: weight fetch, gamut compression, and the WHOLE network as a function that
+  // takes the local horizon basis and returns gamma-encoded sRGB. Used by the FIELD pass.
+  const net = /* glsl */`
     ${defs}
-
-    out vec3 vColor;
-    uniform vec3 u_bodyEcef[NB];     // Earth-fixed body (sub-point) directions, per frame
+    uniform vec3 u_bodyEcef[NB];     // Earth-fixed body (sub-point) directions, per time step
     uniform sampler2D u_weights;     // packed attention weights (R32F)
     uniform int u_wtexW;
 
     float W(int idx){ return texelFetch(u_weights, ivec2(idx % u_wtexW, idx / u_wtexW), 0).r; }
-
+    vec3 toSRGB(vec3 c){ return mix(12.92*c, 1.055*pow(c, vec3(1.0/2.4))-0.055, step(0.0031308, c)); }
     vec3 gamutSoft(vec3 c){
       float luma = clamp(dot(c, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
       vec3 ch = c - luma; float s = 1.0;
@@ -106,50 +109,31 @@ export function buildShaders(arch) {
       return vec3(luma) + ch * clamp(s, 0.0, 1.0);
     }
 
-    void main(){
-      // 1. singularity-free local basis from the (z-negated) field-frame normal
-      vec3 Nn = normalize(position);
-      vec3 up = vec3(Nn.x, Nn.y, -Nn.z);
-      vec3 nn = vec3(0.0,1.0,0.0) - up*up.y;
-      float nl = length(nn);
-      vec3 nhat = nl > 1e-6 ? nn/nl : vec3(1.0,0.0,0.0);
-      vec3 ehat = cross(up, nhat);
-
-      // 2. 33 local (North, East, Zenith) + horizon-visibility bias per body
-      float inp[NB*TOK];
-      float vis[NB];
+    // Whole topocentric attention net for one observer whose horizon frame is (nhat,ehat,up).
+    vec3 netColorSRGB(vec3 nhat, vec3 ehat, vec3 up){
+      float inp[NB*TOK]; float vis[NB];
       for(int b=0;b<NB;b++){
         vec3 d = u_bodyEcef[b];
-        float zN = dot(d, nhat), zE = dot(d, ehat), zZ = dot(d, up);
-        inp[b*TOK+0]=zN; inp[b*TOK+1]=zE; inp[b*TOK+2]=zZ;
-        vis[b] = VISB * zZ;
+        inp[b*TOK+0]=dot(d,nhat); inp[b*TOK+1]=dot(d,ehat); inp[b*TOK+2]=dot(d,up);
+        vis[b] = VISB * inp[b*TOK+2];
       }
-
-      // 3a. embed tokens: tok[b] = W_in·x[b] + b_in + E_body[b]
       float tok[NB*D];
-      for(int b=0;b<NB;b++){
+      for(int b=0;b<NB;b++)
         for(int oo=0;oo<D;oo++){
           float s = W(OFF_BIN+oo) + W(OFF_EBODY + b*D + oo);
           for(int i=0;i<TOK;i++) s += W(OFF_WIN + oo*TOK + i) * inp[b*TOK+i];
           tok[b*D+oo] = s;
         }
-      }
-
-      // 3b. attention + FFN blocks
-      float kk[NB*D];
-      float vv[NB*D];
+      float kk[NB*D]; float vv[NB*D];
       for(int bl=0; bl<NBL; bl++){
         int bb = OFF_BLOCKS + bl*SB;
         float sc = INV_SQRTD * W(bb+BTAU);
-        // K, V for every token (shared across queries)
-        for(int b=0;b<NB;b++){
+        for(int b=0;b<NB;b++)
           for(int oo=0;oo<D;oo++){
             float sk = W(bb+BBK+oo), sv = W(bb+BBV+oo);
             for(int i=0;i<D;i++){ float ti = tok[b*D+i]; sk += W(bb+BWK+oo*D+i)*ti; sv += W(bb+BWV+oo*D+i)*ti; }
             kk[b*D+oo]=sk; vv[b*D+oo]=sv;
           }
-        }
-        // per-query attention (Q on the fly), residual straight into tok (K,V are snapshots)
         for(int qi=0; qi<NB; qi++){
           float q[D];
           for(int oo=0;oo<D;oo++){ float sq = W(bb+BBQ+oo); for(int i=0;i<D;i++) sq += W(bb+BWQ+oo*D+i)*tok[qi*D+i]; q[oo]=sq; }
@@ -158,31 +142,24 @@ export function buildShaders(arch) {
           float Z=0.0; for(int j=0;j<NB;j++){ sco[j]=exp(sco[j]-smax); Z+=sco[j]; }
           for(int d=0;d<D;d++){ float acc=0.0; for(int j=0;j<NB;j++) acc+=sco[j]*vv[j*D+d]; tok[qi*D+d]+=acc/Z; }
         }
-        // per-token residual FFN
         for(int b=0;b<NB;b++){
           float h[DFF];
           for(int oo=0;oo<DFF;oo++){ float s=W(bb+BB1+oo); for(int d=0;d<D;d++) s+=W(bb+BW1+oo*D+d)*tok[b*D+d]; h[oo]=tanh(s); }
           for(int oo=0;oo<D;oo++){ float s=W(bb+BB2+oo); for(int d=0;d<DFF;d++) s+=W(bb+BW2+oo*DFF+d)*h[d]; tok[b*D+oo]+=s; }
         }
       }
-
-      // 3c. learned-query pooling (+ visibility bias)
       float psc = INV_SQRTD * W(OFF_TAUPOOL);
       float pw[NB]; float smax=-1e30;
       for(int b=0;b<NB;b++){ float s=0.0; for(int d=0;d<D;d++) s+=tok[b*D+d]*W(OFF_QPOOL+d); s=s*psc+vis[b]; pw[b]=s; if(s>smax) smax=s; }
       float Z=0.0; for(int b=0;b<NB;b++){ pw[b]=exp(pw[b]-smax); Z+=pw[b]; }
       float pooled[D];
       for(int d=0;d<D;d++){ float acc=0.0; for(int b=0;b<NB;b++) acc+=pw[b]*tok[b*D+d]; pooled[d]=acc/Z; }
-
-      // 3d. output head -> gamut L*a*b*
       float hh[DHEAD];
       for(int oo=0;oo<DHEAD;oo++){ float s=W(OFF_BO1+oo); for(int d=0;d<D;d++) s+=W(OFF_WO1+oo*D+d)*pooled[d]; hh[oo]=tanh(s); }
       // pure-chroma head: a*, b* only; a fixed neutral L* completes the CIE L*a*b* triple
       float z0=W(OFF_BO2+0), z1=W(OFF_BO2+1);
       for(int d=0;d<DHEAD;d++){ z0+=W(OFF_WO2+0*DHEAD+d)*hh[d]; z1+=W(OFF_WO2+1*DHEAD+d)*hh[d]; }
       vec3 Lab = vec3(LAB_L, LAB_AB*tanh(z0), LAB_AB*tanh(z1));
-
-      // 4. L*a*b* -> linear sRGB
       float fy=(Lab.x+16.0)/116.0, fx=fy+Lab.y/500.0, fz=fy-Lab.z/200.0, dlt=6.0/29.0;
       vec3 xyz;
       xyz.x=(fx>dlt)?fx*fx*fx:3.0*dlt*dlt*(fx-4.0/29.0);
@@ -193,17 +170,53 @@ export function buildShaders(arch) {
          3.2404542*xyz.x -1.5371385*xyz.y -0.4985314*xyz.z,
         -0.9692660*xyz.x +1.8760108*xyz.y +0.0415560*xyz.z,
          0.0556434*xyz.x -0.2040259*xyz.y +1.0572252*xyz.z);
-      vColor = clamp(gamutSoft(rgb), 0.0, 1.0);
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      return toSRGB(clamp(gamutSoft(rgb), 0.0, 1.0));
     }`;
 
-  const fragment = /* glsl */`
+  // FIELD pass — full-screen quad over an equirectangular (lon,lat) target; one texel per sky.
+  const fieldVertex = /* glsl */`
     precision highp float;
-    in vec3 vColor;
+    out vec2 vUv;
+    void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
+  const fieldFragment = /* glsl */`
+    precision highp float;
+    ${net}
+    #define PI 3.14159265358979
+    in vec2 vUv;
     out vec4 fragColor;
-    uniform float u_opacity;
-    vec3 toSRGB(vec3 c){ return mix(12.92*c, 1.055*pow(c, vec3(1.0/2.4))-0.055, step(0.0031308, c)); }
-    void main(){ fragColor = vec4(toSRGB(clamp(vColor, 0.0, 1.0)), u_opacity); }`;
+    void main(){
+      float lon = (vUv.x*2.0 - 1.0) * PI;
+      float lat = (vUv.y - 0.5) * PI;
+      float cl = cos(lat), sl = sin(lat), co = cos(lon), so = sin(lon);
+      vec3 up = vec3(cl*co, sl, cl*so);                 // observer zenith (ECEF)
+      vec3 nn = vec3(0.0,1.0,0.0) - up*up.y; float nl = length(nn);
+      vec3 nhat = nl > 1e-6 ? nn/nl : vec3(1.0,0.0,0.0);
+      vec3 ehat = cross(up, nhat);
+      fragColor = vec4(netColorSRGB(nhat, ehat, up), 1.0);
+    }`;
 
-  return { vertex, fragment };
+  // GLOBE pass — sample the field texture by (lon,lat) of the surface point (un-mirrored).
+  const globeVertex = /* glsl */`
+    precision highp float;
+    out vec3 vPos;
+    void main(){ vPos = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+  const globeFragment = /* glsl */`
+    precision highp float;
+    #define PI 3.14159265358979
+    in vec3 vPos;
+    out vec4 fragColor;
+    uniform sampler2D u_field;
+    uniform float u_opacity;
+    void main(){
+      vec3 p = normalize(vPos);
+      float lon = atan(-p.z, p.x);                      // un-mirrored (matches raycaster + map)
+      float lat = asin(clamp(p.y, -1.0, 1.0));
+      vec2 uv = vec2(lon/(2.0*PI) + 0.5, lat/PI + 0.5);
+      fragColor = vec4(texture(u_field, uv).rgb, u_opacity);
+    }`;
+
+  return {
+    field: { vertex: fieldVertex, fragment: fieldFragment },
+    globe: { vertex: globeVertex, fragment: globeFragment },
+  };
 }

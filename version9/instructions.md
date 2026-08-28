@@ -9,7 +9,7 @@ break). Train it, export it, serve `version9/web/` on its own.
 
 ```
 (lat, lon, jd) ─► 11 tokens ×[N,E,Zenith] ─► self-attention ─► pooled read-out ─► CIE a*b* ─► sRGB
-   any float        topocentric, per-observer   Q·Kᵀ relations   per-body energy   PURE chroma    per vertex
+   any float        topocentric, per-observer   Q·Kᵀ relations   per-body energy   PURE chroma    to a field texture
 ```
 
 > **Pure chroma (no luminance).** The model outputs **only** the 2-D chromatic pair `a*, b*`
@@ -23,7 +23,7 @@ break). Train it, export it, serve `version9/web/` on its own.
 | Module | What it is | Where it lives |
 | --- | --- | --- |
 | **1 · Backend** | 11-token state, micro self-attention, observer-dependent isometric loss, export | `state.py`, `attention.py`, `losses.py`, `dataset.py`, `training.py`, `train.py`, `export.py` |
-| **2 · GPU render** | the whole attention net per **vertex**, interpolated across triangles | `web/shader9.js`, `web/main.js` |
+| **2 · GPU render** | the whole attention net once per time step into a **field texture**, sampled by the globe | `web/shader9.js`, `web/main.js` |
 | **3 · UI / Helm** | LIVE/Time-Machine clock, orbiting bodies, world map, controls, energy HUD | `web/main.js`, `web/planets9.js`, `web/geo.js`, `web/timecal.js` |
 
 ---
@@ -147,14 +147,22 @@ You'll see the attention colour field on the globe over a coastline world map, t
 as 3D spheres orbiting per the ephemeris, and a starfield. Without `weights.json` the page
 loads an *untrained* attention net and shows a notice — train + export for the real field.
 
-### GPU model (why it's fast)
-The CPU computes the 11 Earth-fixed body directions + GMST once per frame. The **vertex
-shader** then, per vertex on a `SphereGeometry(seg,seg)`: builds a singularity-free local basis
-from the surface normal (`û=normalize(P); n̂=normalize((0,1,0)−û·u_y); ê=û×n̂`), projects the
-bodies to the 11 tokens, runs the **whole attention network** (embed → blocks → pool → head)
-from a weight texture, completes the CIE triple with the FIXED neutral `L*`, and converts a*b* to sRGB. The fragment shader just
-interpolates that colour — real-time for a network that would be unrenderable per pixel. Use
-the **Render** selector (64² / 96² / 128²) to trade detail for framerate.
+### GPU model (why it's fast, and never freezes)
+The attention net is heavy (~10⁵ ops/sample), so running it per vertex **every frame** — it
+re-runs even on pure camera rotation — overloads weak GPUs / software renderers and hangs the
+tab. v9 therefore **decouples compute from framerate** with an offscreen field texture:
+
+1. **Field pass** (`shader9.js` → `buildShaders().field`): a full-screen quad over an
+   **equirectangular `(lon,lat)` render target**. Each texel builds its local horizon basis
+   (`û` from that lon/lat; `n̂=normalize((0,1,0)−û·u_y); ê=û×n̂`), runs the **whole network**
+   from the weight texture, completes the CIE triple with the FIXED neutral `L*`, and writes
+   sRGB. This runs **once per time change** — not per frame.
+2. **Globe pass** (`buildShaders().globe`): the sphere simply samples that texture by
+   `lon = atan2(−z, x)`, `lat = asin(y)` (un-mirrored). This is what runs every frame, so
+   rotating/zooming is a cheap texture lookup that can never overload the GPU.
+
+The **Render** selector sets the field texture resolution (192×96 / 320×160 / 512×256) — the
+only thing that scales net cost. Start at **Fast** on integrated GPUs / software WebGL.
 
 ### Controls (collapsible panel)
 - **Enter Time Machine / Go Live**, **Play/Pause**, **◉ Now**.
@@ -162,7 +170,7 @@ the **Render** selector (64² / 96² / 128²) to trade detail for framerate.
 - **Speed** — logarithmic multiplier up to millions×, negative to rewind (default 10000×).
 - **Step / tick** presets (24 s … 1 yr) + **custom step (h)** with ← / → buttons.
 - **Scrubber** across the ±5000-year timeline, and **Jump to** an exact date-time.
-- **Zoom** ＋/－ (also ↑/↓, scroll), **Field opacity**, **Render** (per-vertex tessellation).
+- **Zoom** ＋/－ (also ↑/↓, scroll), **Field opacity**, **Render** (field texture resolution).
 - **Overlays** — map, coastlines, graticule, planets (orbiting spheres), labels.
 - **Observer HUD** — click the globe to pin a point; it streams the per-body **energy
   contribution** (the attention pooling weights; dimmed bodies are below the horizon), the
@@ -183,7 +191,7 @@ Checks the geometry (33 local + 55 gated chords), that the gated chords are obse
 contract), that attention is observer-dependent and visibility-led, the isometric loss, an
 altitude cross-check vs pyswisseph, and a train→export cycle.
 
-The browser ports reproduce the Python engine to ~1e-5, and the **GLSL vertex shader was
+The browser ports reproduce the Python engine to ~1e-5, and the **GLSL field shader was
 verified in a real headless WebGL2 context** (compile + link + transform-feedback render)
 to match the JS/PyTorch output to **~3e-7**.
 
@@ -205,8 +213,8 @@ version9/
   web/
     index.html     page shell (clock, control panel, Observer HUD + energy read-out)
     style.css      glass-panel styling
-    main.js        scene, helm, HUD, orbiting bodies, per-vertex globe
-    shader9.js     Module 2: the per-vertex attention shader (+ packWeights)
+    main.js        scene, helm, HUD, orbiting bodies, offscreen field pass + textured globe
+    shader9.js     Module 2: offscreen field + globe-sampling shaders (+ packWeights)
     attn9.js       JS attention forward + a*,b* head + Lab->sRGB (parity with attention.py)
     state9.js      JS local vectors + gated chords (parity with state.py)
     ephemeris9.js  JS ephemeris (equatorialDirs / gmstRad / topocentricTensor)
