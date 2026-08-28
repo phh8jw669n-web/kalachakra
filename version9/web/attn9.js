@@ -2,8 +2,8 @@
 //
 // Mirrors version9/attention.py op-for-op (matmul / tanh / softmax) so the Observer HUD's
 // colour + per-body energy weights are bit-for-bit the Python engine's (and the GLSL
-// shader's). Pure JS, one observer at a time. Also carries the CIE L*a*b* -> sRGB pipeline
-// (identical soft-gamut compression to the GLSL fragment path).
+// shader's). Pure JS, one observer at a time. Also carries the OKLab -> sRGB pipeline
+// (identical soft-gamut compression to the GLSL field path).
 
 // y[o] = sum_i W[o][i]*x[i] + b[o]   (W stored [out][in], matching the export)
 function matvec(W, b, x) {
@@ -66,34 +66,36 @@ export function makeModel(weights) {
     const pool = softmax(pscores);
     const pooled = new Array(D).fill(0);
     for (let i = 0; i < NB; i++) for (let d = 0; d < D; d++) pooled[d] += pool[i] * t[i][d];
-    // output head -> pure a*,b* chroma (no luminance); a fixed neutral L* is for rendering only
+    // OKLCH polar head: C = cmax*sigmoid(z0), H = z1 (raw radians) -> OKLab chroma (a,b)
     const z = matvec(W.Wo2, W.bo2, matvec(W.Wo1, W.bo1, pooled).map(tanh));
-    const ab = [W.lab_ab * tanh(z[0]), W.lab_ab * tanh(z[1])];
-    const L = W.lab_l ?? 50.0;
-    return { ab, lab: [L, ab[0], ab[1]], pool };
+    const cmax = W.okl_cmax ?? 0.4;
+    const C = cmax / (1 + Math.exp(-z[0])), H = z[1];
+    const ab = [C * Math.cos(H), C * Math.sin(H)];       // OKLab (a,b)
+    return { ab, C, H, L: W.okl_l ?? 0.5, pool };
   };
 }
 
-// ---- CIE L*a*b* (D65) -> soft-gamut sRGB (identical to the GLSL fragment path) -----------
-function gamutSoft(r, g, b) {
-  const luma = Math.min(1, Math.max(0, 0.2126 * r + 0.7152 * g + 0.0722 * b));
-  const cr = r - luma, cg = g - luma, cb = b - luma;
-  let s = 1.0;
-  const fit = (c) => { if (c > 1e-5) s = Math.min(s, (1.0 - luma) / c); else if (c < -1e-5) s = Math.min(s, luma / -c); };
-  fit(cr); fit(cg); fit(cb);
-  s = Math.min(1, Math.max(0, s));
-  return [luma + cr * s, luma + cg * s, luma + cb * s];
+// ---- OKLab -> gamut-clipped sRGB (Bjorn Ottosson; identical bisection to the GLSL field path) --
+function oklab2lin(L, a, b) {
+  const L_ = L + 0.3963377774 * a + 0.2158037573 * b;
+  const M_ = L - 0.1055613458 * a - 0.0638541728 * b;
+  const S_ = L - 0.0894841775 * a - 1.2914855480 * b;
+  const l = L_ * L_ * L_, m = M_ * M_ * M_, s = S_ * S_ * S_;
+  return [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s];
 }
-export function labToSrgb(L, a, b) {
-  const fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - b / 200, d = 6 / 29;
-  const finv = (tt) => (tt > d ? tt * tt * tt : 3 * d * d * (tt - 4 / 29));
-  const X = 0.95047 * finv(fx), Y = finv(fy), Z = 1.08883 * finv(fz);
-  const rl = 3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z;
-  const gl = -0.9692660 * X + 1.8760108 * Y + 0.0415560 * Z;
-  const bl = 0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z;
-  const [r, g, bb] = gamutSoft(rl, gl, bl);
+const inGamut = (c) => c[0] >= -0.001 && c[1] >= -0.001 && c[2] >= -0.001 && c[0] <= 1.001 && c[1] <= 1.001 && c[2] <= 1.001;
+export function oklabToSrgb(L, a, b) {
+  let C = Math.hypot(a, b); const ca = C > 1e-9 ? a / C : 1, sa = C > 1e-9 ? b / C : 0;
+  if (!inGamut(oklab2lin(L, C * ca, C * sa))) {          // hue+L-preserving chroma clip
+    let lo = 0, hi = C;
+    for (let i = 0; i < 14; i++) { const mid = 0.5 * (lo + hi); if (inGamut(oklab2lin(L, mid * ca, mid * sa))) lo = mid; else hi = mid; }
+    C = lo;
+  }
+  const lin = oklab2lin(L, C * ca, C * sa);
   const gam = (c) => { c = Math.min(1, Math.max(0, c)); return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055; };
-  return [gam(r), gam(g), gam(bb)];
+  return [gam(lin[0]), gam(lin[1]), gam(lin[2])];
 }
 export function srgbToHex(rgb) {
   const h = (v) => Math.round(v * 255).toString(16).padStart(2, "0");

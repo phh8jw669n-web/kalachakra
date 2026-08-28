@@ -12,7 +12,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { buildShaders, packWeights } from "./shader9.js";
 import { equatorialDirs, gmstRad, BODY_NAMES, N_BODIES } from "./ephemeris9.js";
 import { localVectors } from "./state9.js";
-import { makeModel, labToSrgb, srgbToHex } from "./attn9.js";
+import { makeModel, oklabToSrgb, srgbToHex } from "./attn9.js";
 import {
   J2000, nowJD, gregorianToJD, jdToGregorian, dtLocalValue, labelFor, tzLabel, TZ_OFFSETS,
 } from "./timecal.js";
@@ -23,7 +23,7 @@ import { createPlanets } from "./planets9.js";
 
 const DEFAULT_ARCH = {
   arch: "v9_topo_attention", n_bodies: 11, token_dim: 3, d_model: 32, d_ff: 64, d_head: 32,
-  n_blocks: 2, vis_bias: 3.0, out_features: 2, lab_l: 50, lab_ab: 80,
+  n_blocks: 2, vis_bias: 3.0, out_features: 2, okl_l: 0.5, okl_cmax: 0.4,
 };
 const JD_MIN = J2000 - 5000 * 365.25, JD_MAX = J2000 + 5000 * 365.25;
 const LIVE_REFRESH_MS = 1000;
@@ -134,7 +134,7 @@ function randomWeights(a) {
     ...a, W_in: mat(D, a.token_dim), b_in: vecR(D, 0), E_body: mat(a.n_bodies, D),
     blocks, q_pool: vecR(D), tau_pool: 1.0,
     Wo1: mat(DHEAD, D), bo1: vecR(DHEAD, 0), Wo2: mat(2, DHEAD), bo2: vecR(2, 0),
-    output_activation: "v9_chroma", gamma: 32,
+    output_activation: "v9_oklch", gamma: 0.35,
   };
 }
 function makeWeightTexture(weights) {
@@ -148,7 +148,7 @@ function archOf(w) {
   return {
     arch: "v9_topo_attention", n_bodies: w.n_bodies ?? 11, token_dim: w.token_dim ?? 3,
     d_model: w.d_model, d_ff: w.d_ff, d_head: w.d_head, n_blocks: w.n_blocks,
-    vis_bias: w.vis_bias ?? 3.0, out_features: w.out_features ?? 2, lab_l: w.lab_l ?? 50, lab_ab: w.lab_ab ?? 80,
+    vis_bias: w.vis_bias ?? 3.0, out_features: w.out_features ?? 2, okl_l: w.okl_l ?? 0.5, okl_cmax: w.okl_cmax ?? 0.4,
   };
 }
 function makeFieldRT(w, h) {
@@ -273,15 +273,16 @@ function updateReadouts(now) {
   const local = localVectors(app.pin.lat, app.pin.lon, app.jd);   // Float32Array(33)
   for (let b = 0; b < N_BODIES; b++)
     matRows[b].textContent = ` ${fmt(local[b * 3])} ${fmt(local[b * 3 + 1])} ${fmt(local[b * 3 + 2])}`;
-  const { lab: lab3, pool } = app.model(local);
+  const r = app.model(local), pool = r.pool;
   let pmax = 1e-6; for (let b = 0; b < N_BODIES; b++) pmax = Math.max(pmax, pool[b]);
   for (let b = 0; b < N_BODIES; b++) {
     enRows[b].bar.style.width = `${Math.round((pool[b] / pmax) * 88)}px`;
     enRows[b].val.textContent = `${(pool[b] * 100).toFixed(0)}%`;
     enRows[b].row.classList.toggle("down", local[b * 3 + 2] < 0);   // below the observer's horizon
   }
-  const hex = srgbToHex(labToSrgb(lab3[0], lab3[1], lab3[2]));
-  el.lab.textContent = `a* ${lab3[1].toFixed(1)}  b* ${lab3[2].toFixed(1)}  ·  L* ${lab3[0].toFixed(0)} fixed`;
+  const hex = srgbToHex(oklabToSrgb(r.L, r.ab[0], r.ab[1]));
+  let hdeg = r.H * 180 / Math.PI % 360; if (hdeg < 0) hdeg += 360;
+  el.lab.textContent = `C ${r.C.toFixed(3)}  H ${hdeg.toFixed(0)}°  ·  L ${r.L.toFixed(2)} fixed`;
   el.hex.textContent = hex; el.swatch.style.background = hex;
   el["pin-lat"].textContent = app.pin.lat.toFixed(4); el["pin-lon"].textContent = app.pin.lon.toFixed(4);
 }

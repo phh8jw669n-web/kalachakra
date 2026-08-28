@@ -13,7 +13,7 @@ DEFAULT_JD_END = J2000 + _HALF_SPAN_DAYS
 
 @dataclass
 class AttnConfig:
-    """The micro self-attention model. 11 body tokens x 3 dims (N,E,Z) -> L*a*b*."""
+    """The micro self-attention model. 11 body tokens x 3 dims (N,E,Z) -> OKLCH chroma."""
     n_bodies: int = N_BODIES          # 11 tokens
     token_dim: int = 3                # [North, East, Zenith] per body
     d_model: int = 32                 # embedding / attention width (single head: d_k = d_model)
@@ -26,12 +26,13 @@ class AttnConfig:
     #: modulates on top. This is a fixed structural prior (the isometric objective alone does
     #: not reward peaky attention, so the domain physics is baked in rather than hoped for).
     vis_bias: float = 3.0
-    #: pure-chroma head: the model outputs only a*,b* = ab*tanh(z) — no luminance. lab_l is a
-    #: FIXED neutral lightness supplied at render time so the globe is a constant-brightness
-    #: chromatic energy field (raise it toward ~65 for a more luminous "glow"; higher chroma at
-    #: low L* gets gamut-compressed and reads muted).
-    lab_l: float = 50.0
-    lab_ab: float = 80.0
+    #: OKLCH pure-chroma head (no luminance): the model outputs polar (C,H) ->
+    #: OKLab (a,b) = (C cosH, C sinH), C = okl_cmax*sigmoid(z0), H = z1 (raw radians). okl_l is
+    #: the FIXED neutral OKLab lightness supplied only at render time, so the globe is a
+    #: constant-lightness, perceptually-uniform chromatic energy field. okl_cmax caps chroma to a
+    #: renderable range (0.4 is vivid; lower it if the most saturated hues clip).
+    okl_l: float = 0.5
+    okl_cmax: float = 0.4
 
 
 @dataclass
@@ -54,7 +55,10 @@ class TrainConfig:
     warmup_steps: int = 500
     max_steps: int = 40_000
     grad_clip: float = 1.0
-    gamma: float = 32.0               # colour scale: ||dLab|| = gamma * d_sky
+    gamma: float = 0.35               # chroma scale: ||d(OKLab a,b)|| = gamma * d_sky. OKLab
+                                      # units (~60x < CIELab). ~0.35 keeps most colours inside
+                                      # the sRGB gamut (vivid but faithful); raise toward 0.5 for
+                                      # a more saturated field at the cost of more gamut clipping.
     #: The observer-dependent target distance. d_sky = w_local*d_local + w_rel*d_rel, where
     #: d_rel uses HORIZON-GATED chords R_ij = g_i*g_j*(v_i.v_j), g_b = sigmoid(gate_k*zenith_b).
     #: Gating is what makes the relational term observer-dependent (a conjunction overhead

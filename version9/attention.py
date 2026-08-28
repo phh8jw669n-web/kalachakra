@@ -9,9 +9,11 @@
         t     = t + W2 tanh(W1 t + b1) + b2           per-token FFN, residual
     pool    w = softmax((t . q_pool)/sqrt(D)) over the 11 tokens
             p = sum_b w_b t_b                         -> [N, D]        (energy read-out)
-    head    z = Wo2 tanh(Wo1 p + bo1) + bo2           -> [N, 2]
-    chroma  a*,b* = ab*tanh(z0,z1)                    pure 2-D CIE a*b* energy (NO luminance;
-                                                      a fixed neutral L* is added only at render)
+    head    z = Wo2 tanh(Wo1 p + bo1) + bo2           -> [N, 2]  (C,H logits)
+    chroma  C = cmax*sigmoid(z0) ; H = z1             polar OKLCH -> OKLab (a,b)=(C cosH, C sinH)
+                                                      (NO luminance; a fixed neutral OKLab L is
+                                                      added only at render). Euclidean distance
+                                                      on (a,b) IS the OKLCH cylindrical distance.
 
 Why attention (not v8's fixed chords)? A learned bilinear form Q K^T = t_i^T (Wq^T Wk) t_j is
 **not** rotation-invariant unless Wq^T Wk ~ I, so — unlike a plain dot product — it varies with
@@ -31,11 +33,21 @@ import torch
 from torch import nn
 
 
-def bound_ab(z: torch.Tensor, lab_ab: float) -> torch.Tensor:
-    """Pure-chroma head: a*,b* = ab*tanh(z0,z1). No luminance — the field is a 2-D CIE a*b*
-    energy signature; a fixed neutral L* is supplied only at render time."""
-    a = lab_ab * torch.tanh(z[..., 0:1])
-    b = lab_ab * torch.tanh(z[..., 1:2])
+def bound_oklch(z: torch.Tensor, okl_cmax: float) -> torch.Tensor:
+    """Polar OKLCH head -> OKLab chroma vector (a, b). No luminance (a fixed neutral OKLab L is
+    supplied only at render time). The two logits are read as cylindrical components:
+
+        C = okl_cmax * sigmoid(z0)   in [0, cmax]      chroma  (radius; sigmoid avoids clipping)
+        H = z1                        raw radians       hue     (cyclic via cos/sin -> no snapping)
+        a = C*cos(H) ,  b = C*sin(H)                    OKLab Cartesian chroma
+
+    Returning (a, b) makes the reachable set a DISK (not a Cartesian square, so no corner
+    clipping) and makes plain Euclidean distance on (a, b) equal to the OKLCH cylindrical
+    distance sqrt(C1^2 + C2^2 - 2 C1 C2 cos(dH)) — hue wrap and chroma handled for free."""
+    C = okl_cmax * torch.sigmoid(z[..., 0:1])
+    H = z[..., 1:2]
+    a = C * torch.cos(H)
+    b = C * torch.sin(H)
     return torch.cat([a, b], dim=-1)
 
 
@@ -73,11 +85,11 @@ class TopoAttention(nn.Module):
 
     def __init__(self, n_bodies: int = 11, token_dim: int = 3, d_model: int = 32,
                  d_ff: int = 64, d_head: int = 32, n_blocks: int = 2, vis_bias: float = 3.0,
-                 lab_l: float = 50.0, lab_ab: float = 80.0):
+                 okl_l: float = 0.5, okl_cmax: float = 0.4):
         super().__init__()
         self.cfg = {"n_bodies": n_bodies, "token_dim": token_dim, "d_model": d_model,
                     "d_ff": d_ff, "d_head": d_head, "n_blocks": n_blocks, "vis_bias": vis_bias,
-                    "lab_l": lab_l, "lab_ab": lab_ab}
+                    "okl_l": okl_l, "okl_cmax": okl_cmax}
         self.vis_bias = vis_bias
         self.embed = nn.Linear(token_dim, d_model)
         self.body_emb = nn.Parameter(torch.randn(n_bodies, d_model) * 0.02)
@@ -109,8 +121,8 @@ class TopoAttention(nn.Module):
             t = blk(t, vis)
         w = self._pool_weights(t, vis)                     # [N,11]
         pooled = torch.einsum("nb,nbd->nd", w, t)          # [N,D]
-        z = self.head2(torch.tanh(self.head1(pooled)))     # [N,2]
-        ab = bound_ab(z, self.cfg["lab_ab"])               # [N,2] pure a*,b* chroma
+        z = self.head2(torch.tanh(self.head1(pooled)))     # [N,2] -> (C,H) logits
+        ab = bound_oklch(z, self.cfg["okl_cmax"])          # [N,2] OKLab chroma from polar C,H
         return (ab, w) if return_pool else ab
 
     def export_weights(self) -> dict:
@@ -128,11 +140,11 @@ class TopoAttention(nn.Module):
             "tau": float(blk.tau.detach()),
         } for blk in self.blocks]
         return {
-            "arch": "v9_topo_attention", "output_activation": "v9_chroma", "out_features": 2,
+            "arch": "v9_topo_attention", "output_activation": "v9_oklch", "out_features": 2,
             "n_bodies": c["n_bodies"], "token_dim": c["token_dim"], "d_model": c["d_model"],
             "d_ff": c["d_ff"], "d_head": c["d_head"], "n_blocks": c["n_blocks"],
             "vis_bias": c["vis_bias"],
-            "lab_l": c["lab_l"], "lab_ab": c["lab_ab"],
+            "okl_l": c["okl_l"], "okl_cmax": c["okl_cmax"],
             "W_in": W(self.embed), "b_in": b(self.embed),
             "E_body": self.body_emb.detach().cpu().tolist(),
             "blocks": blocks, "q_pool": self.q_pool.detach().cpu().tolist(),

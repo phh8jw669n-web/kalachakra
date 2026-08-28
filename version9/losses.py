@@ -8,8 +8,11 @@ tracks a *fixed, observer-dependent* sky distance:
     d_sky   = w_local * d_local + w_rel * d_rel        defaults 0.5 / 0.5
     L       = MSE( ||ab_A - ab_B|| , gamma * d_sky ) + anchor
 
-The colour is pure 2-D chroma (a*, b*) — no luminance — so distance lives entirely in the
-CIE a*b* plane and brightness is never optimised.
+The colour is a pure 2-D OKLCH chroma output (polar C,H expressed as OKLab (a,b)=(C cosH, C sinH))
+— no luminance. Euclidean distance on (a,b) is *exactly* the OKLCH cylindrical distance
+sqrt(C_A^2 + C_B^2 - 2 C_A C_B cos(dH)), so hue wrap-around and chroma magnitude are handled
+with no special angular term, and (OKLab being perceptually uniform) the metric is perceptual.
+gamma is in OKLab units now (~60x smaller than the old CIELab default).
 
 Both terms vary across the globe at a fixed instant (the gate makes the chords observer-
 dependent — see state.py), so the globe is never a flat smear and relational events (a
@@ -49,12 +52,12 @@ def balanced_sky_distance(feat: torch.Tensor, w_local: float = W_LOCAL,
     return w_local * d_local + w_rel * d_rel
 
 
-def isometric_loss(feat: torch.Tensor, color: torch.Tensor, gamma: float = 32.0,
+def isometric_loss(feat: torch.Tensor, color: torch.Tensor, gamma: float = 0.35,
                    w_local: float = W_LOCAL, w_rel: float = W_REL) -> torch.Tensor:
-    """MSE between the 2-D a*b* chroma distance matrix and gamma * the sky distance.
+    """MSE between the 2-D OKLab (a,b) chroma distance matrix and gamma * the sky distance.
 
-    ``color`` is ``[N,2]`` (a*, b*) — there is no luminance, so the distance is taken purely in
-    the chromatic plane and brightness is never penalised or rewarded."""
+    ``color`` is ``[N,2]`` OKLab (a,b) from the polar OKLCH head — no luminance, so distance is
+    the perceptually-uniform OKLCH cylindrical distance and brightness is never optimised."""
     d_sky = balanced_sky_distance(feat, w_local, w_rel)
     d_ab = torch.cdist(color, color)
     return ((d_ab - gamma * d_sky) ** 2).mean()

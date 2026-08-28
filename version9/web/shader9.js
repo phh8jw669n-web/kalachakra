@@ -65,8 +65,8 @@ export function buildShaders(arch) {
     #define TOK ${TOK}
     #define INV_SQRTD ${(1.0 / Math.sqrt(D)).toFixed(8)}
     #define VISB ${(arch.vis_bias ?? 3.0).toFixed(4)}
-    #define LAB_L ${(arch.lab_l ?? 50).toFixed(1)}
-    #define LAB_AB ${(arch.lab_ab ?? 80).toFixed(1)}
+    #define OKL_L ${(arch.okl_l ?? 0.5).toFixed(5)}
+    #define OKL_CMAX ${(arch.okl_cmax ?? 0.4).toFixed(5)}
     #define OFF_WIN ${OFF_WIN}
     #define OFF_BIN ${OFF_BIN}
     #define OFF_EBODY ${OFF_EBODY}
@@ -100,13 +100,26 @@ export function buildShaders(arch) {
 
     float W(int idx){ return texelFetch(u_weights, ivec2(idx % u_wtexW, idx / u_wtexW), 0).r; }
     vec3 toSRGB(vec3 c){ return mix(12.92*c, 1.055*pow(c, vec3(1.0/2.4))-0.055, step(0.0031308, c)); }
-    vec3 gamutSoft(vec3 c){
-      float luma = clamp(dot(c, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-      vec3 ch = c - luma; float s = 1.0;
-      if(ch.r >  1e-5) s = min(s, (1.0 - luma)/ch.r); else if(ch.r < -1e-5) s = min(s, luma/(-ch.r));
-      if(ch.g >  1e-5) s = min(s, (1.0 - luma)/ch.g); else if(ch.g < -1e-5) s = min(s, luma/(-ch.g));
-      if(ch.b >  1e-5) s = min(s, (1.0 - luma)/ch.b); else if(ch.b < -1e-5) s = min(s, luma/(-ch.b));
-      return vec3(luma) + ch * clamp(s, 0.0, 1.0);
+    vec3 oklab2lin(float L, float a, float b){
+      float L_=L+0.3963377774*a+0.2158037573*b;
+      float M_=L-0.1055613458*a-0.0638541728*b;
+      float S_=L-0.0894841775*a-1.2914855480*b;
+      float l=L_*L_*L_, m=M_*M_*M_, s=S_*S_*S_;
+      return vec3( 4.0767416621*l -3.3077115913*m +0.2309699292*s,
+                  -1.2684380046*l +2.6097574011*m -0.3413193965*s,
+                  -0.0041960863*l -0.7034186147*m +1.7076147010*s);
+    }
+    bool inGamut(vec3 c){ return all(greaterThanEqual(c, vec3(-0.001))) && all(lessThanEqual(c, vec3(1.001))); }
+    // OKLCH -> gamma sRGB with a HUE- and LIGHTNESS-preserving chroma clip: if the requested
+    // chroma is out of the sRGB gamut, bisect it down to the exact boundary (no hue shift, no
+    // luminance shift, no hard clipping artifact) — the robust perceptual gamut map.
+    vec3 renderOKLCH(float L, float C, float ca, float sa){
+      if(!inGamut(oklab2lin(L, C*ca, C*sa))){
+        float lo=0.0, hi=C;
+        for(int i=0;i<14;i++){ float mid=0.5*(lo+hi); if(inGamut(oklab2lin(L, mid*ca, mid*sa))) lo=mid; else hi=mid; }
+        C=lo;
+      }
+      return toSRGB(clamp(oklab2lin(L, C*ca, C*sa), 0.0, 1.0));
     }
 
     // Whole topocentric attention net for one observer whose horizon frame is (nhat,ehat,up).
@@ -156,21 +169,11 @@ export function buildShaders(arch) {
       for(int d=0;d<D;d++){ float acc=0.0; for(int b=0;b<NB;b++) acc+=pw[b]*tok[b*D+d]; pooled[d]=acc/Z; }
       float hh[DHEAD];
       for(int oo=0;oo<DHEAD;oo++){ float s=W(OFF_BO1+oo); for(int d=0;d<D;d++) s+=W(OFF_WO1+oo*D+d)*pooled[d]; hh[oo]=tanh(s); }
-      // pure-chroma head: a*, b* only; a fixed neutral L* completes the CIE L*a*b* triple
+      // OKLCH polar head: C = cmax*sigmoid(z0), H = z1 (raw radians)
       float z0=W(OFF_BO2+0), z1=W(OFF_BO2+1);
       for(int d=0;d<DHEAD;d++){ z0+=W(OFF_WO2+0*DHEAD+d)*hh[d]; z1+=W(OFF_WO2+1*DHEAD+d)*hh[d]; }
-      vec3 Lab = vec3(LAB_L, LAB_AB*tanh(z0), LAB_AB*tanh(z1));
-      float fy=(Lab.x+16.0)/116.0, fx=fy+Lab.y/500.0, fz=fy-Lab.z/200.0, dlt=6.0/29.0;
-      vec3 xyz;
-      xyz.x=(fx>dlt)?fx*fx*fx:3.0*dlt*dlt*(fx-4.0/29.0);
-      xyz.y=(fy>dlt)?fy*fy*fy:3.0*dlt*dlt*(fy-4.0/29.0);
-      xyz.z=(fz>dlt)?fz*fz*fz:3.0*dlt*dlt*(fz-4.0/29.0);
-      xyz*=vec3(0.95047,1.0,1.08883);
-      vec3 rgb=vec3(
-         3.2404542*xyz.x -1.5371385*xyz.y -0.4985314*xyz.z,
-        -0.9692660*xyz.x +1.8760108*xyz.y +0.0415560*xyz.z,
-         0.0556434*xyz.x -0.2040259*xyz.y +1.0572252*xyz.z);
-      return toSRGB(clamp(gamutSoft(rgb), 0.0, 1.0));
+      float C = OKL_CMAX / (1.0 + exp(-z0));
+      return renderOKLCH(OKL_L, C, cos(z1), sin(z1));      // gamut-clipped OKLab -> sRGB
     }`;
 
   // FIELD pass — full-screen quad over an equirectangular (lon,lat) target; one texel per sky.

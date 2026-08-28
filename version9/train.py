@@ -29,7 +29,8 @@ def parse_args(argv=None):
     p.add_argument("--lr-min", type=float, default=1e-6)
     p.add_argument("--warmup", type=int, default=500)
     p.add_argument("--steps", type=int, default=40_000)
-    p.add_argument("--gamma", type=float, default=32.0, help="colour scale ||dLab|| = gamma*d_sky")
+    p.add_argument("--gamma", type=float, default=0.35,
+                   help="chroma scale ||d(OKLab a,b)|| = gamma*d_sky (OKLab units, ~60x < CIELab)")
     p.add_argument("--w-local", type=float, default=0.5, help="weight on 33-D local distance")
     p.add_argument("--w-rel", type=float, default=0.5, help="weight on 55-D horizon-gated chords")
     p.add_argument("--gate-k", type=float, default=8.0,
