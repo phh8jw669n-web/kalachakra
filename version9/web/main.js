@@ -40,9 +40,35 @@ const app = {
   weights: null, model: null,
 };
 
+// ---- WebGL2 capability guard (fail with guidance, not a blank screen) ------
+function webgl2Available() {
+  try {
+    const c = document.createElement("canvas");
+    return !!(window.WebGL2RenderingContext && c.getContext("webgl2"));
+  } catch { return false; }
+}
+const WEBGL2_HELP =
+  "WebGL2 is unavailable in this browser, so the field can't render. This is a browser/GPU " +
+  "setting, not the app: enable hardware acceleration (chrome://settings → System → “Use " +
+  "graphics acceleration”, then relaunch) and check chrome://gpu. If you're on a VM / remote " +
+  "desktop, try a local browser, or launch Chrome with --enable-unsafe-swiftshader for a " +
+  "software fallback.";
+if (!webgl2Available()) {
+  setNotice(WEBGL2_HELP);
+  if (boot) { boot.textContent = WEBGL2_HELP; boot.style.maxWidth = "560px"; boot.style.whiteSpace = "normal"; boot.style.lineHeight = "1.5"; }
+  throw new Error("WebGL2 unavailable");
+}
+
 // ---- scene -----------------------------------------------------------------
 const wrap = $("canvas-wrap");
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+} catch (e) {
+  setNotice(WEBGL2_HELP);
+  if (boot) { boot.textContent = WEBGL2_HELP; boot.style.maxWidth = "560px"; boot.style.whiteSpace = "normal"; boot.style.lineHeight = "1.5"; }
+  throw e;
+}
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 wrap.appendChild(renderer.domElement);
