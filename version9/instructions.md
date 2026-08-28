@@ -158,14 +158,21 @@ re-runs even on pure camera rotation — overloads weak GPUs / software renderer
 tab. v9 therefore **decouples compute from framerate** with an offscreen field texture:
 
 1. **Field pass** (`shader9.js` → `buildShaders().field`): a full-screen quad over an
-   **equirectangular `(lon,lat)` render target**. Each texel builds its local horizon basis
-   (`û` from that lon/lat; `n̂=normalize((0,1,0)−û·u_y); ê=û×n̂`), runs the **whole network**
-   from the weight texture, maps the polar `(C,H)` head to OKLab with the FIXED neutral `L`,
-   clips chroma to the sRGB gamut (hue/L preserving), and writes sRGB. Runs **once per time
-   change** — not per frame.
-2. **Globe pass** (`buildShaders().globe`): the sphere simply samples that texture by
-   `lon = atan2(−z, x)`, `lat = asin(y)` (un-mirrored). This is what runs every frame, so
-   rotating/zooming is a cheap texture lookup that can never overload the GPU.
+   **equirectangular `(lon,lat)` render target** (half-float where available). Each texel builds
+   its local horizon basis (`û` from that lon/lat, **latitude clamped to ±89.99°** so the frame
+   never hits the polar gimbal/singularity; `n̂=normalize((0,1,0)−û·u_y); ê=û×n̂`), runs the
+   **whole network** from the weight texture, and writes the head's **OKLab chroma `(a,b)`**
+   (encoded to [0,1]). Runs **once per time change** — not per frame.
+2. **Globe pass** (`buildShaders().globe`): the sphere samples that texture by
+   `lon = atan2(−z, x)`, `lat = asin(y)` (un-mirrored) and reconstructs **OKLab → sRGB per
+   pixel**, with the hue/L-preserving gamut clip. Runs every frame, so rotating/zooming is a
+   cheap texture lookup that can never overload the GPU.
+
+**Why interpolate `(a,b)`, not hue?** The field stores the *Cartesian* chroma `(a,b)`, so the
+GPU interpolates a 2-D vector — never the scalar hue angle. Interpolating a hue angle across a
+`5°↔355°` seam would sweep the whole colour wheel and paint a "rainbow-bead zipper"; storing
+`(a,b) = (C·cosH, C·sinH)` (continuous, no branch cut) and converting per pixel makes gradients
+smooth and perceptually uniform. Colour conversion is per pixel so the gamut clip is exact.
 
 The **Render** selector sets the field texture resolution (192×96 / 320×160 / 512×256) — the
 only thing that scales net cost. Start at **Fast** on integrated GPUs / software WebGL.

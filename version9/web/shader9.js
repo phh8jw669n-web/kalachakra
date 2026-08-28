@@ -5,12 +5,14 @@
 // DECOUPLE compute from framerate with two programs:
 //
 //   • FIELD  (buildShaders().field): a full-screen pass that, for each texel of an
-//     equirectangular (lon,lat) render target, builds the local horizon basis, runs the WHOLE
-//     network from the weight texture (identical maths to attn9.js / attention.py) and writes
-//     the a*,b*-at-fixed-L* colour as sRGB. Rendered ONCE per time change (not per frame).
-//   • GLOBE  (buildShaders().globe): a trivial pass on the sphere that just samples that field
-//     texture by (lon,lat) derived from the surface point. This is what runs every frame, so
-//     rotating/zooming is nearly free and can never overload the GPU.
+//     equirectangular (lon,lat) render target, builds the local horizon basis (latitude clamped
+//     off the exact poles), runs the WHOLE network from the weight texture (identical maths to
+//     attn9.js / attention.py) and writes the OKLab chroma (a,b), encoded to [0,1]. Rendered
+//     ONCE per time change (not per frame).
+//   • GLOBE  (buildShaders().globe): a trivial pass on the sphere that samples that field
+//     texture by (lon,lat) from the surface point and reconstructs OKLab -> sRGB PER PIXEL.
+//     Interpolating the Cartesian (a,b) (not a hue angle) avoids the branch-cut "rainbow bead"
+//     artifact; this runs every frame, so rotating/zooming is nearly free.
 //
 // The globe reads lon = atan2(-z, x) so the world map stays un-mirrored while the field is
 // physically exact. Requires WebGL2 (GLSL ES 3.00): texelFetch.
@@ -90,8 +92,8 @@ export function buildShaders(arch) {
     #define BB2 ${BB2}
     #define BTAU ${BTAU}`;
 
-  // Shared GLSL: weight fetch, gamut compression, and the WHOLE network as a function that
-  // takes the local horizon basis and returns gamma-encoded sRGB. Used by the FIELD pass.
+  // The WHOLE network as a GLSL function returning OKLab chroma (a,b) from the local horizon
+  // basis. No colour conversion here — the field stores (a,b) and the globe converts per pixel.
   const net = /* glsl */`
     ${defs}
     uniform vec3 u_bodyEcef[NB];     // Earth-fixed body (sub-point) directions, per time step
@@ -99,31 +101,8 @@ export function buildShaders(arch) {
     uniform int u_wtexW;
 
     float W(int idx){ return texelFetch(u_weights, ivec2(idx % u_wtexW, idx / u_wtexW), 0).r; }
-    vec3 toSRGB(vec3 c){ return mix(12.92*c, 1.055*pow(c, vec3(1.0/2.4))-0.055, step(0.0031308, c)); }
-    vec3 oklab2lin(float L, float a, float b){
-      float L_=L+0.3963377774*a+0.2158037573*b;
-      float M_=L-0.1055613458*a-0.0638541728*b;
-      float S_=L-0.0894841775*a-1.2914855480*b;
-      float l=L_*L_*L_, m=M_*M_*M_, s=S_*S_*S_;
-      return vec3( 4.0767416621*l -3.3077115913*m +0.2309699292*s,
-                  -1.2684380046*l +2.6097574011*m -0.3413193965*s,
-                  -0.0041960863*l -0.7034186147*m +1.7076147010*s);
-    }
-    bool inGamut(vec3 c){ return all(greaterThanEqual(c, vec3(-0.001))) && all(lessThanEqual(c, vec3(1.001))); }
-    // OKLCH -> gamma sRGB with a HUE- and LIGHTNESS-preserving chroma clip: if the requested
-    // chroma is out of the sRGB gamut, bisect it down to the exact boundary (no hue shift, no
-    // luminance shift, no hard clipping artifact) — the robust perceptual gamut map.
-    vec3 renderOKLCH(float L, float C, float ca, float sa){
-      if(!inGamut(oklab2lin(L, C*ca, C*sa))){
-        float lo=0.0, hi=C;
-        for(int i=0;i<14;i++){ float mid=0.5*(lo+hi); if(inGamut(oklab2lin(L, mid*ca, mid*sa))) lo=mid; else hi=mid; }
-        C=lo;
-      }
-      return toSRGB(clamp(oklab2lin(L, C*ca, C*sa), 0.0, 1.0));
-    }
-
-    // Whole topocentric attention net for one observer whose horizon frame is (nhat,ehat,up).
-    vec3 netColorSRGB(vec3 nhat, vec3 ehat, vec3 up){
+    // Whole topocentric attention net -> OKLab chroma (a,b) for horizon frame (nhat,ehat,up).
+    vec2 netAB(vec3 nhat, vec3 ehat, vec3 up){
       float inp[NB*TOK]; float vis[NB];
       for(int b=0;b<NB;b++){
         vec3 d = u_bodyEcef[b];
@@ -169,11 +148,41 @@ export function buildShaders(arch) {
       for(int d=0;d<D;d++){ float acc=0.0; for(int b=0;b<NB;b++) acc+=pw[b]*tok[b*D+d]; pooled[d]=acc/Z; }
       float hh[DHEAD];
       for(int oo=0;oo<DHEAD;oo++){ float s=W(OFF_BO1+oo); for(int d=0;d<D;d++) s+=W(OFF_WO1+oo*D+d)*pooled[d]; hh[oo]=tanh(s); }
-      // OKLCH polar head: C = cmax*sigmoid(z0), H = z1 (raw radians)
+      // OKLCH polar head: C = cmax*sigmoid(z0), H = z1 (raw radians) -> OKLab (a,b).
+      // Return (a,b) directly (continuous, no branch cut) — the field stores THIS, so all
+      // interpolation is Cartesian & perceptually uniform (no rainbow-bead hue interpolation).
       float z0=W(OFF_BO2+0), z1=W(OFF_BO2+1);
       for(int d=0;d<DHEAD;d++){ z0+=W(OFF_WO2+0*DHEAD+d)*hh[d]; z1+=W(OFF_WO2+1*DHEAD+d)*hh[d]; }
       float C = OKL_CMAX / (1.0 + exp(-z0));
-      return renderOKLCH(OKL_L, C, cos(z1), sin(z1));      // gamut-clipped OKLab -> sRGB
+      return vec2(C*cos(z1), C*sin(z1));
+    }`;
+
+  // OKLab (a,b) at the fixed neutral L -> gamma sRGB, with a HUE- and LIGHTNESS-preserving
+  // chroma clip to the sRGB gamut boundary (bisection; no hue/luminance shift, no hard clip).
+  // Runs PER PIXEL on the globe, on the interpolated (a,b).
+  const conv = /* glsl */`
+    #define OKL_L ${(arch.okl_l ?? 0.5).toFixed(5)}
+    #define OKL_CMAX ${(arch.okl_cmax ?? 0.4).toFixed(5)}
+    vec3 toSRGB(vec3 c){ return mix(12.92*c, 1.055*pow(c, vec3(1.0/2.4))-0.055, step(0.0031308, c)); }
+    vec3 oklab2lin(float L, float a, float b){
+      float L_=L+0.3963377774*a+0.2158037573*b;
+      float M_=L-0.1055613458*a-0.0638541728*b;
+      float S_=L-0.0894841775*a-1.2914855480*b;
+      float l=L_*L_*L_, m=M_*M_*M_, s=S_*S_*S_;
+      return vec3( 4.0767416621*l -3.3077115913*m +0.2309699292*s,
+                  -1.2684380046*l +2.6097574011*m -0.3413193965*s,
+                  -0.0041960863*l -0.7034186147*m +1.7076147010*s);
+    }
+    bool inGamut(vec3 c){ return all(greaterThanEqual(c, vec3(-0.001))) && all(lessThanEqual(c, vec3(1.001))); }
+    vec3 abToSRGB(vec2 ab){
+      float C = length(ab);
+      vec2 dir = C > 1e-9 ? ab / C : vec2(1.0, 0.0);       // hue direction (no atan needed)
+      if(!inGamut(oklab2lin(OKL_L, C*dir.x, C*dir.y))){
+        float lo=0.0, hi=C;
+        for(int i=0;i<14;i++){ float mid=0.5*(lo+hi); if(inGamut(oklab2lin(OKL_L, mid*dir.x, mid*dir.y))) lo=mid; else hi=mid; }
+        C=lo;
+      }
+      return toSRGB(clamp(oklab2lin(OKL_L, C*dir.x, C*dir.y), 0.0, 1.0));
     }`;
 
   // FIELD pass — full-screen quad over an equirectangular (lon,lat) target; one texel per sky.
@@ -185,26 +194,31 @@ export function buildShaders(arch) {
     precision highp float;
     ${net}
     #define PI 3.14159265358979
+    #define LAT_MAX 1.5706256            // 89.99 deg: keep the topocentric frame off the exact pole
     in vec2 vUv;
     out vec4 fragColor;
     void main(){
       float lon = (vUv.x*2.0 - 1.0) * PI;
-      float lat = (vUv.y - 0.5) * PI;
+      float lat = clamp((vUv.y - 0.5) * PI, -LAT_MAX, LAT_MAX);   // stabilise the poles (no gimbal)
       float cl = cos(lat), sl = sin(lat), co = cos(lon), so = sin(lon);
-      vec3 up = vec3(cl*co, sl, cl*so);                 // observer zenith (ECEF)
+      vec3 up = vec3(cl*co, sl, cl*so);                 // observer zenith (ECEF); |up.y| < 1 now
       vec3 nn = vec3(0.0,1.0,0.0) - up*up.y; float nl = length(nn);
       vec3 nhat = nl > 1e-6 ? nn/nl : vec3(1.0,0.0,0.0);
       vec3 ehat = cross(up, nhat);
-      fragColor = vec4(netColorSRGB(nhat, ehat, up), 1.0);
+      vec2 ab = netAB(nhat, ehat, up);                  // OKLab chroma (a,b)
+      fragColor = vec4(ab / (2.0*OKL_CMAX) + 0.5, 0.0, 1.0);      // encode (a,b) in [-cmax,cmax] -> [0,1]
     }`;
 
-  // GLOBE pass — sample the field texture by (lon,lat) of the surface point (un-mirrored).
+  // GLOBE pass — sample the field's interpolated (a,b) by (lon,lat) of the surface point
+  // (un-mirrored), then reconstruct OKLab -> sRGB PER PIXEL. Interpolation happens on the
+  // Cartesian (a,b), so gradients are smooth & bead-free; gamut clipping is per-pixel exact.
   const globeVertex = /* glsl */`
     precision highp float;
     out vec3 vPos;
     void main(){ vPos = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
   const globeFragment = /* glsl */`
     precision highp float;
+    ${conv}
     #define PI 3.14159265358979
     in vec3 vPos;
     out vec4 fragColor;
@@ -215,7 +229,8 @@ export function buildShaders(arch) {
       float lon = atan(-p.z, p.x);                      // un-mirrored (matches raycaster + map)
       float lat = asin(clamp(p.y, -1.0, 1.0));
       vec2 uv = vec2(lon/(2.0*PI) + 0.5, lat/PI + 0.5);
-      fragColor = vec4(texture(u_field, uv).rgb, u_opacity);
+      vec2 ab = (texture(u_field, uv).rg - 0.5) * (2.0*OKL_CMAX);  // decode interpolated (a,b)
+      fragColor = vec4(abToSRGB(ab), u_opacity);
     }`;
 
   return {

@@ -153,12 +153,17 @@ function archOf(w) {
 }
 function makeFieldRT(w, h) {
   if (fieldRT) fieldRT.dispose();
+  // The field stores OKLab (a,b) encoded to [0,1]. Prefer a half-float target so the (a,b)
+  // carry full precision (no banding when the globe reconstructs colour per pixel); fall back
+  // to 8-bit where EXT_color_buffer_float is unavailable (still correct, slightly coarser).
+  const halfOK = renderer.extensions.has("EXT_color_buffer_float");
   fieldRT = new THREE.WebGLRenderTarget(w, h, {
     minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
     wrapS: THREE.RepeatWrapping, wrapT: THREE.ClampToEdgeWrapping,
-    depthBuffer: false, format: THREE.RGBAFormat, type: THREE.UnsignedByteType,
+    depthBuffer: false, format: THREE.RGBAFormat,
+    type: halfOK ? THREE.HalfFloatType : THREE.UnsignedByteType,
   });
-  fieldRT.texture.colorSpace = THREE.NoColorSpace;   // we store display-ready sRGB ourselves
+  fieldRT.texture.colorSpace = THREE.NoColorSpace;   // raw (a,b) data, not a colour
   globeUniforms.u_field.value = fieldRT.texture;
   fieldDirty = true;
 }
