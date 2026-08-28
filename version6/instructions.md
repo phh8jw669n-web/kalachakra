@@ -21,19 +21,41 @@ typical colours and only the rare extremes are softly compressed. At the very en
 applies a **hue- and luminance-preserving gamut compression** so out-of-gamut resonance
 spikes glow toward white organically instead of hard-clipping to a neon primary.
 
-**Performance.** The celestial ephemeris depends only on *time*, not on the observer, so the
-full Kepler/lunar solve for all 11 bodies is computed **once per frame on the CPU** and
-handed to the shader as a tiny uniform array; the fragment shader then does only the cheap
-per-pixel horizontal projection + SIREN. The globe also renders **on demand** — when the
-clock is paused and the camera is still, the GPU idles completely. Both are exact refactors:
-the maths is identical (verified to float32 against the reference), just without the
-per-pixel redundancy.
+**Performance — three exact optimisations, no maths compromised.**
+1. *Ephemeris decoupled onto the CPU.* The 11 bodies' positions depend only on time, so they
+   are solved once per frame on the CPU and folded (with GMST) into 11 **Earth-fixed**
+   direction uniforms `u_bodyEcef[11]`. The shader builds each observer's horizon basis
+   **directly from the surface normal** (`up = N`, `east = normalize(N × pole)`,
+   `north = east × up`) — pure vector ops, no spherical-trig angles, **no pole/seam
+   singularity**. This is algebraically identical to the classic topocentric projection
+   (verified to float32 against `topocentric_tensor`).
+2. *SIREN in the vertex shader (the big win).* The colour field is smooth, so the SIREN is
+   evaluated **per vertex** on a fine sphere (~52k verts) and the GPU interpolates colour
+   across triangles for free — ~40× less neural work than per-pixel, visually
+   indistinguishable, an easy 60–120 fps. The **Render** control chooses:
+   *Auto* (per-vertex while you move, a per-pixel **exact** frame the instant you stop),
+   *Fast* (always per-vertex), or *Exact* (always per-pixel, the mathematical reference).
+3. *Render-on-demand + adaptive resolution.* A still, paused globe idles the GPU entirely;
+   the exact path also drops buffer resolution while moving and snaps to full-res on settle.
+
+**Bounded output (no black/white clamping).** The SIREN head squashes its logits with a
+slope-1 `tanh` so colour is always displayable — `L* = 50 + 50·tanh(zL/50)` in (0,100),
+`a*,b* = 90·tanh(z/90)` in ±90 — preserving the metric for typical colours and only softly
+compressing extremes; a final hue/luminance-preserving gamut compression makes spikes glow
+toward white instead of clipping to neon.
+
+**A world map underneath.** A dark ocean sphere + real Natural-Earth coastlines
+(`web/coastlines.json`) + an optional graticule sit under the field, and every body is drawn
+as a labelled glyph floating over its sub-point (where it is at zenith). The field is a
+semi-transparent overlay — the **Field opacity** slider blends between the energy field and
+the map. Drop an equirectangular `web/earth.jpg` next to `index.html` for a photographic
+base (same convention as version5).
 
 | Module | What it is | Where it lives |
 | --- | --- | --- |
 | **1 · Core Engine** | ephemeris + SIREN + isometric training | `ephemeris.py`, `siren.py`, `losses.py`, `dataset.py`, `training.py` |
-| **2 · Global Canvas** | Three.js sphere; the full pipeline in one fragment shader | `web/shader6.js`, `web/main.js` |
-| **3 · Temporal Helm** | 64-bit Julian-Date clock, playback, scrubber, date jump | `web/main.js`, `web/index.html` |
+| **2 · Global Canvas** | Three.js sphere (vertex/pixel SIREN) over a world map | `web/shader6.js`, `web/geo.js`, `web/planets.js`, `web/main.js` |
+| **3 · Temporal Helm** | LIVE/Time-Machine clock, timezone, speed, steps, scrubber | `web/main.js`, `web/timecal.js`, `web/index.html` |
 | **4 · Observer's HUD** | click a point → live 33-D matrix + colour readout | `web/ephemeris6.js`, `web/siren6.js`, `web/main.js` |
 
 ---
@@ -123,28 +145,33 @@ python -m http.server 8080
 # then open http://localhost:8080/  in a WebGL2 browser
 ```
 
-You should see the SIREN globe. The SIREN colour field runs in the fragment shader, so
-panning and zooming re-evaluate every visible pixel exactly (the ephemeris is refreshed once
-per frame on the CPU — see **Performance** above).
+You should see the SIREN globe over a coastline world map, with all 11 bodies labelled around
+it. The colour field is the SIREN; the map + planets orient it geographically.
 
-### Module 2 — navigating the globe
-- **Drag** to orbit, **scroll / pinch** to zoom. Damping gives it inertia.
-- Zoom range runs from the full globe down to street level (`minDistance` ≈ surface).
+### Module 2 — the globe & world map (control panel, draggable / hideable)
+- **Drag** to orbit, **scroll / pinch** or the **＋ / －** buttons (and **↑ / ↓**) to zoom,
+  from the whole globe down to street level.
+- **Field opacity** — blend the energy field over the world map (0 = just the map, 1 = just
+  the field).
+- **Render** — *Auto* (per-vertex while moving, per-pixel exact when still), *Fast*
+  (per-vertex everywhere), or *Exact* (per-pixel everywhere).
+- **Overlays** — city-free coastline **map**, **coastlines**, **graticule**, **planets**
+  (glyphs around the globe at each body's sub-point) and their **labels**.
 
-### Module 3 — the Temporal Helm (bottom bar)
-- **▶ Play / ⏸ Pause** — advance the clock in real time.
-- **Speed** slider — a logarithmic multiplier from `1×` up to millions×, and **negative to
-  rewind**. `1×` is real-time; drag right to fast-forward centuries.
-- **Scrubber** — a fluid (`step="any"`) drag across the full ±5000-year span; the label shows
-  the target date as you move.
-- **Jump to** — type an exact UTC date-time and press **Go** to teleport the clock there.
-- **◉ Now** — snap back to the current instant.
+### Module 3 — the Temporal Helm
+- **Enter Time Machine / Go Live** — LIVE tracks the real clock; the Time Machine freezes,
+  plays, scrubs and jumps.
+- **▶ Play / ⏸ Pause**, **◉ Now** (snap to the present).
+- **Clock zone** — Local, UTC, IST and the world offsets (display only; never touches the
+  UTC/JD used for the physics).
+- **Speed** — a logarithmic multiplier up to millions×, negative to rewind.
+- **Step / tick** presets (24 s, 1 h, 1 d, 1 mo, 1 yr) + a **custom step** (hours) with
+  ← / → single-step buttons.
+- **Scrubber** — a fluid drag across the whole ±5000-year timeline.
+- **Jump to** — type an exact UTC date-time and press **Go**.
 
-Time is a 64-bit Julian Date. To keep GLSL's 32-bit floats precise across ten millennia, the
-date is split into two uniforms — `u_baseDays` (the exact integer day count, constant during
-animation) plus `u_timeOffset` (the small animated remainder) — so playback and scrubbing stay
-smooth. (Far from the present, the Moon's fast motion can show faint fp32 stepping; this is an
-inherent, documented limit of doing everything on-GPU.)
+Time is a 64-bit Julian Date on the CPU; the shader only ever receives bounded Earth-fixed
+vectors, so there is no fp32 date-precision limit.
 
 ### Module 4 — the Observer's HUD (lower-left glass panel)
 - **Click / tap** anywhere on the globe. A reticle pins that exact floating-point `(lat, lon)`.
@@ -169,6 +196,11 @@ runs, the swatch in the panel matches the pixel under the reticle.
   the JS/GLSL ports pick them up automatically.
 - **Different time window** → `--jd-start` / `--jd-end` narrow or widen the training span; keep
   the web client's `JD_MIN/JD_MAX` in `main.js` consistent if you change it drastically.
+- **Smoothness on weak GPUs** → leave **Render** on *Auto* (or *Fast*); raise `SEG_W`/`SEG_H`
+  in `main.js` for finer vertex interpolation, lower them for more speed.
+
+**Keyboard:** `Space` play/pause · `L` now · `←/→` step · `↑/↓` zoom · `G` graticule ·
+`R` reset view.
 
 ---
 
@@ -235,14 +267,19 @@ version6/
   train.py            CLI: python -m version6.train
   export_weights.py   CLI: python -m version6.export_weights  (+ golden.json)
   web/
-    index.html        page shell (top clock, HUD, Temporal Helm)
+    index.html        page shell (clock, control panel, Observer HUD)
     style.css         glass-panel styling
-    main.js           Modules 2–4: Three.js scene, clock, raycaster, HUD
-    shader6.js        Module 2: the full ephemeris + SIREN + Lab→sRGB fragment shader
-    ephemeris6.js     Module 4: JS port of ephemeris.py
-    siren6.js         Module 4: JS port of the SIREN forward pass + Lab→sRGB
-    weights.json      (generated) exported SIREN weights + lab_offset
+    main.js           Modules 2–4: scene, render modes, helm, HUD, planets, map
+    shader6.js        Module 2: vertex + pixel SIREN shaders (shared fieldLinearRGB)
+    geo.js            Module 2: ocean sphere + coastlines + graticule (+ optional earth.jpg)
+    planets.js        Module 2: labelled body glyphs around the globe (sub-points)
+    ephemeris6.js     JS port of ephemeris.py (equatorialDirs / gmstRad / topocentricTensor)
+    siren6.js         JS port of the SIREN forward + bounded head + Lab→sRGB
+    timecal.js        calendar + display-timezone helpers
+    coastlines.json   Natural-Earth coastlines (the world map)
+    weights.json      (generated) exported SIREN weights
     golden.json       (generated) parity reference points
+    earth.jpg         (optional) equirectangular photographic base, if you supply one
 ```
 
 That's the whole loop: **train → export → serve → explore.**
