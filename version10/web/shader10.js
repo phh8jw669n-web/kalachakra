@@ -64,6 +64,7 @@ export function buildShaders(arch) {
     #define DHEAD ${DHEAD}
     #define NB ${NB}
     #define N_PLANETS ${arch.n_planets ?? 11}
+    #define N_ANCHORS ${arch.n_anchors ?? 0}
     #define NBL ${NBL}
     #define TOK ${TOK}
     #define INV_SQRTD ${(1.0 / Math.sqrt(D)).toFixed(8)}
@@ -122,7 +123,10 @@ export function buildShaders(arch) {
       for(int b=0;b<NB;b++){
         vec3 d = ecef[b];
         inp[b*TOK+0]=dot(d,nhat); inp[b*TOK+1]=dot(d,ehat); inp[b*TOK+2]=dot(d,up);
-        vis[b] = VISB * inp[b*TOK+2];
+        // ASC/MC (last N_ANCHORS tokens) are structural axes: always fully visible (z:=1),
+        // exempt from the horizon-visibility falloff that would zero out the on-horizon ASC.
+        float zz = (b >= NB - N_ANCHORS) ? 1.0 : inp[b*TOK+2];
+        vis[b] = VISB * zz;
       }
       float tok[NB*D];
       for(int b=0;b<NB;b++)

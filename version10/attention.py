@@ -85,12 +85,17 @@ class TopoAttention(nn.Module):
 
     def __init__(self, n_bodies: int = 13, token_dim: int = 3, d_model: int = 32,
                  d_ff: int = 64, d_head: int = 32, n_blocks: int = 2, vis_bias: float = 3.0,
-                 okl_l: float = 0.5, okl_cmax: float = 0.4):
+                 n_anchors: int = 2, okl_l: float = 0.5, okl_cmax: float = 0.4):
         super().__init__()
         self.cfg = {"n_bodies": n_bodies, "token_dim": token_dim, "d_model": d_model,
                     "d_ff": d_ff, "d_head": d_head, "n_blocks": n_blocks, "vis_bias": vis_bias,
-                    "okl_l": okl_l, "okl_cmax": okl_cmax}
+                    "n_anchors": n_anchors, "okl_l": okl_l, "okl_cmax": okl_cmax}
         self.vis_bias = vis_bias
+        #: the last n_anchors tokens (ASC, MC) are structural coordinate axes, NOT physical
+        #: bodies. They are EXEMPT from the horizon-visibility prior (which would zero out the
+        #: Ascendant, since it sits on the horizon at zenith~0): they get the full vis_bias
+        #: regardless of altitude, so they compete equally with each other and are not suppressed.
+        self.n_anchors = n_anchors
         self.embed = nn.Linear(token_dim, d_model)
         self.body_emb = nn.Parameter(torch.randn(n_bodies, d_model) * 0.02)
         self.blocks = nn.ModuleList([AttnBlock(d_model, d_ff) for _ in range(n_blocks)])
@@ -115,7 +120,11 @@ class TopoAttention(nn.Module):
         """``x``: ``[N,13,3]`` (or ``[N,39]``, auto-reshaped) -> ``[N,2]`` OKLab (a,b)."""
         if x.dim() == 2:
             x = x.view(x.shape[0], self.cfg["n_bodies"], self.cfg["token_dim"])
-        vis = self.vis_bias * x[..., 2]                    # [N,11] horizon-visibility bias
+        zen = x[..., 2]                                    # zenith component per token
+        if self.n_anchors > 0:                             # ASC/MC: always fully visible (z:=1)
+            zen = torch.cat([zen[..., :-self.n_anchors],
+                             torch.ones_like(zen[..., -self.n_anchors:])], dim=-1)
+        vis = self.vis_bias * zen                          # [N,NB] visibility bias (bodies gated)
         t = self.embed(x) + self.body_emb                  # [N,11,D]
         for blk in self.blocks:
             t = blk(t, vis)
@@ -143,7 +152,7 @@ class TopoAttention(nn.Module):
             "arch": "v10_topo_attention", "output_activation": "v10_oklch", "out_features": 2,
             "n_bodies": c["n_bodies"], "token_dim": c["token_dim"], "d_model": c["d_model"],
             "d_ff": c["d_ff"], "d_head": c["d_head"], "n_blocks": c["n_blocks"],
-            "vis_bias": c["vis_bias"],
+            "vis_bias": c["vis_bias"], "n_anchors": c["n_anchors"],
             "okl_l": c["okl_l"], "okl_cmax": c["okl_cmax"],
             "W_in": W(self.embed), "b_in": b(self.embed),
             "E_body": self.body_emb.detach().cpu().tolist(),

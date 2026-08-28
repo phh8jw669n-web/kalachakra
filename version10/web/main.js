@@ -1,11 +1,14 @@
-// main.js — Kalachakra v9 client. A Topocentric Self-Attention "energy signature" globe.
+// main.js — Kalachakra v10 client. A Topocentric Self-Attention "energy signature" globe.
 //
-// The whole micro-transformer (11 body tokens -> attention -> pooled read-out -> L*a*b*) runs
-// PER VERTEX in shader10.js; the GPU interpolates colour across triangles. The CPU computes the
-// 11 Earth-fixed body directions + GMST once per frame and hands them to the shader. Around the
-// field: a world map (geo.js), the 11 bodies as 3D spheres (planets10.js), the full v5-style
-// Temporal Helm, and an Observer HUD that also streams the per-body attention "energy
-// contribution". Self-contained — no cross-version imports.
+// The whole micro-transformer (13 tokens: 11 bodies + ASC + MC -> attention -> pooled read-out
+// -> OKLCH chroma) runs PER TEXEL in the shader10.js field pass, which renders an offscreen
+// equirectangular OKLab (a,b) texture once per time change; the globe pass then samples it and
+// converts to sRGB per pixel (so there are no per-vertex "beads"). The CPU uploads the 11
+// Earth-fixed body directions + GMST + obliquity once per time step; the shader derives the two
+// observer-dependent anchors (ASC/MC) per texel. ASC/MC are structural axes, exempt from the
+// horizon-visibility prior. Around the field: a world map (geo.js), the 11 bodies + ASC/MC
+// markers (planets10.js), the full v5-style Temporal Helm, and an Observer HUD that also streams
+// the per-token attention "energy contribution". Self-contained — no cross-version imports.
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -26,7 +29,7 @@ import { createPlanets, createAnchors } from "./planets10.js";
 
 const DEFAULT_ARCH = {
   arch: "v10_topo_attention", n_bodies: 13, token_dim: 3, d_model: 32, d_ff: 64, d_head: 32,
-  n_blocks: 2, vis_bias: 3.0, out_features: 2, okl_l: 0.5, okl_cmax: 0.4,
+  n_blocks: 2, vis_bias: 3.0, n_anchors: 2, out_features: 2, okl_l: 0.5, okl_cmax: 0.4,
 };
 const JD_MIN = J2000 - 5000 * 365.25, JD_MAX = J2000 + 5000 * 365.25;
 const LIVE_REFRESH_MS = 1000;
@@ -162,7 +165,7 @@ function archOf(w) {
   return {
     arch: "v10_topo_attention", n_bodies: w.n_bodies ?? 13, n_planets: N_PLANETS, token_dim: w.token_dim ?? 3,
     d_model: w.d_model, d_ff: w.d_ff, d_head: w.d_head, n_blocks: w.n_blocks,
-    vis_bias: w.vis_bias ?? 3.0, out_features: w.out_features ?? 2, okl_l: w.okl_l ?? 0.5, okl_cmax: w.okl_cmax ?? 0.4,
+    vis_bias: w.vis_bias ?? 3.0, n_anchors: w.n_anchors ?? 2, out_features: w.out_features ?? 2, okl_l: w.okl_l ?? 0.5, okl_cmax: w.okl_cmax ?? 0.4,
   };
 }
 function makeFieldRT(w, h) {

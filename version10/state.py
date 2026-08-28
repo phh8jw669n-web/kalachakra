@@ -2,12 +2,12 @@
 
 Two distinct roles, kept deliberately separate:
 
-* **Model input** — the 33-D local sky, i.e. the 11 bodies' topocentric unit vectors
-  (North, East, Zenith), reshaped to ``[11, 3]`` tokens. This (and only this) is what the
-  self-attention network sees; it learns the relations itself.
+* **Model input** — the 39-D local sky, i.e. the 13 tokens' topocentric unit vectors
+  (North, East, Zenith) — 11 bodies + ASC + MC — reshaped to ``[13, 3]``. This (and only this)
+  is what the self-attention network sees; it learns the relations itself.
 
 * **Loss target** — an *observer-dependent* sky distance built from those same vectors:
-  the 33-D local part PLUS 55-D **horizon-gated chords**
+  the 39-D local part PLUS 78-D **horizon-gated chords**
   ``R_ij = g_i * g_j * (v_i . v_j)`` with ``g_b = sigmoid(gate_k * zenith_b)``.
 
   Plain chords ``v_i . v_j`` are rotation-invariant, hence identical for every observer at a
@@ -37,23 +37,23 @@ _PAIR_J = np.array([j for _, j in PAIRS])
 
 
 def local_vectors(lat_deg, lon_deg, jd) -> np.ndarray:
-    """Any ``(lat, lon, jd)`` -> the 33-D topocentric local sky ``[N,33]`` float32."""
+    """Any ``(lat, lon, jd)`` -> the 39-D topocentric local sky ``[N,39]`` float32."""
     return topocentric_tensor(lat_deg, lon_deg, jd)
 
 
 def body_tokens(local: np.ndarray) -> np.ndarray:
-    """``[N,33]`` -> ``[N,11,3]`` (North,East,Zenith) tokens — the model input."""
+    """``[N,39]`` -> ``[N,13,3]`` (North,East,Zenith) tokens — the model input."""
     return local.reshape(local.shape[0], N_BODIES, 3)
 
 
 def horizon_gate(local: np.ndarray, gate_k: float) -> np.ndarray:
-    """``[N,33]`` -> ``[N,11]`` visibility gate g_b = sigmoid(gate_k * zenith_b)."""
+    """``[N,39]`` -> ``[N,13]`` visibility gate g_b = sigmoid(gate_k * zenith_b)."""
     zen = local.reshape(local.shape[0], N_BODIES, 3)[:, :, 2]
     return 1.0 / (1.0 + np.exp(-gate_k * zen))
 
 
 def gated_chords(local: np.ndarray, gate_k: float) -> np.ndarray:
-    """``[N,33]`` -> ``[N,55]`` horizon-gated chords R_ij = g_i*g_j*(v_i.v_j)."""
+    """``[N,39]`` -> ``[N,78]`` horizon-gated chords R_ij = g_i*g_j*(v_i.v_j)."""
     n = local.shape[0]
     v = local.reshape(n, N_BODIES, 3)
     g = horizon_gate(local, gate_k)

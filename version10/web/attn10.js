@@ -25,11 +25,12 @@ const tanh = Math.tanh;
 // Build a forward fn: local (Float array of 33) -> { lab:[L,a,b], pool:[11] energy weights }.
 export function makeModel(weights) {
   const W = weights, NB = W.n_bodies, D = W.d_model;
-  const invSqrtD = 1.0 / Math.sqrt(D);
+  const invSqrtD = 1.0 / Math.sqrt(D), nAnch = W.n_anchors ?? 0;
   return function forward(local) {
-    // horizon-visibility bias per body (vis_bias * zenith), added to attention + pool scores
+    // horizon-visibility bias (vis_bias * zenith) for bodies; the last nAnch tokens (ASC/MC)
+    // are structural axes -> always fully visible (zenith := 1), never suppressed by the horizon.
     const vis = new Array(NB);
-    for (let b = 0; b < NB; b++) vis[b] = W.vis_bias * local[b * 3 + 2];
+    for (let b = 0; b < NB; b++) vis[b] = W.vis_bias * (b >= NB - nAnch ? 1.0 : local[b * 3 + 2]);
     // embed tokens: t[b] = W_in·x[b] + b_in + E_body[b]
     const t = new Array(NB);
     for (let bdy = 0; bdy < NB; bdy++) {

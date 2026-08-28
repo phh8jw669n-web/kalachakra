@@ -55,6 +55,14 @@ visibility-primed so above-horizon tokens dominate). The isometric loss targets 
 observer-dependent** geometric distance (local vectors + horizon-gated chords) — never the
 network's own attention (that collapses). Colour is pure **OKLCH** (see §3).
 
+**Structural anchors are exempt from the horizon prior (`n_anchors = 2`).** The `vis_bias·zenith`
+term is applied only to the 11 *body* tokens; the last two tokens (ASC, MC) are coordinate axes,
+not physical bodies, so they get the full `vis_bias` regardless of altitude (their zenith is
+treated as 1). This is mandatory: the Ascendant sits *on* the horizon by definition (zenith ≈ 0),
+so gating it by zenith would wrongly zero out its prominence — after the exemption ASC competes
+on equal footing with MC in both the per-block attention and the pooled read-out. The exemption
+is mirrored identically in `attn10.js` and the GLSL field shader (parity-tested).
+
 **Anti-ringing recalibration (v10):**
 
 * **Softer horizon gate** — `gate_k` 8.0 → **3.0**. A gentle physical falloff for angular

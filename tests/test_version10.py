@@ -103,6 +103,7 @@ def test_export_structure():
     w = build_model(d_model=16, d_ff=32, d_head=16, n_blocks=2).export_weights()
     assert w["arch"] == "v10_topo_attention" and w["output_activation"] == "v10_oklch"
     assert w["n_bodies"] == 13 and w["out_features"] == 2 and w["okl_cmax"] == 0.4
+    assert w["n_anchors"] == 2                                          # ASC/MC exempt from vis prior
     assert len(w["E_body"]) == 13 and len(w["Wo2"]) == 2
 
 
@@ -115,7 +116,11 @@ def _numpy_model(w, local):
     x = np.asarray(local, dtype=np.float64).reshape(-1, w["n_bodies"], w["token_dim"])
     D = w["d_model"]
     s = 1.0 / math.sqrt(D)
-    vis = w["vis_bias"] * x[:, :, 2]
+    zen = x[:, :, 2].copy()
+    na = w.get("n_anchors", 0)
+    if na > 0:                                    # ASC/MC are structural axes -> always fully visible
+        zen[:, -na:] = 1.0
+    vis = w["vis_bias"] * zen
 
     def lin(h, W, b):
         return h @ np.asarray(W).T + np.asarray(b)

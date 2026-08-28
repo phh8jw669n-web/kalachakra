@@ -26,6 +26,10 @@ class AttnConfig:
     #: modulates on top. This is a fixed structural prior (the isometric objective alone does
     #: not reward peaky attention, so the domain physics is baked in rather than hoped for).
     vis_bias: float = 3.0
+    #: the last n_anchors tokens (ASC, MC) are structural axes, EXEMPT from the horizon-
+    #: visibility prior — they get the full vis_bias regardless of altitude (the Ascendant sits
+    #: on the horizon, so gating it by zenith would wrongly zero out its prominence).
+    n_anchors: int = 2
     #: OKLCH pure-chroma head (no luminance): the model outputs polar (C,H) ->
     #: OKLab (a,b) = (C cosH, C sinH), C = okl_cmax*sigmoid(z0), H = z1 (raw radians). okl_l is
     #: the FIXED neutral OKLab lightness supplied only at render time, so the globe is a
