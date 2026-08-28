@@ -32,6 +32,8 @@ STATE_DIM = N_LOCAL + N_CHORD   # 117 — local (39) ++ gated chords (78) — th
 #: the 78 unique (i, j) token pairs, i < j — the canonical chord order.
 PAIRS: list[tuple[int, int]] = [(i, j) for i in range(N_BODIES) for j in range(i + 1, N_BODIES)]
 assert len(PAIRS) == N_CHORD
+_PAIR_I = np.array([i for i, _ in PAIRS])   # vectorised chord indexing (same order as PAIRS)
+_PAIR_J = np.array([j for _, j in PAIRS])
 
 
 def local_vectors(lat_deg, lon_deg, jd) -> np.ndarray:
@@ -55,19 +57,17 @@ def gated_chords(local: np.ndarray, gate_k: float) -> np.ndarray:
     n = local.shape[0]
     v = local.reshape(n, N_BODIES, 3)
     g = horizon_gate(local, gate_k)
-    out = np.empty((n, N_CHORD), dtype=local.dtype)
-    for k, (i, j) in enumerate(PAIRS):
-        out[:, k] = g[:, i] * g[:, j] * np.sum(v[:, i] * v[:, j], axis=1)
-    return out
+    dots = np.einsum("nki,nki->nk", v[:, _PAIR_I], v[:, _PAIR_J])   # [n,78] v_i·v_j per pair
+    return (g[:, _PAIR_I] * g[:, _PAIR_J] * dots).astype(local.dtype)
 
 
 def target_features(lat_deg, lon_deg, jd, gate_k: float) -> np.ndarray:
-    """The 88-D observer-dependent loss-target features ``[N,88]`` (local ++ gated chords)."""
+    """The 117-D observer-dependent loss-target features ``[N,117]`` (local ++ gated chords)."""
     local = local_vectors(lat_deg, lon_deg, jd)
     chords = gated_chords(local, gate_k)
     return np.concatenate([local, chords], axis=1).astype(np.float32)
 
 
 def split_target(feat):
-    """Split ``[N,88]`` target features into local ``[N,33]`` and gated-chord ``[N,55]``."""
+    """Split ``[N,117]`` target features into local ``[N,39]`` and gated-chord ``[N,78]``."""
     return feat[..., :N_LOCAL], feat[..., N_LOCAL:]
