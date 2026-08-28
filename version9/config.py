@@ -26,9 +26,11 @@ class AttnConfig:
     #: modulates on top. This is a fixed structural prior (the isometric objective alone does
     #: not reward peaky attention, so the domain physics is baked in rather than hoped for).
     vis_bias: float = 3.0
-    #: gamut-bounded head: L* = l0 + lspan*sigmoid(z0); a*,b* = ab*tanh(z)
-    lab_l0: float = 5.0
-    lab_lspan: float = 90.0
+    #: pure-chroma head: the model outputs only a*,b* = ab*tanh(z) — no luminance. lab_l is a
+    #: FIXED neutral lightness supplied at render time so the globe is a constant-brightness
+    #: chromatic energy field (raise it toward ~65 for a more luminous "glow"; higher chroma at
+    #: low L* gets gamut-compressed and reads muted).
+    lab_l: float = 50.0
     lab_ab: float = 80.0
 
 

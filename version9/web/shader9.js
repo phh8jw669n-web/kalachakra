@@ -7,7 +7,7 @@
 //   2. project the 11 Earth-fixed body vectors -> 33 local (North,East,Zenith);
 //   3. run the attention network from shader9's weight texture (identical maths to attn9.js
 //      and attention.py: matmul / tanh / softmax, with the horizon-visibility score bias);
-//   4. gamut-bounded L*a*b* -> linear sRGB.
+//   4. pure a*,b* chroma at a FIXED neutral L* -> linear sRGB (no luminance from the model).
 // The field frame negates z (N.x, N.y, -N.z) so the world map reads un-mirrored while the
 // field stays physically exact. Requires WebGL2 (GLSL ES 3.00): texelFetch in the vertex stage.
 //
@@ -31,6 +31,7 @@ export function packWeights(w) {
 export function buildShaders(arch) {
   const D = arch.d_model, DFF = arch.d_ff, DHEAD = arch.d_head;
   const NB = arch.n_bodies, NBL = arch.n_blocks, TOK = arch.token_dim;
+  const OUTC = arch.out_features ?? 2;      // pure chroma: a*, b*
   // ---- weight-texture offsets (must mirror packWeights order exactly) ----
   let o = 0;
   const OFF_WIN = o; o += D * TOK;
@@ -43,8 +44,8 @@ export function buildShaders(arch) {
   const OFF_TAUPOOL = o; o += 1;
   const OFF_WO1 = o; o += DHEAD * D;
   const OFF_BO1 = o; o += DHEAD;
-  const OFF_WO2 = o; o += 3 * DHEAD;
-  const OFF_BO2 = o; o += 3;
+  const OFF_WO2 = o; o += OUTC * DHEAD;
+  const OFF_BO2 = o; o += OUTC;
   // within-block sub-offsets (relative to a block base)
   const BWQ = 0, BBQ = D * D, BWK = D * D + D, BBK = 2 * D * D + D, BWV = 2 * D * D + 2 * D,
     BBV = 3 * D * D + 2 * D, BW1 = 3 * D * D + 3 * D, BB1 = 3 * D * D + 3 * D + DFF * D,
@@ -60,8 +61,7 @@ export function buildShaders(arch) {
     #define TOK ${TOK}
     #define INV_SQRTD ${(1.0 / Math.sqrt(D)).toFixed(8)}
     #define VISB ${(arch.vis_bias ?? 3.0).toFixed(4)}
-    #define LAB_L0 ${(arch.lab_l0 ?? 5).toFixed(1)}
-    #define LAB_LSPAN ${(arch.lab_lspan ?? 90).toFixed(1)}
+    #define LAB_L ${(arch.lab_l ?? 50).toFixed(1)}
     #define LAB_AB ${(arch.lab_ab ?? 80).toFixed(1)}
     #define OFF_WIN ${OFF_WIN}
     #define OFF_BIN ${OFF_BIN}
@@ -177,9 +177,10 @@ export function buildShaders(arch) {
       // 3d. output head -> gamut L*a*b*
       float hh[DHEAD];
       for(int oo=0;oo<DHEAD;oo++){ float s=W(OFF_BO1+oo); for(int d=0;d<D;d++) s+=W(OFF_WO1+oo*D+d)*pooled[d]; hh[oo]=tanh(s); }
-      float z0=W(OFF_BO2+0), z1=W(OFF_BO2+1), z2=W(OFF_BO2+2);
-      for(int d=0;d<DHEAD;d++){ z0+=W(OFF_WO2+0*DHEAD+d)*hh[d]; z1+=W(OFF_WO2+1*DHEAD+d)*hh[d]; z2+=W(OFF_WO2+2*DHEAD+d)*hh[d]; }
-      vec3 Lab = vec3(LAB_L0 + LAB_LSPAN/(1.0+exp(-z0)), LAB_AB*tanh(z1), LAB_AB*tanh(z2));
+      // pure-chroma head: a*, b* only; a fixed neutral L* completes the CIE L*a*b* triple
+      float z0=W(OFF_BO2+0), z1=W(OFF_BO2+1);
+      for(int d=0;d<DHEAD;d++){ z0+=W(OFF_WO2+0*DHEAD+d)*hh[d]; z1+=W(OFF_WO2+1*DHEAD+d)*hh[d]; }
+      vec3 Lab = vec3(LAB_L, LAB_AB*tanh(z0), LAB_AB*tanh(z1));
 
       // 4. L*a*b* -> linear sRGB
       float fy=(Lab.x+16.0)/116.0, fx=fy+Lab.y/500.0, fz=fy-Lab.z/200.0, dlt=6.0/29.0;

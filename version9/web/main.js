@@ -23,7 +23,7 @@ import { createPlanets } from "./planets9.js";
 
 const DEFAULT_ARCH = {
   arch: "v9_topo_attention", n_bodies: 11, token_dim: 3, d_model: 32, d_ff: 64, d_head: 32,
-  n_blocks: 2, vis_bias: 3.0, lab_l0: 5, lab_lspan: 90, lab_ab: 80,
+  n_blocks: 2, vis_bias: 3.0, out_features: 2, lab_l: 50, lab_ab: 80,
 };
 const JD_MIN = J2000 - 5000 * 365.25, JD_MAX = J2000 + 5000 * 365.25;
 const LIVE_REFRESH_MS = 1000;
@@ -130,8 +130,8 @@ function randomWeights(a) {
   return {
     ...a, W_in: mat(D, a.token_dim), b_in: vecR(D, 0), E_body: mat(a.n_bodies, D),
     blocks, q_pool: vecR(D), tau_pool: 1.0,
-    Wo1: mat(DHEAD, D), bo1: vecR(DHEAD, 0), Wo2: mat(3, DHEAD), bo2: vecR(3, 0),
-    output_activation: "v9_gamut", gamma: 32,
+    Wo1: mat(DHEAD, D), bo1: vecR(DHEAD, 0), Wo2: mat(2, DHEAD), bo2: vecR(2, 0),
+    output_activation: "v9_chroma", gamma: 32,
   };
 }
 function makeWeightTexture(weights) {
@@ -145,7 +145,7 @@ function archOf(w) {
   return {
     arch: "v9_topo_attention", n_bodies: w.n_bodies ?? 11, token_dim: w.token_dim ?? 3,
     d_model: w.d_model, d_ff: w.d_ff, d_head: w.d_head, n_blocks: w.n_blocks,
-    vis_bias: w.vis_bias ?? 3.0, lab_l0: w.lab_l0 ?? 5, lab_lspan: w.lab_lspan ?? 90, lab_ab: w.lab_ab ?? 80,
+    vis_bias: w.vis_bias ?? 3.0, out_features: w.out_features ?? 2, lab_l: w.lab_l ?? 50, lab_ab: w.lab_ab ?? 80,
   };
 }
 function buildGlobe(weights) {
@@ -249,7 +249,7 @@ function updateReadouts(now) {
     enRows[b].row.classList.toggle("down", local[b * 3 + 2] < 0);   // below the observer's horizon
   }
   const hex = srgbToHex(labToSrgb(lab3[0], lab3[1], lab3[2]));
-  el.lab.textContent = `L* ${lab3[0].toFixed(1)}  a* ${lab3[1].toFixed(1)}  b* ${lab3[2].toFixed(1)}`;
+  el.lab.textContent = `a* ${lab3[1].toFixed(1)}  b* ${lab3[2].toFixed(1)}  ·  L* ${lab3[0].toFixed(0)} fixed`;
   el.hex.textContent = hex; el.swatch.style.background = hex;
   el["pin-lat"].textContent = app.pin.lat.toFixed(4); el["pin-lon"].textContent = app.pin.lon.toFixed(4);
 }

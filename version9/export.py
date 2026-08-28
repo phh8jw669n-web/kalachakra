@@ -26,8 +26,9 @@ def export(checkpoint: str, out_path: str) -> str:
     out_path = export_weights_json(checkpoint, out_path)
     print(f"exported attention weights -> {out_path}")
 
-    model, _payload, _cfg = load_checkpoint(checkpoint, map_location="cpu")
+    model, _payload, cfg = load_checkpoint(checkpoint, map_location="cpu")
     model.eval()
+    lab_l = cfg.attn.lab_l                                    # fixed render lightness
     pts = [(48.8566, 2.3522, 2468579.123456), (51.5074, -0.1278, 2451545.0),
            (-33.8688, 151.2093, 2500000.5), (0.0, 0.0, 2440000.0), (78.2, 15.6, 2460000.0)]
     lat = np.array([p[0] for p in pts])
@@ -36,14 +37,15 @@ def export(checkpoint: str, out_path: str) -> str:
     local = st.local_vectors(lat, lon, jd)                   # [P,33]
     x = torch.from_numpy(local)
     with torch.no_grad():
-        lab, pool = model(x, return_pool=True)
-    lab = lab.numpy()
+        ab, pool = model(x, return_pool=True)                # ab: [P,2] pure chroma
+    ab = ab.numpy()
     pool = pool.numpy()
     golden = {"points": [
         {"lat": pts[i][0], "lon": pts[i][1], "jd": pts[i][2],
          "local": local[i].astype(float).round(6).tolist(),
          "pool": pool[i].astype(float).round(6).tolist(),
-         "lab": lab[i].astype(float).round(6).tolist()} for i in range(len(pts))]}
+         "ab": ab[i].astype(float).round(6).tolist(),
+         "lab": [lab_l, float(round(ab[i][0], 6)), float(round(ab[i][1], 6))]} for i in range(len(pts))]}
     gp = Path(out_path).with_name("golden.json")
     gp.write_text(json.dumps(golden, indent=2))
     print(f"wrote golden vector -> {gp}")

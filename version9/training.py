@@ -104,7 +104,7 @@ def train(cfg: V9Config, *, resume: str | None = None, max_steps: int | None = N
     logger.info(f"device={device}  params={n_params:,}  steps={start_step}->{steps_target}"
                 f"{'  (RESUMED)' if resume else ''}")
     logger.info(f"model: d_model={a.d_model} d_ff={a.d_ff} d_head={a.d_head} blocks={a.n_blocks}"
-                f"  Lab-head=(L {a.lab_l0:.0f}..{a.lab_l0 + a.lab_lspan:.0f}, ab +/-{a.lab_ab:.0f})")
+                f"  head=pure-chroma a*,b* +/-{a.lab_ab:.0f} (render L*={a.lab_l:.0f} fixed)")
     logger.info(f"loss: isometric gamma={cfg.train.gamma}"
                 f"  d_sky={cfg.train.w_local}*local+{cfg.train.w_rel}*gated_chord(k={cfg.train.gate_k})"
                 f"  anchor={cfg.train.anchor_weight}  optim=AdamW lr={cfg.train.lr}->{cfg.train.lr_min}"
@@ -139,7 +139,7 @@ def train(cfg: V9Config, *, resume: str | None = None, max_steps: int | None = N
             rate = (step - start_step) / elapsed
             logger.info(
                 f"step {step:6d}/{steps_target}  loss={loss.detach():.4f}  "
-                f"L*={cs['mean_L']:.1f}±{cs['std_L']:.1f}  a*±{cs['std_a']:.1f} b*±{cs['std_b']:.1f}  "
+                f"a*={cs['mean_a']:+.1f}±{cs['std_a']:.1f}  b*={cs['mean_b']:+.1f}±{cs['std_b']:.1f}  "
                 f"lr={scheduler.get_last_lr()[0]:.2e}  ({rate:.1f} it/s)")
         if step % cfg.train.save_every == 0:
             save_checkpoint(out_dir / f"step_{step:06d}.pt", model, optimizer,

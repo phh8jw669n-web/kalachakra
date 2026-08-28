@@ -9,8 +9,9 @@
         t     = t + W2 tanh(W1 t + b1) + b2           per-token FFN, residual
     pool    w = softmax((t . q_pool)/sqrt(D)) over the 11 tokens
             p = sum_b w_b t_b                         -> [N, D]        (energy read-out)
-    head    z = Wo2 tanh(Wo1 p + bo1) + bo2           -> [N, 3]
-    colour  L* = l0 + lspan*sigmoid(z0) ; a*,b* = ab*tanh(z1,z2)      gamut-bounded
+    head    z = Wo2 tanh(Wo1 p + bo1) + bo2           -> [N, 2]
+    chroma  a*,b* = ab*tanh(z0,z1)                    pure 2-D CIE a*b* energy (NO luminance;
+                                                      a fixed neutral L* is added only at render)
 
 Why attention (not v8's fixed chords)? A learned bilinear form Q K^T = t_i^T (Wq^T Wk) t_j is
 **not** rotation-invariant unless Wq^T Wk ~ I, so — unlike a plain dot product — it varies with
@@ -30,12 +31,12 @@ import torch
 from torch import nn
 
 
-def bound_lab(z: torch.Tensor, lab_l0: float, lab_lspan: float, lab_ab: float) -> torch.Tensor:
-    """Gamut-bounded head: L* = l0 + lspan*sigmoid(z0); a*,b* = ab*tanh(z1,z2)."""
-    L = lab_l0 + lab_lspan * torch.sigmoid(z[..., 0:1])
-    a = lab_ab * torch.tanh(z[..., 1:2])
-    b = lab_ab * torch.tanh(z[..., 2:3])
-    return torch.cat([L, a, b], dim=-1)
+def bound_ab(z: torch.Tensor, lab_ab: float) -> torch.Tensor:
+    """Pure-chroma head: a*,b* = ab*tanh(z0,z1). No luminance — the field is a 2-D CIE a*b*
+    energy signature; a fixed neutral L* is supplied only at render time."""
+    a = lab_ab * torch.tanh(z[..., 0:1])
+    b = lab_ab * torch.tanh(z[..., 1:2])
+    return torch.cat([a, b], dim=-1)
 
 
 class AttnBlock(nn.Module):
@@ -72,11 +73,11 @@ class TopoAttention(nn.Module):
 
     def __init__(self, n_bodies: int = 11, token_dim: int = 3, d_model: int = 32,
                  d_ff: int = 64, d_head: int = 32, n_blocks: int = 2, vis_bias: float = 3.0,
-                 lab_l0: float = 5.0, lab_lspan: float = 90.0, lab_ab: float = 80.0):
+                 lab_l: float = 50.0, lab_ab: float = 80.0):
         super().__init__()
         self.cfg = {"n_bodies": n_bodies, "token_dim": token_dim, "d_model": d_model,
                     "d_ff": d_ff, "d_head": d_head, "n_blocks": n_blocks, "vis_bias": vis_bias,
-                    "lab_l0": lab_l0, "lab_lspan": lab_lspan, "lab_ab": lab_ab}
+                    "lab_l": lab_l, "lab_ab": lab_ab}
         self.vis_bias = vis_bias
         self.embed = nn.Linear(token_dim, d_model)
         self.body_emb = nn.Parameter(torch.randn(n_bodies, d_model) * 0.02)
@@ -84,7 +85,7 @@ class TopoAttention(nn.Module):
         self.q_pool = nn.Parameter(torch.randn(d_model) * 0.02)
         self.tau_pool = nn.Parameter(torch.tensor(1.0))    # learnable pool-attention temperature
         self.head1 = nn.Linear(d_model, d_head)
-        self.head2 = nn.Linear(d_head, 3)
+        self.head2 = nn.Linear(d_head, 2)                  # pure chroma: a*, b* (no L*)
         self.base_pool_scale = 1.0 / math.sqrt(d_model)
         self._reset()
 
@@ -108,9 +109,9 @@ class TopoAttention(nn.Module):
             t = blk(t, vis)
         w = self._pool_weights(t, vis)                     # [N,11]
         pooled = torch.einsum("nb,nbd->nd", w, t)          # [N,D]
-        z = self.head2(torch.tanh(self.head1(pooled)))     # [N,3]
-        lab = bound_lab(z, self.cfg["lab_l0"], self.cfg["lab_lspan"], self.cfg["lab_ab"])
-        return (lab, w) if return_pool else lab
+        z = self.head2(torch.tanh(self.head1(pooled)))     # [N,2]
+        ab = bound_ab(z, self.cfg["lab_ab"])               # [N,2] pure a*,b* chroma
+        return (ab, w) if return_pool else ab
 
     def export_weights(self) -> dict:
         def W(m):  # [out][in]
@@ -127,11 +128,11 @@ class TopoAttention(nn.Module):
             "tau": float(blk.tau.detach()),
         } for blk in self.blocks]
         return {
-            "arch": "v9_topo_attention", "output_activation": "v9_gamut",
+            "arch": "v9_topo_attention", "output_activation": "v9_chroma", "out_features": 2,
             "n_bodies": c["n_bodies"], "token_dim": c["token_dim"], "d_model": c["d_model"],
             "d_ff": c["d_ff"], "d_head": c["d_head"], "n_blocks": c["n_blocks"],
             "vis_bias": c["vis_bias"],
-            "lab_l0": c["lab_l0"], "lab_lspan": c["lab_lspan"], "lab_ab": c["lab_ab"],
+            "lab_l": c["lab_l"], "lab_ab": c["lab_ab"],
             "W_in": W(self.embed), "b_in": b(self.embed),
             "E_body": self.body_emb.detach().cpu().tolist(),
             "blocks": blocks, "q_pool": self.q_pool.detach().cpu().tolist(),

@@ -8,9 +8,17 @@ so the colour field varies sharply across the globe instead of being one global 
 break). Train it, export it, serve `version9/web/` on its own.
 
 ```
-(lat, lon, jd) ─► 11 tokens ×[N,E,Zenith] ─► self-attention ─► pooled read-out ─► CIE L*a*b* ─► sRGB
-   any float        topocentric, per-observer   Q·Kᵀ relations   per-body energy   gamut-bounded   per vertex
+(lat, lon, jd) ─► 11 tokens ×[N,E,Zenith] ─► self-attention ─► pooled read-out ─► CIE a*b* ─► sRGB
+   any float        topocentric, per-observer   Q·Kᵀ relations   per-body energy   PURE chroma    per vertex
 ```
+
+> **Pure chroma (no luminance).** The model outputs **only** the 2-D chromatic pair `a*, b*`
+> (each `80·tanh`, bounded to ±80) — there is no `L*` channel and no lighting, shadows, day/night
+> terminator, or brightness variance anywhere. A **fixed neutral `L*` (default 50)** is supplied
+> only at render time, so the globe is a continuous constant-lightness *energy signature* where
+> every difference you see is pure hue/saturation. `AttnConfig.lab_l` sets that fixed lightness
+> (raise it toward ~65 for a more luminous glow; high chroma at low `L*` gets gamut-compressed
+> and reads muted).
 
 | Module | What it is | Where it lives |
 | --- | --- | --- |
@@ -65,7 +73,7 @@ d_rel   = ||ΔR|| / √55            55-D HORIZON-GATED chords  R_ij = g_i·g_j�
                                       g_b = sigmoid(gate_k · zenith_b)   ← the gate breaks
                                       rotation-invariance, so R varies across the globe
 d_sky   = w_local·d_local + w_rel·d_rel          (defaults 0.5 / 0.5)
-L       = MSE( ||ΔLab|| , γ·d_sky ) + λ·anchor   (γ = 32)
+L       = MSE( ||Δ(a*,b*)|| , γ·d_sky ) + λ·anchor   (γ = 32)   # distance in the a*b* plane
 ```
 
 The gated chords carry real spatial signal (across-globe std ~`0.18` vs the raw chords'
@@ -88,7 +96,7 @@ Run commands from the repository root.
 
 Each step draws a fresh random batch of continuous `(lat, lon, jd)` observer skies, feeds the
 11 topocentric body tokens through the attention net, and trains it so colour distances mirror
-the observer-dependent sky distance. The gamut-bounded head keeps colour displayable.
+the observer-dependent sky distance, purely in the 2-D a*b* chroma plane (no luminance).
 
 ```bash
 python -m version9.train --steps 40000 --batch 2048 --export version9/web/weights.json
@@ -98,14 +106,15 @@ python -m version9.train --steps 40000 --batch 2048 --export version9/web/weight
 | --- | --- | --- |
 | `--d-model` / `--d-ff` / `--d-head` | `32` / `64` / `32` | attention width / FFN / output-head size. |
 | `--blocks` | `2` | stacked attention+FFN blocks. |
-| `--gamma` | `32.0` | colour scale `‖ΔLab‖ = γ·d_sky`. Bigger = more vivid. |
+| `--gamma` | `32.0` | chroma scale `‖Δ(a*,b*)‖ = γ·d_sky`. Bigger = more saturated. |
 | `--w-local` / `--w-rel` | `0.5` / `0.5` | weight on the local vs horizon-gated-chord distance. |
 | `--gate-k` | `8.0` | horizon-gate steepness for the relational target (bigger = sharper coastlines). |
 | `--batch` | `2048` | random skies per step (more pairs = more signal). |
 | `--out-dir` | `version9/checkpoints` | checkpoints + `train_v9.log`. |
 
-Watch the log: `loss` falls while `L*`, `a*±`, `b*±` (the colour spread) grow. The
-`vis_bias` attention prior is a model constant (`AttnConfig.vis_bias`, default `3.0`).
+Watch the log: `loss` falls while `a*±`, `b*±` (the chroma spread) grow. The `vis_bias`
+attention prior is a model constant (`AttnConfig.vis_bias`, default `3.0`); the fixed render
+lightness is `AttnConfig.lab_l` (default `50`).
 
 ---
 
@@ -118,7 +127,7 @@ python -m version9.export --checkpoint version9/checkpoints/model_final.pt --out
 ```
 
 `weights.json` carries the attention weights (`W_in`, `E_body`, per-block `Wq/Wk/Wv/W1/W2` +
-`tau`, `q_pool`, `tau_pool`, head), the gamut-head constants, and the training scales
+`tau`, `q_pool`, `tau_pool`, head), the chroma-head constants (`lab_l`, `lab_ab`), and the training scales
 (`gamma`, `w_local`, `w_rel`, `gate_k`, `vis_bias`) for provenance. The shader and HUD re-run
 the network verbatim; inference is a plain forward, so the loss-only scales are ignored there.
 
@@ -143,7 +152,7 @@ The CPU computes the 11 Earth-fixed body directions + GMST once per frame. The *
 shader** then, per vertex on a `SphereGeometry(seg,seg)`: builds a singularity-free local basis
 from the surface normal (`û=normalize(P); n̂=normalize((0,1,0)−û·u_y); ê=û×n̂`), projects the
 bodies to the 11 tokens, runs the **whole attention network** (embed → blocks → pool → head)
-from a weight texture, and converts the gamut-bounded L*a*b* to sRGB. The fragment shader just
+from a weight texture, completes the CIE triple with the FIXED neutral `L*`, and converts a*b* to sRGB. The fragment shader just
 interpolates that colour — real-time for a network that would be unrenderable per pixel. Use
 the **Render** selector (64² / 96² / 128²) to trade detail for framerate.
 
@@ -157,7 +166,7 @@ the **Render** selector (64² / 96² / 128²) to trade detail for framerate.
 - **Overlays** — map, coastlines, graticule, planets (orbiting spheres), labels.
 - **Observer HUD** — click the globe to pin a point; it streams the per-body **energy
   contribution** (the attention pooling weights; dimmed bodies are below the horizon), the
-  33-D local matrix, and the L*a*b*/HEX colour (computed by the JS port, matching the pixel).
+  33-D local matrix, and the a*b*/HEX chroma (computed by the JS port, matching the pixel).
 
 **Keyboard:** `Space` play · `L` now · `←/→` step · `↑/↓` zoom · `G` grid · `R` reset.
 
@@ -170,7 +179,7 @@ python -m pytest tests/test_version9.py -q
 ```
 
 Checks the geometry (33 local + 55 gated chords), that the gated chords are observer-dependent
-(unlike v8's raw chords), the gamut-bounded head, the export→re-run parity (the JS/GLSL
+(unlike v8's raw chords), the pure-chroma 2-D head, the export→re-run parity (the JS/GLSL
 contract), that attention is observer-dependent and visibility-led, the isometric loss, an
 altitude cross-check vs pyswisseph, and a train→export cycle.
 
@@ -186,7 +195,7 @@ to match the JS/PyTorch output to **~3e-7**.
 version9/
   ephemeris.py     analytic topocentric ephemeris (self-contained copy)
   state.py         11 body tokens + horizon-gated chords (the loss target)
-  attention.py     the micro self-attention model + gamut-bounded head
+  attention.py     the micro self-attention model + pure-chroma (a*,b*) head
   losses.py        observer-dependent isometric loss (local + gated chord)
   config.py        AttnConfig / DataConfig / TrainConfig / V9Config
   dataset.py       stochastic (lat,lon,jd) -> 88-D target-feature generator
@@ -198,7 +207,7 @@ version9/
     style.css      glass-panel styling
     main.js        scene, helm, HUD, orbiting bodies, per-vertex globe
     shader9.js     Module 2: the per-vertex attention shader (+ packWeights)
-    attn9.js       JS attention forward + gamut head + Lab->sRGB (parity with attention.py)
+    attn9.js       JS attention forward + a*,b* head + Lab->sRGB (parity with attention.py)
     state9.js      JS local vectors + gated chords (parity with state.py)
     ephemeris9.js  JS ephemeris (equatorialDirs / gmstRad / topocentricTensor)
     planets9.js    the 11 bodies as 3D spheres orbiting the globe

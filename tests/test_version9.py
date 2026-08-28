@@ -17,7 +17,7 @@ torch = pytest.importorskip("torch")
 
 import version9  # noqa: F401,E402
 from version9 import state as st                                    # noqa: E402
-from version9.attention import bound_lab, build_model               # noqa: E402
+from version9.attention import bound_ab, build_model                # noqa: E402
 from version9.config import AttnConfig, DataConfig, TrainConfig, V9Config   # noqa: E402
 from version9.ephemeris import BODY_NAMES, topocentric_tensor       # noqa: E402
 from version9.losses import balanced_sky_distance, isometric_loss   # noqa: E402
@@ -89,26 +89,26 @@ def test_altitude_matches_swisseph_near_present():
 # ---------------------------------------------------------------------------
 # model + gamut head + export parity
 # ---------------------------------------------------------------------------
-def test_model_shapes_and_gamut_bounds():
+def test_model_shapes_and_chroma_bounds():
     net = build_model(d_model=16, d_ff=32, d_head=16, n_blocks=2).eval()
     y = net(torch.randn(9, 11, 3))
-    assert y.shape == (9, 3)
+    assert y.shape == (9, 2)                            # pure a*, b* — no luminance channel
     y2 = net(torch.randn(9, 33))                       # 2-D input is auto-reshaped
-    assert y2.shape == (9, 3)
-    lab = bound_lab(torch.randn(20000, 3) * 40.0, 5.0, 90.0, 80.0)
-    assert lab[:, 0].min() >= 5.0 and lab[:, 0].max() <= 95.0
-    assert lab[:, 1:].abs().max() <= 80.0 + 1e-4
-    assert lab[:, 0].max() > 90.0 and lab[:, 0].min() < 10.0
+    assert y2.shape == (9, 2)
+    ab = bound_ab(torch.randn(20000, 2) * 40.0, 80.0)
+    assert ab.abs().max() <= 80.0 + 1e-4               # a*, b* bounded to [-80, 80]
+    assert ab.max() > 79.0 and ab.min() < -79.0        # and the bounds are actually used
 
 
 def test_export_structure():
     w = build_model(d_model=16, d_ff=32, d_head=16, n_blocks=2).export_weights()
-    assert w["arch"] == "v9_topo_attention" and w["output_activation"] == "v9_gamut"
+    assert w["arch"] == "v9_topo_attention" and w["output_activation"] == "v9_chroma"
+    assert w["out_features"] == 2 and "lab_l" in w and w["lab_ab"] == 80.0
     assert w["n_bodies"] == 11 and w["token_dim"] == 3 and w["d_model"] == 16
     assert w["d_ff"] == 32 and w["d_head"] == 16 and w["n_blocks"] == 2 and "vis_bias" in w
     assert len(w["blocks"]) == 2 and "tau" in w["blocks"][0]
     assert len(w["W_in"]) == 16 and len(w["W_in"][0]) == 3
-    assert len(w["E_body"]) == 11 and len(w["Wo2"]) == 3
+    assert len(w["E_body"]) == 11 and len(w["Wo2"]) == 2      # a*, b* only
 
 
 def _numpy_model(w, local):
@@ -135,9 +135,8 @@ def _numpy_model(w, local):
     pw = sm((t @ np.asarray(w["q_pool"])) * (scale * w["tau_pool"]) + vis, 1)
     pooled = np.einsum("nb,nbd->nd", pw, t)
     z = np.tanh(pooled @ np.asarray(w["Wo1"]).T + np.asarray(w["bo1"])) @ np.asarray(w["Wo2"]).T + np.asarray(w["bo2"])
-    L = w["lab_l0"] + w["lab_lspan"] / (1.0 + np.exp(-z[:, 0]))
-    lab = np.stack([L, w["lab_ab"] * np.tanh(z[:, 1]), w["lab_ab"] * np.tanh(z[:, 2])], axis=-1)
-    return lab, pw
+    ab = np.stack([w["lab_ab"] * np.tanh(z[:, 0]), w["lab_ab"] * np.tanh(z[:, 1])], axis=-1)   # [N,2]
+    return ab, pw
 
 
 def test_export_matches_torch_forward():
@@ -230,6 +229,7 @@ def test_training_runs_resumes_and_exports(tmp_path):
     export_weights_json(str(final2), str(out))
     w = json.loads(out.read_text())
     assert w["arch"] == "v9_topo_attention" and "gamma" in w
+    assert w["output_activation"] == "v9_chroma" and w["out_features"] == 2
     assert w["w_local"] == 0.5 and w["w_rel"] == 0.5 and "gate_k" in w
     model, _p, _c = load_checkpoint(final2, map_location="cpu")
     model.eval()

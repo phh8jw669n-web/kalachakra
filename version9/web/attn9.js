@@ -66,11 +66,11 @@ export function makeModel(weights) {
     const pool = softmax(pscores);
     const pooled = new Array(D).fill(0);
     for (let i = 0; i < NB; i++) for (let d = 0; d < D; d++) pooled[d] += pool[i] * t[i][d];
-    // output head + gamut-bounded L*a*b*
+    // output head -> pure a*,b* chroma (no luminance); a fixed neutral L* is for rendering only
     const z = matvec(W.Wo2, W.bo2, matvec(W.Wo1, W.bo1, pooled).map(tanh));
-    const sig = (x) => 1.0 / (1.0 + Math.exp(-x));
-    const lab = [W.lab_l0 + W.lab_lspan * sig(z[0]), W.lab_ab * tanh(z[1]), W.lab_ab * tanh(z[2])];
-    return { lab, pool };
+    const ab = [W.lab_ab * tanh(z[0]), W.lab_ab * tanh(z[1])];
+    const L = W.lab_l ?? 50.0;
+    return { ab, lab: [L, ab[0], ab[1]], pool };
   };
 }
 
