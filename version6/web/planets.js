@@ -44,9 +44,9 @@ export function createPlanets(scene, bodyNames, radius = 1.72) {
   // frame (already the direction to where that body is at zenith), so we place glyphs directly.
   function update(bodyEcef) {
     for (let b = 0; b < bodyEcef.length; b++) {
-      const d = bodyEcef[b];
-      glyphs[b].position.copy(d).multiplyScalar(radius);
-      dots[b].position.copy(d).multiplyScalar(1.02);
+      const d = bodyEcef[b];                      // -z: match the un-mirrored map placement
+      glyphs[b].position.set(d.x, d.y, -d.z).multiplyScalar(radius);
+      dots[b].position.set(d.x, d.y, -d.z).multiplyScalar(1.02);
     }
   }
   function setMarkers(on) { dots.forEach((d) => (d.visible = on)); }

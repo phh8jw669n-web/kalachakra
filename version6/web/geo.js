@@ -9,9 +9,12 @@ import * as THREE from "three";
 
 const D2R = Math.PI / 180;
 
+// Longitude runs the geographically-correct way (east to the right when facing the front):
+// z is negated so the map is not mirrored. The field shader mirrors this by feeding a
+// z-negated normal, so the energy field stays physically exact at each real (lat, lon).
 export function llToVec(latDeg, lonDeg, r = 1) {
   const la = latDeg * D2R, lo = lonDeg * D2R, cl = Math.cos(la);
-  return new THREE.Vector3(cl * Math.cos(lo), Math.sin(la), cl * Math.sin(lo)).multiplyScalar(r);
+  return new THREE.Vector3(cl * Math.cos(lo), Math.sin(la), -cl * Math.sin(lo)).multiplyScalar(r);
 }
 
 export function buildOcean(r, color = 0x0b1a2b) {

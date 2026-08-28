@@ -125,7 +125,8 @@ export function buildPixelShaders(arch) {
     ${computeGLSL(arch)}
     ${TO_SRGB}
     void main(){
-      fragColor = vec4(toSRGB(fieldLinearRGB(normalize(vObj))), u_opacity);
+      vec3 N = normalize(vObj);
+      fragColor = vec4(toSRGB(fieldLinearRGB(vec3(N.x, N.y, -N.z))), u_opacity);  // -z: un-mirror
     }`;
   return { vertex, fragment };
 }
@@ -137,7 +138,8 @@ export function buildVertexShaders(arch) {
     out vec3 vColor;
     ${computeGLSL(arch)}
     void main(){
-      vColor = fieldLinearRGB(normalize(position));
+      vec3 N = normalize(position);
+      vColor = fieldLinearRGB(vec3(N.x, N.y, -N.z));   // -z: un-mirror (field stays exact)
       gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
     }`;
   const fragment = /* glsl */`

@@ -45,7 +45,7 @@ function clearBoot() { if (boot) { boot.remove(); boot = null; } }
 
 // ---- state -----------------------------------------------------------------
 const app = {
-  mode: "live", jd: nowJD(), playing: false, speed: 1, stepHours: 24,
+  mode: "live", jd: nowJD(), playing: false, speed: 10000, stepHours: 24,
   opacity: 0.85, tzMode: "local", tzOffsetMin: 0, quality: "auto",
   pin: { lat: 48.8566, lon: 2.3522 },
   weights: null, siren: null,
@@ -240,7 +240,7 @@ function pickFromEvent(e) {
   if (!hit) return null;
   const p = hit.point.clone().normalize();
   return { lat: THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(p.y, -1, 1))),
-           lon: THREE.MathUtils.radToDeg(Math.atan2(p.z, p.x)), vec: p };
+           lon: THREE.MathUtils.radToDeg(Math.atan2(-p.z, p.x)), vec: p };   // -z: match un-mirrored map
 }
 function setPin(pick) {
   app.pin.lat = pick.lat; app.pin.lon = pick.lon;
@@ -286,6 +286,7 @@ function wireControls() {
 
   const sp = $("speed");
   sp.oninput = () => { app.speed = speedFromSlider(parseFloat(sp.value)); $("speed-val").textContent = fmtSpeed(app.speed); };
+  app.speed = speedFromSlider(parseFloat(sp.value)); $("speed-val").textContent = fmtSpeed(app.speed);   // sync default
 
   document.querySelectorAll("#steps button").forEach((b) => b.onclick = () => {
     document.querySelectorAll("#steps button").forEach((x) => x.classList.remove("sel"));
