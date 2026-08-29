@@ -114,12 +114,13 @@ def train(cfg: V10Config, *, resume: str | None = None, max_steps: int | None = 
     logger.info(f"device={device}  params={n_params:,}  steps={start_step}->{steps_target}"
                 f"{'  (RESUMED)' if resume else ''}")
     logger.info(f"model: d_model={a.d_model} d_ff={a.d_ff} d_head={a.d_head} blocks={a.n_blocks}"
-                f"  head=OKLCH C<={a.okl_cmax} H (render OKLab L={a.okl_l} fixed)")
+                f"  head=Cartesian OKLab(a,b) disk<={a.okl_cmax} (render OKLab L={a.okl_l} fixed)")
+    isop = (f"iso-pair(fine {cfg.train.tv_weight}@{cfg.train.tv_delta_deg}deg,"
+            f" coarse {cfg.train.tv_weight_coarse}@{cfg.train.tv_delta_coarse_deg}deg)"
+            if (cfg.train.tv_weight > 0 or cfg.train.tv_weight_coarse > 0) else "iso-pair=off")
     logger.info(f"loss: isometric gamma={cfg.train.gamma}"
                 f"  d_sky={cfg.train.w_local}*local+{cfg.train.w_rel}*gated_chord(k={cfg.train.gate_k})"
-                f"  anchor={cfg.train.anchor_weight}"
-                f"  iso-pair(fine {cfg.train.tv_weight}@{cfg.train.tv_delta_deg}deg,"
-                f" coarse {cfg.train.tv_weight_coarse}@{cfg.train.tv_delta_coarse_deg}deg)"
+                f"  anchor={cfg.train.anchor_weight}  {isop}"
                 f"  wd={cfg.train.weight_decay} qk_norm={a.qk_norm}(temp<={a.attn_temp_max})"
                 f"  AdamW lr={cfg.train.lr}->{cfg.train.lr_min}  batch={cfg.data.batch}")
     logger.info("=" * 78)

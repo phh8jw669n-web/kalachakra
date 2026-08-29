@@ -37,11 +37,12 @@ def parse_args(argv=None):
                    help="horizon-gate steepness (v10 default 3.0, softer = less spatial ringing)")
     p.add_argument("--weight-decay", type=float, default=3e-3,
                    help="AdamW weight decay on 2-D matrices only (v10.1 anti-inflation; was 1e-4)")
-    p.add_argument("--tv-weight", type=float, default=0.08,
-                   help="fine-scale isometry-consistency (anti-winding) weight (0 disables)")
+    p.add_argument("--tv-weight", type=float, default=0.0,
+                   help="fine-scale isometry-consistency weight (v10.1.1: 0 = off; the Cartesian "
+                        "head makes it unnecessary. Set >0 for optional belt-and-suspenders)")
     p.add_argument("--tv-delta", type=float, default=0.6, help="fine neighbour offset in degrees")
-    p.add_argument("--tv-weight-coarse", type=float, default=0.03,
-                   help="coarse-scale isometry-consistency weight (broad coherence)")
+    p.add_argument("--tv-weight-coarse", type=float, default=0.0,
+                   help="coarse-scale isometry-consistency weight (0 = off)")
     p.add_argument("--tv-delta-coarse", type=float, default=2.5,
                    help="coarse neighbour offset in degrees")
     p.add_argument("--no-qk-norm", action="store_true",
