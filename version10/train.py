@@ -33,8 +33,10 @@ def parse_args(argv=None):
                    help="chroma scale ||d(OKLab a,b)|| = gamma*d_sky (OKLab units, ~60x < CIELab)")
     p.add_argument("--w-local", type=float, default=0.5, help="weight on 39-D local distance")
     p.add_argument("--w-rel", type=float, default=0.5, help="weight on 78-D horizon-gated chords")
-    p.add_argument("--gate-k", type=float, default=3.0,
-                   help="horizon-gate steepness (v10 default 3.0, softer = less spatial ringing)")
+    p.add_argument("--gate-k", type=float, default=8.0,
+                   help="horizon-gate steepness (v10.2 strict orbs = 8.0; razor-sharp lines)")
+    p.add_argument("--fourier-L", type=int, default=4,
+                   help="Fourier positional-encoding bands per token scalar (0 = off; 4-6 typical)")
     p.add_argument("--weight-decay", type=float, default=3e-3,
                    help="AdamW weight decay on 2-D matrices only (v10.1 anti-inflation; was 1e-4)")
     p.add_argument("--tv-weight", type=float, default=0.0,
@@ -66,7 +68,7 @@ def build_config(args):
     from version10.config import AttnConfig, DataConfig, TrainConfig, V10Config
     attn = AttnConfig(d_model=args.d_model, d_ff=args.d_ff, d_head=args.d_head,
                       n_blocks=args.blocks, qk_norm=not args.no_qk_norm,
-                      attn_temp_max=args.attn_temp_max)
+                      attn_temp_max=args.attn_temp_max, fourier_L=args.fourier_L)
     data = DataConfig(batch=args.batch, seed=args.seed)
     if args.jd_start is not None:
         data.jd_start = args.jd_start

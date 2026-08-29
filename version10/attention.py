@@ -1,7 +1,8 @@
 """version10 model — the Topocentric Micro Self-Attention engine.
 
     input   x : [N, 13, 3]         13 tokens (11 bodies + ASC + MC), each (North,East,Zenith)
-    embed   t = x W_in^T + b_in + E_body[b]           -> [N, 13, D]   (+ learned body identity)
+    encode  xf = fourier(x, L)     [x, sin/cos(2^k pi x)] per scalar -> [N,13, 3*(1+2L)]  (v10.2)
+    embed   t = xf W_in^T + b_in + E_body[b]          -> [N, 13, D]   (+ learned body identity)
     block(s):
         Q,K,V = t Wq^T+bq , t Wk^T+bk , t Wv^T+bv     single head, d_k = D
         A     = softmax(temp * norm(Q).norm(K)^T)     -> [N, 13, 13]   (v10.1 bounded cosine attn:
@@ -33,6 +34,31 @@ import math
 import torch
 from torch import nn
 from torch.nn import functional as F
+
+
+def fourier_features(x: torch.Tensor, n_bands: int, include_raw: bool = True) -> torch.Tensor:
+    """Fourier positional encoding of the last dim (v10.2). Each scalar ``xc`` -> (optionally the
+    raw ``xc``, then) ``[sin(2^k pi xc), cos(2^k pi xc)]`` for ``k = 0 .. n_bands-1``. The output
+    is component-major: for each input scalar in order, its raw + band pairs are emitted
+    contiguously. n_bands=0 is the identity (raw passthrough). The exact order MUST match the JS
+    (``attn10.js``) and GLSL (``shader10.js``) ports, since W_in's columns are laid out to it."""
+    if n_bands <= 0:
+        return x
+    feats = []
+    for c in range(x.shape[-1]):
+        xc = x[..., c:c + 1]
+        if include_raw:
+            feats.append(xc)
+        for k in range(n_bands):
+            f = (2.0 ** k) * math.pi * xc
+            feats.append(torch.sin(f))
+            feats.append(torch.cos(f))
+    return torch.cat(feats, dim=-1)
+
+
+def enc_dim(token_dim: int, fourier_L: int, fourier_raw: bool) -> int:
+    """Embed-input width after Fourier encoding a ``token_dim``-vector."""
+    return token_dim if fourier_L <= 0 else token_dim * ((1 if fourier_raw else 0) + 2 * fourier_L)
 
 
 def bound_cartesian(z: torch.Tensor, okl_cmax: float) -> torch.Tensor:
@@ -116,13 +142,17 @@ class TopoAttention(nn.Module):
     def __init__(self, n_bodies: int = 13, token_dim: int = 3, d_model: int = 32,
                  d_ff: int = 64, d_head: int = 32, n_blocks: int = 2, vis_bias: float = 3.0,
                  n_anchors: int = 2, okl_l: float = 0.5, okl_cmax: float = 0.4,
-                 qk_norm: bool = True, attn_temp_init: float = 10.0, attn_temp_max: float = 30.0):
+                 qk_norm: bool = True, attn_temp_init: float = 10.0, attn_temp_max: float = 30.0,
+                 fourier_L: int = 4, fourier_raw: bool = True):
         super().__init__()
         self.cfg = {"n_bodies": n_bodies, "token_dim": token_dim, "d_model": d_model,
                     "d_ff": d_ff, "d_head": d_head, "n_blocks": n_blocks, "vis_bias": vis_bias,
                     "n_anchors": n_anchors, "okl_l": okl_l, "okl_cmax": okl_cmax,
                     "qk_norm": qk_norm, "attn_temp_init": attn_temp_init,
-                    "attn_temp_max": attn_temp_max}
+                    "attn_temp_max": attn_temp_max,
+                    "fourier_L": fourier_L, "fourier_raw": fourier_raw}
+        self.fourier_L = fourier_L
+        self.fourier_raw = fourier_raw
         self.vis_bias = vis_bias
         #: the last n_anchors tokens (ASC, MC) are structural coordinate axes, NOT physical
         #: bodies. They are EXEMPT from the horizon-visibility prior (which would zero out the
@@ -131,7 +161,7 @@ class TopoAttention(nn.Module):
         self.n_anchors = n_anchors
         self.qk_norm = qk_norm
         self.temp_max = attn_temp_max
-        self.embed = nn.Linear(token_dim, d_model)
+        self.embed = nn.Linear(enc_dim(token_dim, fourier_L, fourier_raw), d_model)
         self.body_emb = nn.Parameter(torch.randn(n_bodies, d_model) * 0.02)
         self.blocks = nn.ModuleList([AttnBlock(d_model, d_ff, qk_norm, attn_temp_init,
                                                attn_temp_max) for _ in range(n_blocks)])
@@ -170,7 +200,8 @@ class TopoAttention(nn.Module):
             zen = torch.cat([zen[..., :-self.n_anchors],
                              torch.ones_like(zen[..., -self.n_anchors:])], dim=-1)
         vis = self.vis_bias * zen                          # [N,NB] visibility bias (bodies gated)
-        t = self.embed(x) + self.body_emb                  # [N,11,D]
+        xf = fourier_features(x, self.fourier_L, self.fourier_raw)   # [N,NB, enc_dim] (v10.2)
+        t = self.embed(xf) + self.body_emb                 # [N,NB,D]
         for blk in self.blocks:
             t = blk(t, vis)
         w = self._pool_weights(t, vis)                     # [N,11]
@@ -201,6 +232,7 @@ class TopoAttention(nn.Module):
             "d_ff": c["d_ff"], "d_head": c["d_head"], "n_blocks": c["n_blocks"],
             "vis_bias": c["vis_bias"], "n_anchors": c["n_anchors"],
             "qk_norm": bool(c["qk_norm"]),
+            "fourier_L": c["fourier_L"], "fourier_raw": bool(c["fourier_raw"]),
             "okl_l": c["okl_l"], "okl_cmax": c["okl_cmax"],
             "W_in": W(self.embed), "b_in": b(self.embed),
             "E_body": self.body_emb.detach().cpu().tolist(),

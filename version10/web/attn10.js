@@ -23,11 +23,24 @@ function softmax(v) {
 const tanh = Math.tanh;
 // L2-normalise a vector (cosine attention, v10.1). Zero-safe.
 function l2(v) { let s = 0; for (const x of v) s += x * x; s = Math.sqrt(s) || 1; return v.map((x) => x / s); }
+// Fourier positional encoding (v10.2), component-major: [xc, sin(2^k pi xc), cos(2^k pi xc)...].
+// MUST match version10/attention.py::fourier_features and shader10.js exactly.
+function fourier(v, L, raw) {
+  if (L <= 0) return v;
+  const out = [];
+  for (let c = 0; c < v.length; c++) {
+    const xc = v[c];
+    if (raw) out.push(xc);
+    for (let k = 0; k < L; k++) { const f = Math.pow(2, k) * Math.PI * xc; out.push(Math.sin(f), Math.cos(f)); }
+  }
+  return out;
+}
 
 // Build a forward fn: local (Float array of 33) -> { lab:[L,a,b], pool:[11] energy weights }.
 export function makeModel(weights) {
   const W = weights, NB = W.n_bodies, D = W.d_model;
   const invSqrtD = 1.0 / Math.sqrt(D), nAnch = W.n_anchors ?? 0, qkNorm = W.qk_norm ?? false;
+  const FL = W.fourier_L ?? 0, FR = W.fourier_raw ?? true;
   return function forward(local) {
     // horizon-visibility bias (vis_bias * zenith) for bodies; the last nAnch tokens (ASC/MC)
     // are structural axes -> always fully visible (zenith := 1), never suppressed by the horizon.
@@ -36,8 +49,8 @@ export function makeModel(weights) {
     // embed tokens: t[b] = W_in·x[b] + b_in + E_body[b]
     const t = new Array(NB);
     for (let bdy = 0; bdy < NB; bdy++) {
-      const x = [local[bdy * 3], local[bdy * 3 + 1], local[bdy * 3 + 2]];
-      const e = matvec(W.W_in, W.b_in, x), eb = W.E_body[bdy];
+      const xf = fourier([local[bdy * 3], local[bdy * 3 + 1], local[bdy * 3 + 2]], FL, FR);
+      const e = matvec(W.W_in, W.b_in, xf), eb = W.E_body[bdy];
       t[bdy] = e.map((val, d) => val + eb[d]);
     }
     // attention blocks

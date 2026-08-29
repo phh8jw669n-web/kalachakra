@@ -114,6 +114,7 @@ def train(cfg: V10Config, *, resume: str | None = None, max_steps: int | None = 
     logger.info(f"device={device}  params={n_params:,}  steps={start_step}->{steps_target}"
                 f"{'  (RESUMED)' if resume else ''}")
     logger.info(f"model: d_model={a.d_model} d_ff={a.d_ff} d_head={a.d_head} blocks={a.n_blocks}"
+                f"  fourier_L={a.fourier_L}(enc={a.token_dim * ((1 if a.fourier_raw else 0) + 2 * a.fourier_L) if a.fourier_L > 0 else a.token_dim})"
                 f"  head=Cartesian OKLab(a,b) disk<={a.okl_cmax} (render OKLab L={a.okl_l} fixed)")
     isop = (f"iso-pair(fine {cfg.train.tv_weight}@{cfg.train.tv_delta_deg}deg,"
             f" coarse {cfg.train.tv_weight_coarse}@{cfg.train.tv_delta_coarse_deg}deg)"

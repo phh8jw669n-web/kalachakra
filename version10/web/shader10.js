@@ -38,9 +38,11 @@ export function buildShaders(arch) {
   const D = arch.d_model, DFF = arch.d_ff, DHEAD = arch.d_head;
   const NB = arch.n_bodies, NBL = arch.n_blocks, TOK = arch.token_dim;
   const OUTC = arch.out_features ?? 2;      // pure chroma: a*, b*
+  const FL = arch.fourier_L ?? 0, FR = (arch.fourier_raw ?? true) ? 1 : 0;   // v10.2 Fourier enc
+  const ENC = FL > 0 ? TOK * (FR + 2 * FL) : TOK;    // embed-input width (W_in columns)
   // ---- weight-texture offsets (must mirror packWeights order exactly) ----
   let o = 0;
-  const OFF_WIN = o; o += D * TOK;
+  const OFF_WIN = o; o += D * ENC;
   const OFF_BIN = o; o += D;
   const OFF_EBODY = o; o += NB * D;
   const OFF_BLOCKS = o;
@@ -66,6 +68,10 @@ export function buildShaders(arch) {
     #define N_PLANETS ${arch.n_planets ?? 11}
     #define N_ANCHORS ${arch.n_anchors ?? 0}
     #define QK_NORM ${arch.qk_norm ? 1 : 0}
+    #define FL ${FL}
+    #define FR ${FR}
+    #define ENC ${ENC}
+    #define PIF 3.14159265358979
     #define CART_HEAD ${(arch.output_activation ?? "v10_cartesian") === "v10_cartesian" ? 1 : 0}
     #define ANCHOR_FADE_LAT0 ${(arch.anchor_fade_lat0 ?? 60.0).toFixed(4)}
     #define ANCHOR_FADE_LAT1 ${(arch.anchor_fade_lat1 ?? 88.0).toFixed(4)}
@@ -133,12 +139,22 @@ export function buildShaders(arch) {
         vis[b] = VISB * zz;
       }
       float tok[NB*D];
-      for(int b=0;b<NB;b++)
+      for(int b=0;b<NB;b++){
+        // v10.2 Fourier positional encoding of this token's 3 raw scalars (component-major,
+        // identical order to attention.py::fourier_features and attn10.js::fourier).
+        float enc[ENC];
+        int p=0;
+        for(int c=0;c<TOK;c++){
+          float xc = inp[b*TOK+c];
+          if(FR==1) enc[p++]=xc;
+          for(int k=0;k<FL;k++){ float f = pow(2.0, float(k))*PIF*xc; enc[p++]=sin(f); enc[p++]=cos(f); }
+        }
         for(int oo=0;oo<D;oo++){
           float s = W(OFF_BIN+oo) + W(OFF_EBODY + b*D + oo);
-          for(int i=0;i<TOK;i++) s += W(OFF_WIN + oo*TOK + i) * inp[b*TOK+i];
+          for(int i=0;i<ENC;i++) s += W(OFF_WIN + oo*ENC + i) * enc[i];
           tok[b*D+oo] = s;
         }
+      }
       float kk[NB*D]; float vv[NB*D];
       for(int bl=0; bl<NBL; bl++){
         int bb = OFF_BLOCKS + bl*SB;

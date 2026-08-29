@@ -15,7 +15,15 @@ DEFAULT_JD_END = J2000 + _HALF_SPAN_DAYS
 class AttnConfig:
     """The micro self-attention model. 13 tokens x 3 dims (N,E,Z) -> OKLCH chroma."""
     n_bodies: int = N_BODIES          # 13 tokens (11 bodies + ASC + MC)
-    token_dim: int = 3                # [North, East, Zenith] per body
+    token_dim: int = 3                # [North, East, Zenith] per body (raw, before Fourier)
+    #: v10.2 Fourier positional encoding of each raw token scalar x: [x, sin(2^k pi x),
+    #: cos(2^k pi x)] for k=0..L-1 (log-linear band). This injects high-frequency variance so the
+    #: network can resolve minute geographic deltas and draw razor-sharp astrocartography lines.
+    #: The raw x is kept (breaks the +-1 antipodal aliasing of the k=0 pair). fourier_L=0 disables
+    #: it (raw passthrough). Each token grows token_dim -> token_dim*(1 + 2L). L=4 is conservative
+    #: (max band 8*pi ~ 4 cycles across [-1,1]); raise toward 6 for more resolution / more risk.
+    fourier_L: int = 4
+    fourier_raw: bool = True
     d_model: int = 32                 # embedding / attention width (single head: d_k = d_model)
     d_ff: int = 64                    # per-token feed-forward hidden
     d_head: int = 32                  # output-head hidden
@@ -84,11 +92,14 @@ class TrainConfig:
     #: counts, the same conjunction below the horizon does not) — see losses.py / instructions.
     w_local: float = 0.5
     w_rel: float = 0.5
-    #: Softer horizon gate in v10 (was 8.0). A gentle physical falloff for angular proximity
-    #: avoids a near-discontinuous target — the model gets its SHARP structure from the fast
-    #: ASC/MC tokens (which cross zeniths/horizons rapidly with geography), not from a steep gate
-    #: that would push the net into Gibbs-style spatial ringing.
-    gate_k: float = 3.0
+    #: Horizon-gate steepness. v10 relaxed this to 3.0 (from 8.0) to avoid a near-discontinuous
+    #: target — but the beading that motivated that was later shown to be HUE WINDING (a head
+    #: gauge artifact), now killed at the source by the Cartesian head. v10.2 restores a STRICT
+    #: gate (8.0) to compress the astrocartography lines to traditional-orb sharpness (~1-3 deg
+    #: aspects), paired with the Fourier features that give the net the resolution to fit the
+    #: sharper target cleanly. NB: the Cartesian head forbids hue-winding beads but NOT Gibbs
+    #: value-oscillation from an over-steep target, so this is verified empirically, not assumed.
+    gate_k: float = 8.0
     #: Isometry-consistency (anti-winding) term — enforce ||d(OKLab a,b)|| = gamma*d_sky at fine +
     #: coarse spatial scale. As of v10.1.1 this is DISABLED BY DEFAULT (weights 0): the pure-
     #: Cartesian head (no hue angle) makes winding non-representable at the source, so the

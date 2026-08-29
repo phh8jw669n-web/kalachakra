@@ -119,6 +119,20 @@ def test_model_shapes_and_oklch_bounds():
     assert bound_cartesian(torch.zeros(1, 2), 0.4).abs().max() == 0.0      # origin -> 0
 
 
+def test_fourier_encoding():
+    from version10.attention import enc_dim, fourier_features
+    assert enc_dim(3, 4, True) == 27 and enc_dim(3, 0, True) == 3       # 3*(1+2L) ; L=0 -> raw
+    x = torch.tensor([[0.5, -0.25, 0.0]])
+    f = fourier_features(x, 4, True)
+    assert f.shape == (1, 27)
+    # component-major: component 0 (=0.5) occupies [0:9] = [raw, s0,c0, s1,c1, s2,c2, s3,c3]
+    assert abs(float(f[0, 0]) - 0.5) < 1e-6                             # raw kept
+    assert abs(float(f[0, 1]) - math.sin(math.pi * 0.5)) < 1e-6         # sin(2^0 pi x)
+    assert abs(float(f[0, 2]) - math.cos(math.pi * 0.5)) < 1e-6         # cos(2^0 pi x)
+    assert abs(float(f[0, 3]) - math.sin(2 * math.pi * 0.5)) < 1e-6     # sin(2^1 pi x)
+    assert torch.equal(fourier_features(x, 0, True), x)                 # L=0 is the identity
+
+
 def test_export_structure():
     w = build_model(d_model=16, d_ff=32, d_head=16, n_blocks=2).export_weights()
     assert w["arch"] == "v10_topo_attention" and w["output_activation"] == "v10_cartesian"
@@ -126,6 +140,8 @@ def test_export_structure():
     assert w["n_anchors"] == 2                                          # ASC/MC exempt from vis prior
     assert w["qk_norm"] is True                                         # v10.1 bounded cosine attn
     assert all(b["tau"] <= 30.0 + 1e-6 for b in w["blocks"]) and w["tau_pool"] <= 30.0 + 1e-6
+    assert w["fourier_L"] == 4 and w["fourier_raw"] is True             # v10.2 Fourier encoding
+    assert len(w["W_in"][0]) == 3 * (1 + 2 * 4)                         # embed input = 3*(1+2L) = 27
     assert len(w["E_body"]) == 13 and len(w["Wo2"]) == 2
 
 
@@ -151,7 +167,21 @@ def _numpy_model(w, local):
     def lin(h, W, b):
         return h @ np.asarray(W).T + np.asarray(b)
 
-    t = x @ np.asarray(w["W_in"]).T + np.asarray(w["b_in"]) + np.asarray(w["E_body"])
+    fl, fr = w.get("fourier_L", 0), w.get("fourier_raw", True)   # v10.2 Fourier encoding
+    if fl > 0:
+        feats = []
+        for c in range(x.shape[-1]):
+            xc = x[..., c:c + 1]
+            if fr:
+                feats.append(xc)
+            for k in range(fl):
+                f = (2.0 ** k) * math.pi * xc
+                feats.append(np.sin(f))
+                feats.append(np.cos(f))
+        xf = np.concatenate(feats, axis=-1)
+    else:
+        xf = x
+    t = xf @ np.asarray(w["W_in"]).T + np.asarray(w["b_in"]) + np.asarray(w["E_body"])
     for bk in w["blocks"]:
         q, k, v = lin(t, bk["Wq"], bk["bq"]), lin(t, bk["Wk"], bk["bk"]), lin(t, bk["Wv"], bk["bv"])
         if qk:                                    # bounded cosine attention: tau is the temperature
@@ -231,7 +261,7 @@ def test_training_runs_resumes_and_exports(tmp_path):
     export_weights_json(str(final2), str(out))
     w = json.loads(out.read_text())
     assert w["arch"] == "v10_topo_attention" and w["out_features"] == 2
-    assert w["gate_k"] == 3.0 and "tv_weight" in w
+    assert w["gate_k"] == 8.0 and "tv_weight" in w                     # v10.2 strict orbs
     assert w["qk_norm"] is True and "weight_decay" in w and "tv_weight_coarse" in w
     model, _p, _c = load_checkpoint(final2, map_location="cpu")
     model.eval()
