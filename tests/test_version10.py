@@ -19,7 +19,9 @@ from version10 import state as st                                    # noqa: E40
 from version10.attention import bound_oklch, build_model             # noqa: E402
 from version10.config import AttnConfig, DataConfig, TrainConfig, V10Config   # noqa: E402
 from version10.ephemeris import BODY_NAMES, N_BODIES, asc_mc_ecliptic, gmst_deg, _obliquity  # noqa: E402
-from version10.losses import balanced_sky_distance, isometric_loss, tv_loss   # noqa: E402
+from version10.losses import (   # noqa: E402
+    balanced_sky_distance, isometric_loss, isometric_pair_loss, tv_loss,
+)
 
 DEG = math.pi / 180.0
 
@@ -104,6 +106,8 @@ def test_export_structure():
     assert w["arch"] == "v10_topo_attention" and w["output_activation"] == "v10_oklch"
     assert w["n_bodies"] == 13 and w["out_features"] == 2 and w["okl_cmax"] == 0.4
     assert w["n_anchors"] == 2                                          # ASC/MC exempt from vis prior
+    assert w["qk_norm"] is True                                         # v10.1 bounded cosine attn
+    assert all(b["tau"] <= 30.0 + 1e-6 for b in w["blocks"]) and w["tau_pool"] <= 30.0 + 1e-6
     assert len(w["E_body"]) == 13 and len(w["Wo2"]) == 2
 
 
@@ -113,6 +117,10 @@ def _numpy_model(w, local):
         e = np.exp(x)
         return e / e.sum(ax, keepdims=True)
 
+    def nrm(a, ax):                                # L2-normalise (cosine attention, v10.1)
+        return a / np.maximum(np.linalg.norm(a, axis=ax, keepdims=True), 1e-12)
+
+    qk = bool(w.get("qk_norm", False))
     x = np.asarray(local, dtype=np.float64).reshape(-1, w["n_bodies"], w["token_dim"])
     D = w["d_model"]
     s = 1.0 / math.sqrt(D)
@@ -128,9 +136,17 @@ def _numpy_model(w, local):
     t = x @ np.asarray(w["W_in"]).T + np.asarray(w["b_in"]) + np.asarray(w["E_body"])
     for bk in w["blocks"]:
         q, k, v = lin(t, bk["Wq"], bk["bq"]), lin(t, bk["Wk"], bk["bk"]), lin(t, bk["Wv"], bk["bv"])
-        t = t + sm(q @ k.transpose(0, 2, 1) * (s * bk["tau"]) + vis[:, None, :], -1) @ v
+        if qk:                                    # bounded cosine attention: tau is the temperature
+            sco = nrm(q, -1) @ nrm(k, -1).transpose(0, 2, 1) * bk["tau"] + vis[:, None, :]
+        else:
+            sco = q @ k.transpose(0, 2, 1) * (s * bk["tau"]) + vis[:, None, :]
+        t = t + sm(sco, -1) @ v
         t = t + np.tanh(lin(t, bk["W1"], bk["b1"])) @ np.asarray(bk["W2"]).T + np.asarray(bk["b2"])
-    pw = sm((t @ np.asarray(w["q_pool"])) * (s * w["tau_pool"]) + vis, 1)
+    if qk:
+        psco = (nrm(t, -1) @ nrm(np.asarray(w["q_pool"]), 0)) * w["tau_pool"] + vis
+    else:
+        psco = (t @ np.asarray(w["q_pool"])) * (s * w["tau_pool"]) + vis
+    pw = sm(psco, 1)
     pooled = np.einsum("nb,nbd->nd", pw, t)
     z = np.tanh(pooled @ np.asarray(w["Wo1"]).T + np.asarray(w["bo1"])) @ np.asarray(w["Wo2"]).T + np.asarray(w["bo2"])
     C = w["okl_cmax"] / (1.0 + np.exp(-z[:, 0]))
@@ -156,6 +172,11 @@ def test_tv_and_isometric_loss():
     c = torch.randn(20, 2) * 0.1
     assert float(tv_loss(c, c)) == 0.0                                  # identical -> zero
     assert float(tv_loss(c, c + 0.1)) > 0.0                             # a shift is penalised
+    # v10.1 anti-winding: isometry-referenced pair loss is 0 when colour gap == gamma*d_sky (here
+    # identical colour AND identical sky), and > 0 for a colour gap with no matching sky change.
+    fa = torch.rand(20, 117)
+    assert float(isometric_pair_loss(c, c, fa, fa, 0.35)) == 0.0
+    assert float(isometric_pair_loss(c, c + 0.3, fa, fa, 0.35)) > 0.0   # winding penalised
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +212,7 @@ def test_training_runs_resumes_and_exports(tmp_path):
     w = json.loads(out.read_text())
     assert w["arch"] == "v10_topo_attention" and w["out_features"] == 2
     assert w["gate_k"] == 3.0 and "tv_weight" in w
+    assert w["qk_norm"] is True and "weight_decay" in w and "tv_weight_coarse" in w
     model, _p, _c = load_checkpoint(final2, map_location="cpu")
     model.eval()
     local = st.local_vectors(np.array([10.0, -40.0]), np.array([20.0, 100.0]), np.array([2451545.0, 2460000.0]))

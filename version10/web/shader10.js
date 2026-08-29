@@ -65,6 +65,7 @@ export function buildShaders(arch) {
     #define NB ${NB}
     #define N_PLANETS ${arch.n_planets ?? 11}
     #define N_ANCHORS ${arch.n_anchors ?? 0}
+    #define QK_NORM ${arch.qk_norm ? 1 : 0}
     #define NBL ${NBL}
     #define TOK ${TOK}
     #define INV_SQRTD ${(1.0 / Math.sqrt(D)).toFixed(8)}
@@ -138,16 +139,22 @@ export function buildShaders(arch) {
       float kk[NB*D]; float vv[NB*D];
       for(int bl=0; bl<NBL; bl++){
         int bb = OFF_BLOCKS + bl*SB;
-        float sc = INV_SQRTD * W(bb+BTAU);
+        // v10.1: bounded cosine attention (normalise Q,K; BTAU is the clamped temperature).
+        float sc = (QK_NORM==1) ? W(bb+BTAU) : INV_SQRTD * W(bb+BTAU);
         for(int b=0;b<NB;b++)
           for(int oo=0;oo<D;oo++){
             float sk = W(bb+BBK+oo), sv = W(bb+BBV+oo);
             for(int i=0;i<D;i++){ float ti = tok[b*D+i]; sk += W(bb+BWK+oo*D+i)*ti; sv += W(bb+BWV+oo*D+i)*ti; }
             kk[b*D+oo]=sk; vv[b*D+oo]=sv;
           }
+        if(QK_NORM==1){                                  // L2-normalise each key vector over D
+          for(int b=0;b<NB;b++){ float n=0.0; for(int d=0;d<D;d++){ float x=kk[b*D+d]; n+=x*x; }
+            n=inversesqrt(max(n,1e-20)); for(int d=0;d<D;d++) kk[b*D+d]*=n; }
+        }
         for(int qi=0; qi<NB; qi++){
           float q[D];
           for(int oo=0;oo<D;oo++){ float sq = W(bb+BBQ+oo); for(int i=0;i<D;i++) sq += W(bb+BWQ+oo*D+i)*tok[qi*D+i]; q[oo]=sq; }
+          if(QK_NORM==1){ float n=0.0; for(int d=0;d<D;d++) n+=q[d]*q[d]; n=inversesqrt(max(n,1e-20)); for(int d=0;d<D;d++) q[d]*=n; }
           float sco[NB]; float smax=-1e30;
           for(int j=0;j<NB;j++){ float s=0.0; for(int d=0;d<D;d++) s+=q[d]*kk[j*D+d]; s=s*sc+vis[j]; sco[j]=s; if(s>smax) smax=s; }
           float Z=0.0; for(int j=0;j<NB;j++){ sco[j]=exp(sco[j]-smax); Z+=sco[j]; }
@@ -159,9 +166,18 @@ export function buildShaders(arch) {
           for(int oo=0;oo<D;oo++){ float s=W(bb+BB2+oo); for(int d=0;d<DFF;d++) s+=W(bb+BW2+oo*DFF+d)*h[d]; tok[b*D+oo]+=s; }
         }
       }
-      float psc = INV_SQRTD * W(OFF_TAUPOOL);
+      float psc = (QK_NORM==1) ? W(OFF_TAUPOOL) : INV_SQRTD * W(OFF_TAUPOOL);
+      float qpn[D];                                      // (normalised, when QK_NORM) pool query
+      if(QK_NORM==1){ float n=0.0; for(int d=0;d<D;d++){ float x=W(OFF_QPOOL+d); qpn[d]=x; n+=x*x; }
+        n=inversesqrt(max(n,1e-20)); for(int d=0;d<D;d++) qpn[d]*=n; }
       float pw[NB]; float smax=-1e30;
-      for(int b=0;b<NB;b++){ float s=0.0; for(int d=0;d<D;d++) s+=tok[b*D+d]*W(OFF_QPOOL+d); s=s*psc+vis[b]; pw[b]=s; if(s>smax) smax=s; }
+      for(int b=0;b<NB;b++){
+        float s=0.0;
+        if(QK_NORM==1){ float tn=0.0; for(int d=0;d<D;d++){ float x=tok[b*D+d]; tn+=x*x; }
+          tn=inversesqrt(max(tn,1e-20)); for(int d=0;d<D;d++) s+=tok[b*D+d]*tn*qpn[d]; }
+        else { for(int d=0;d<D;d++) s+=tok[b*D+d]*W(OFF_QPOOL+d); }
+        s=s*psc+vis[b]; pw[b]=s; if(s>smax) smax=s;
+      }
       float Z=0.0; for(int b=0;b<NB;b++){ pw[b]=exp(pw[b]-smax); Z+=pw[b]; }
       float pooled[D];
       for(int d=0;d<D;d++){ float acc=0.0; for(int b=0;b<NB;b++) acc+=pw[b]*tok[b*D+d]; pooled[d]=acc/Z; }

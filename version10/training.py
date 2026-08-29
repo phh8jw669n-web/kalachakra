@@ -14,8 +14,8 @@ import torch
 from .attention import build_model
 from .config import V10Config
 from .dataset import build_dataloader
-from .losses import anchor_loss, color_stats, isometric_loss, tv_loss
-from .state import N_LOCAL, local_vectors
+from .losses import anchor_loss, color_stats, isometric_loss, isometric_pair_loss
+from .state import N_LOCAL, target_features
 
 CHECKPOINT_FORMAT = "kalachakra-version10-topoattn"
 
@@ -86,8 +86,17 @@ def train(cfg: V10Config, *, resume: str | None = None, max_steps: int | None = 
 
     model = build_model(**cfg.to_dict()["attn"]).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.train.lr,
-                                  weight_decay=cfg.train.weight_decay)
+    # Weight decay only on >=2-D transform matrices; never on biases, temperatures, the pool
+    # query (1-D) or the body-identity embedding (a lookup, not a transform). This lets the decay
+    # hold the transforms in the small-number regime (which renders solid lines) without
+    # gravitationally squashing the structural parameters.
+    decay = [p for n, p in model.named_parameters()
+             if p.requires_grad and p.ndim >= 2 and n != "body_emb"]
+    no_decay = [p for n, p in model.named_parameters()
+                if p.requires_grad and not (p.ndim >= 2 and n != "body_emb")]
+    optimizer = torch.optim.AdamW(
+        [{"params": decay, "weight_decay": cfg.train.weight_decay},
+         {"params": no_decay, "weight_decay": 0.0}], lr=cfg.train.lr)
     scheduler = cosine_warmup(optimizer, cfg.train.warmup_steps, steps_target,
                               base_lr=cfg.train.lr, lr_min=cfg.train.lr_min)
 
@@ -108,12 +117,19 @@ def train(cfg: V10Config, *, resume: str | None = None, max_steps: int | None = 
                 f"  head=OKLCH C<={a.okl_cmax} H (render OKLab L={a.okl_l} fixed)")
     logger.info(f"loss: isometric gamma={cfg.train.gamma}"
                 f"  d_sky={cfg.train.w_local}*local+{cfg.train.w_rel}*gated_chord(k={cfg.train.gate_k})"
-                f"  anchor={cfg.train.anchor_weight} tv={cfg.train.tv_weight}(d={cfg.train.tv_delta_deg}deg)"
-                f"  optim=AdamW lr={cfg.train.lr}->{cfg.train.lr_min}  batch={cfg.data.batch}")
+                f"  anchor={cfg.train.anchor_weight}"
+                f"  iso-pair(fine {cfg.train.tv_weight}@{cfg.train.tv_delta_deg}deg,"
+                f" coarse {cfg.train.tv_weight_coarse}@{cfg.train.tv_delta_coarse_deg}deg)"
+                f"  wd={cfg.train.weight_decay} qk_norm={a.qk_norm}(temp<={a.attn_temp_max})"
+                f"  AdamW lr={cfg.train.lr}->{cfg.train.lr_min}  batch={cfg.data.batch}")
     logger.info("=" * 78)
 
     loader = build_dataloader(cfg.data, cfg.train.gate_k, num_workers=cfg.train.num_workers)
-    dc, tv_w, tv_d = cfg.data, cfg.train.tv_weight, cfg.train.tv_delta_deg
+    dc = cfg.data
+    gk, gamma, wl, wr = cfg.train.gate_k, cfg.train.gamma, cfg.train.w_local, cfg.train.w_rel
+    scales = [(cfg.train.tv_delta_deg, cfg.train.tv_weight),
+              (cfg.train.tv_delta_coarse_deg, cfg.train.tv_weight_coarse)]
+    use_pair = any(w > 0 for _, w in scales)
     tv_rng = np.random.default_rng(cfg.train.seed + 777)
     tv_bs = min(256, cfg.data.batch)
     model.train()
@@ -127,17 +143,26 @@ def train(cfg: V10Config, *, resume: str | None = None, max_steps: int | None = 
         x = feat[:, :N_LOCAL]                              # 13x3 tokens (model reshapes)
         optimizer.zero_grad(set_to_none=True)
         color = model(x)
-        loss = (isometric_loss(feat, color, cfg.train.gamma,
-                               cfg.train.w_local, cfg.train.w_rel)
+        loss = (isometric_loss(feat, color, gamma, wl, wr)
                 + cfg.train.anchor_weight * anchor_loss(color))
-        if tv_w > 0:
-            # spatial-smoothness: colour of a point vs a same-instant longitude-neighbour
+        if use_pair:
+            # v10.1 anti-winding: enforce the isometric metric at fine + coarse spatial scale.
+            # Same base point, neighbours in a random azimuth per scale. The reference is the
+            # true sky distance, so this removes winding without dulling a genuine gradient.
             lat = tv_rng.uniform(dc.lat_min, dc.lat_max, tv_bs)
             lon = tv_rng.uniform(dc.lon_min, dc.lon_max, tv_bs)
             tjd = tv_rng.uniform(dc.jd_start, dc.jd_end, tv_bs)
-            x0 = torch.from_numpy(local_vectors(lat, lon, tjd)).to(device)
-            x1 = torch.from_numpy(local_vectors(lat, lon + tv_d, tjd)).to(device)
-            loss = loss + tv_w * tv_loss(model(x0), model(x1))
+            f0 = torch.from_numpy(target_features(lat, lon, tjd, gk)).to(device)
+            c0 = model(f0[:, :N_LOCAL])
+            for scale, w in scales:
+                if w <= 0:
+                    continue
+                az = tv_rng.uniform(0.0, 2.0 * math.pi, tv_bs)
+                lat2 = np.clip(lat + scale * np.cos(az), -89.9, 89.9)
+                lon2 = lon + scale * np.sin(az)
+                f1 = torch.from_numpy(target_features(lat2, lon2, tjd, gk)).to(device)
+                loss = loss + w * isometric_pair_loss(c0, model(f1[:, :N_LOCAL]), f0, f1,
+                                                      gamma, wl, wr)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.grad_clip)
         optimizer.step()
@@ -174,6 +199,8 @@ def export_weights_json(checkpoint: str, out_path: str) -> str:
     payload["w_rel"] = cfg.train.w_rel
     payload["gate_k"] = cfg.train.gate_k
     payload["tv_weight"] = cfg.train.tv_weight
+    payload["tv_weight_coarse"] = cfg.train.tv_weight_coarse
+    payload["weight_decay"] = cfg.train.weight_decay
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_text(json.dumps(payload))
     return out_path

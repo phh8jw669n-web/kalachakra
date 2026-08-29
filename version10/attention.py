@@ -1,13 +1,13 @@
 """version10 model — the Topocentric Micro Self-Attention engine.
 
     input   x : [N, 13, 3]         13 tokens (11 bodies + ASC + MC), each (North,East,Zenith)
-    embed   t = x W_in^T + b_in + E_body[b]           -> [N, 11, D]   (+ learned body identity)
+    embed   t = x W_in^T + b_in + E_body[b]           -> [N, 13, D]   (+ learned body identity)
     block(s):
         Q,K,V = t Wq^T+bq , t Wk^T+bk , t Wv^T+bv     single head, d_k = D
-        A     = softmax(Q K^T / sqrt(D))              -> [N, 11, 11]   (topocentric relations)
-        t     = t + A V                               residual
+        A     = softmax(temp * norm(Q).norm(K)^T)     -> [N, 13, 13]   (v10.1 bounded cosine attn:
+        t     = t + A V                               residual         Q,K L2-normalised, temp<=30)
         t     = t + W2 tanh(W1 t + b1) + b2           per-token FFN, residual
-    pool    w = softmax((t . q_pool)/sqrt(D)) over the 11 tokens
+    pool    w = softmax(temp_pool * norm(t).norm(q_pool)) over the 13 tokens
             p = sum_b w_b t_b                         -> [N, D]        (energy read-out)
     head    z = Wo2 tanh(Wo1 p + bo1) + bo2           -> [N, 2]  (C,H logits)
     chroma  C = cmax*sigmoid(z0) ; H = z1             polar OKLCH -> OKLab (a,b)=(C cosH, C sinH)
@@ -31,6 +31,7 @@ import math
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 
 def bound_oklch(z: torch.Tensor, okl_cmax: float) -> torch.Tensor:
@@ -52,27 +53,44 @@ def bound_oklch(z: torch.Tensor, okl_cmax: float) -> torch.Tensor:
 
 
 class AttnBlock(nn.Module):
-    """Single-head self-attention + per-token FFN, both residual (no LayerNorm — see module doc)."""
+    """Single-head self-attention + per-token FFN, both residual (no LayerNorm — see module doc).
 
-    def __init__(self, d_model: int, d_ff: int):
+    When ``qk_norm`` is set (v10.1 default), Q and K are L2-normalised before their dot product,
+    so the pre-softmax logit is a cosine similarity in ``[-1, 1]`` scaled by a learnable
+    temperature clamped to ``[~0, temp_max]``. That bounds the logit for all time — deep training
+    can inflate the weights without the softmax ever saturating into a hard switch. The legacy
+    unbounded ``(1/sqrt(d)) * tau`` path is kept for loading pre-v10.1 checkpoints."""
+
+    def __init__(self, d_model: int, d_ff: int, qk_norm: bool = True,
+                 temp_init: float = 10.0, temp_max: float = 30.0):
         super().__init__()
         self.q = nn.Linear(d_model, d_model)
         self.k = nn.Linear(d_model, d_model)
         self.v = nn.Linear(d_model, d_model)
         self.ff1 = nn.Linear(d_model, d_ff)
         self.ff2 = nn.Linear(d_ff, d_model)
+        self.qk_norm = qk_norm
+        self.temp_max = temp_max
         self.base_scale = 1.0 / math.sqrt(d_model)
-        #: learnable temperature — lets the softmax SHARPEN (spike on aligned/visible bodies)
-        #: instead of collapsing to a uniform mean-pool. Exported as one scalar per block.
-        self.tau = nn.Parameter(torch.tensor(1.0))
+        #: learnable temperature. With qk_norm it is the cosine logit scale (init 10, clamped to
+        #: temp_max); without it, the legacy 1/sqrt(d) softmax temperature (init 1.0).
+        self.temp = nn.Parameter(torch.tensor(temp_init if qk_norm else 1.0))
+
+    def eff_temp(self) -> torch.Tensor:
+        """The effective (clamped) temperature actually multiplied into the scores."""
+        return self.temp.clamp(1e-2, self.temp_max) if self.qk_norm else self.temp
 
     def forward(self, t: torch.Tensor, vis: torch.Tensor) -> torch.Tensor:
         # vis[...,j] is the horizon-visibility bias of key body j (vis_bias * zenith_j), added
         # to every query's score for j: above-horizon bodies are attended, below-horizon ones
         # suppressed — the "conjunction overhead spikes / underfoot zeroes" prior, observer-
         # dependent by construction. The learned Q·K content term modulates on top.
-        q, k, v = self.q(t), self.k(t), self.v(t)          # [N,11,D]
-        scores = torch.matmul(q, k.transpose(-1, -2)) * (self.base_scale * self.tau)  # [N,11,11]
+        q, k, v = self.q(t), self.k(t), self.v(t)          # [N,13,D]
+        if self.qk_norm:                                   # bounded cosine attention (v10.1)
+            qn, kn = F.normalize(q, dim=-1), F.normalize(k, dim=-1)
+            scores = torch.matmul(qn, kn.transpose(-1, -2)) * self.eff_temp()
+        else:                                              # legacy unbounded dot-product
+            scores = torch.matmul(q, k.transpose(-1, -2)) * (self.base_scale * self.temp)
         scores = scores + vis.unsqueeze(1)                 # broadcast bias over the query axis
         a = torch.softmax(scores, dim=-1)
         t = t + torch.matmul(a, v)                         # residual attention
@@ -85,26 +103,36 @@ class TopoAttention(nn.Module):
 
     def __init__(self, n_bodies: int = 13, token_dim: int = 3, d_model: int = 32,
                  d_ff: int = 64, d_head: int = 32, n_blocks: int = 2, vis_bias: float = 3.0,
-                 n_anchors: int = 2, okl_l: float = 0.5, okl_cmax: float = 0.4):
+                 n_anchors: int = 2, okl_l: float = 0.5, okl_cmax: float = 0.4,
+                 qk_norm: bool = True, attn_temp_init: float = 10.0, attn_temp_max: float = 30.0):
         super().__init__()
         self.cfg = {"n_bodies": n_bodies, "token_dim": token_dim, "d_model": d_model,
                     "d_ff": d_ff, "d_head": d_head, "n_blocks": n_blocks, "vis_bias": vis_bias,
-                    "n_anchors": n_anchors, "okl_l": okl_l, "okl_cmax": okl_cmax}
+                    "n_anchors": n_anchors, "okl_l": okl_l, "okl_cmax": okl_cmax,
+                    "qk_norm": qk_norm, "attn_temp_init": attn_temp_init,
+                    "attn_temp_max": attn_temp_max}
         self.vis_bias = vis_bias
         #: the last n_anchors tokens (ASC, MC) are structural coordinate axes, NOT physical
         #: bodies. They are EXEMPT from the horizon-visibility prior (which would zero out the
         #: Ascendant, since it sits on the horizon at zenith~0): they get the full vis_bias
         #: regardless of altitude, so they compete equally with each other and are not suppressed.
         self.n_anchors = n_anchors
+        self.qk_norm = qk_norm
+        self.temp_max = attn_temp_max
         self.embed = nn.Linear(token_dim, d_model)
         self.body_emb = nn.Parameter(torch.randn(n_bodies, d_model) * 0.02)
-        self.blocks = nn.ModuleList([AttnBlock(d_model, d_ff) for _ in range(n_blocks)])
+        self.blocks = nn.ModuleList([AttnBlock(d_model, d_ff, qk_norm, attn_temp_init,
+                                               attn_temp_max) for _ in range(n_blocks)])
         self.q_pool = nn.Parameter(torch.randn(d_model) * 0.02)
-        self.tau_pool = nn.Parameter(torch.tensor(1.0))    # learnable pool-attention temperature
+        #: learnable pool-attention temperature (cosine logit scale when qk_norm, else 1/sqrt(d)).
+        self.temp_pool = nn.Parameter(torch.tensor(attn_temp_init if qk_norm else 1.0))
         self.head1 = nn.Linear(d_model, d_head)
         self.head2 = nn.Linear(d_head, 2)                  # pure chroma: a*, b* (no L*)
         self.base_pool_scale = 1.0 / math.sqrt(d_model)
         self._reset()
+
+    def eff_temp_pool(self) -> torch.Tensor:
+        return self.temp_pool.clamp(1e-2, self.temp_max) if self.qk_norm else self.temp_pool
 
     def _reset(self):
         for m in self.modules():
@@ -113,8 +141,13 @@ class TopoAttention(nn.Module):
                 nn.init.zeros_(m.bias)
 
     def _pool_weights(self, t: torch.Tensor, vis: torch.Tensor) -> torch.Tensor:
-        scores = torch.matmul(t, self.q_pool) * (self.base_pool_scale * self.tau_pool) + vis
-        return torch.softmax(scores, dim=1)                # [N,11] energy contribution per body
+        if self.qk_norm:                                   # bounded cosine pool (v10.1)
+            tn = F.normalize(t, dim=-1)                    # [N,NB,D]
+            qn = F.normalize(self.q_pool, dim=0)           # [D]
+            scores = torch.matmul(tn, qn) * self.eff_temp_pool() + vis
+        else:                                              # legacy unbounded dot-product
+            scores = torch.matmul(t, self.q_pool) * (self.base_pool_scale * self.temp_pool) + vis
+        return torch.softmax(scores, dim=1)                # [N,NB] energy contribution per token
 
     def forward(self, x: torch.Tensor, return_pool: bool = False):
         """``x``: ``[N,13,3]`` (or ``[N,39]``, auto-reshaped) -> ``[N,2]`` OKLab (a,b)."""
@@ -142,22 +175,25 @@ class TopoAttention(nn.Module):
             return m.bias.detach().cpu().tolist()
 
         c = self.cfg
+        # "tau" / "tau_pool" carry the EFFECTIVE (clamped) temperature so the JS/GLSL ports just
+        # multiply the (normalised, when qk_norm) dot product by it — no clamp logic downstream.
         blocks = [{
             "Wq": W(blk.q), "bq": b(blk.q), "Wk": W(blk.k), "bk": b(blk.k),
             "Wv": W(blk.v), "bv": b(blk.v),
             "W1": W(blk.ff1), "b1": b(blk.ff1), "W2": W(blk.ff2), "b2": b(blk.ff2),
-            "tau": float(blk.tau.detach()),
+            "tau": float(blk.eff_temp().detach()),
         } for blk in self.blocks]
         return {
             "arch": "v10_topo_attention", "output_activation": "v10_oklch", "out_features": 2,
             "n_bodies": c["n_bodies"], "token_dim": c["token_dim"], "d_model": c["d_model"],
             "d_ff": c["d_ff"], "d_head": c["d_head"], "n_blocks": c["n_blocks"],
             "vis_bias": c["vis_bias"], "n_anchors": c["n_anchors"],
+            "qk_norm": bool(c["qk_norm"]),
             "okl_l": c["okl_l"], "okl_cmax": c["okl_cmax"],
             "W_in": W(self.embed), "b_in": b(self.embed),
             "E_body": self.body_emb.detach().cpu().tolist(),
             "blocks": blocks, "q_pool": self.q_pool.detach().cpu().tolist(),
-            "tau_pool": float(self.tau_pool.detach()),
+            "tau_pool": float(self.eff_temp_pool().detach()),
             "Wo1": W(self.head1), "bo1": b(self.head1),
             "Wo2": W(self.head2), "bo2": b(self.head2),
         }

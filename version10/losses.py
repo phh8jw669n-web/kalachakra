@@ -3,10 +3,10 @@
 The colour field is trained so that the perceptual distance between two observers' colours
 tracks a *fixed, observer-dependent* sky distance:
 
-    d_local = ||V_A - V_B|| / sqrt(33)                 33-D topocentric local vectors
-    d_rel   = ||R_A - R_B|| / sqrt(55)                 55-D HORIZON-GATED chords
+    d_local = ||V_A - V_B|| / sqrt(39)                 39-D topocentric local vectors (13 tokens)
+    d_rel   = ||R_A - R_B|| / sqrt(78)                 78-D HORIZON-GATED chords  (C(13,2))
     d_sky   = w_local * d_local + w_rel * d_rel        defaults 0.5 / 0.5
-    L       = MSE( ||ab_A - ab_B|| , gamma * d_sky ) + anchor
+    L       = MSE( ||ab_A - ab_B|| , gamma * d_sky ) + anchor + iso-pair (v10.1 anti-winding)
 
 The colour is a pure 2-D OKLCH chroma output (polar C,H expressed as OKLab (a,b)=(C cosH, C sinH))
 — no luminance. Euclidean distance on (a,b) is *exactly* the OKLCH cylindrical distance
@@ -33,7 +33,8 @@ import torch
 
 from .state import N_CHORD, N_LOCAL
 
-__all__ = ["balanced_sky_distance", "isometric_loss", "anchor_loss", "color_stats", "tv_loss"]
+__all__ = ["balanced_sky_distance", "isometric_loss", "anchor_loss", "color_stats", "tv_loss",
+           "pair_sky_distance", "isometric_pair_loss"]
 
 _INV_SQRT_LOCAL = 1.0 / math.sqrt(N_LOCAL)
 _INV_SQRT_CHORD = 1.0 / math.sqrt(N_CHORD)
@@ -71,8 +72,36 @@ def tv_loss(color_a: torch.Tensor, color_b: torch.Tensor) -> torch.Tensor:
     """Total-variation smoothness: mean squared OKLab (a,b) change between two geographically
     neighbouring observers at the same instant. Penalising this discourages high-frequency
     spatial noise, so sharpness must come from genuine token structure (esp. the fast ASC/MC),
-    not hallucination. ``color_a``, ``color_b`` are ``[N,2]`` for matched neighbour points."""
+    not hallucination. ``color_a``, ``color_b`` are ``[N,2]`` for matched neighbour points.
+
+    NOTE: this is the blunt (pull-to-zero) prior; v10.1 training uses ``isometric_pair_loss``
+    instead, which references the true sky metric and so never dulls a genuine gradient."""
     return ((color_a - color_b) ** 2).sum(dim=-1).mean()
+
+
+def pair_sky_distance(feat_a: torch.Tensor, feat_b: torch.Tensor, w_local: float = W_LOCAL,
+                      w_rel: float = W_REL) -> torch.Tensor:
+    """Per-row (matched-pair) sky distance between two ``[N,117]`` target-feature tensors —
+    the elementwise counterpart of ``balanced_sky_distance`` (which is all-pairs)."""
+    va, ca = feat_a[:, :N_LOCAL], feat_a[:, N_LOCAL:]
+    vb, cb = feat_b[:, :N_LOCAL], feat_b[:, N_LOCAL:]
+    d_local = torch.linalg.vector_norm(va - vb, dim=-1) * _INV_SQRT_LOCAL
+    d_rel = torch.linalg.vector_norm(ca - cb, dim=-1) * _INV_SQRT_CHORD
+    return w_local * d_local + w_rel * d_rel
+
+
+def isometric_pair_loss(color_a: torch.Tensor, color_b: torch.Tensor, feat_a: torch.Tensor,
+                        feat_b: torch.Tensor, gamma: float = 0.35, w_local: float = W_LOCAL,
+                        w_rel: float = W_REL) -> torch.Tensor:
+    """v10.1 anti-winding term. The SAME isometric objective as ``isometric_loss`` but applied to
+    matched *spatial-neighbour* pairs: the OKLab colour gap must equal ``gamma * d_sky(pair)`` —
+    no more. Hue winding (a whole colour-wheel turn while d_sky barely moves) grossly overshoots
+    that target and is removed; a genuine gradient already meets it and is left untouched. Because
+    the reference is the true sky distance, this is faithful to the energy signature by
+    construction (unlike a pull-to-zero smoothness prior)."""
+    d_ab = torch.linalg.vector_norm(color_a - color_b, dim=-1)
+    d_sky = pair_sky_distance(feat_a, feat_b, w_local, w_rel)
+    return ((d_ab - gamma * d_sky) ** 2).mean()
 
 
 def color_stats(color: torch.Tensor) -> dict:

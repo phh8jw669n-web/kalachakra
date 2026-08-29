@@ -21,11 +21,13 @@ function softmax(v) {
   return e.map((t) => t / sum);
 }
 const tanh = Math.tanh;
+// L2-normalise a vector (cosine attention, v10.1). Zero-safe.
+function l2(v) { let s = 0; for (const x of v) s += x * x; s = Math.sqrt(s) || 1; return v.map((x) => x / s); }
 
 // Build a forward fn: local (Float array of 33) -> { lab:[L,a,b], pool:[11] energy weights }.
 export function makeModel(weights) {
   const W = weights, NB = W.n_bodies, D = W.d_model;
-  const invSqrtD = 1.0 / Math.sqrt(D), nAnch = W.n_anchors ?? 0;
+  const invSqrtD = 1.0 / Math.sqrt(D), nAnch = W.n_anchors ?? 0, qkNorm = W.qk_norm ?? false;
   return function forward(local) {
     // horizon-visibility bias (vis_bias * zenith) for bodies; the last nAnch tokens (ASC/MC)
     // are structural axes -> always fully visible (zenith := 1), never suppressed by the horizon.
@@ -40,10 +42,13 @@ export function makeModel(weights) {
     }
     // attention blocks
     for (const blk of W.blocks) {
-      const scale = invSqrtD * blk.tau;
-      const q = t.map((tb) => matvec(blk.Wq, blk.bq, tb));
-      const k = t.map((tb) => matvec(blk.Wk, blk.bk, tb));
+      let q = t.map((tb) => matvec(blk.Wq, blk.bq, tb));
+      let k = t.map((tb) => matvec(blk.Wk, blk.bk, tb));
       const v = t.map((tb) => matvec(blk.Wv, blk.bv, tb));
+      // v10.1: bounded cosine attention (normalise Q,K; tau is the clamped temperature). The
+      // legacy path keeps the unbounded (1/sqrt(D))*tau dot product for pre-v10.1 weights.
+      let scale;
+      if (qkNorm) { q = q.map(l2); k = k.map(l2); scale = blk.tau; } else scale = invSqrtD * blk.tau;
       const add = new Array(NB);
       for (let i = 0; i < NB; i++) {
         const scores = new Array(NB);
@@ -61,9 +66,10 @@ export function makeModel(weights) {
         for (let d = 0; d < D; d++) t[i][d] += f[d];
       }
     }
-    // learned-query pooling (+ visibility bias) -> energy weights per body
-    const poolScale = invSqrtD * W.tau_pool;
-    const pscores = t.map((tb, b) => { let s = 0; for (let d = 0; d < D; d++) s += tb[d] * W.q_pool[d]; return s * poolScale + vis[b]; });
+    // learned-query pooling (+ visibility bias) -> energy weights per token (cosine when qkNorm)
+    const qp = qkNorm ? l2(W.q_pool) : W.q_pool;
+    const poolScale = qkNorm ? W.tau_pool : invSqrtD * W.tau_pool;
+    const pscores = t.map((tb, b) => { const tn = qkNorm ? l2(tb) : tb; let s = 0; for (let d = 0; d < D; d++) s += tn[d] * qp[d]; return s * poolScale + vis[b]; });
     const pool = softmax(pscores);
     const pooled = new Array(D).fill(0);
     for (let i = 0; i < NB; i++) for (let d = 0; d < D; d++) pooled[d] += pool[i] * t[i][d];

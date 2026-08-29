@@ -29,7 +29,7 @@ import { createPlanets, createAnchors } from "./planets10.js";
 
 const DEFAULT_ARCH = {
   arch: "v10_topo_attention", n_bodies: 13, token_dim: 3, d_model: 32, d_ff: 64, d_head: 32,
-  n_blocks: 2, vis_bias: 3.0, n_anchors: 2, out_features: 2, okl_l: 0.5, okl_cmax: 0.4,
+  n_blocks: 2, vis_bias: 3.0, n_anchors: 2, qk_norm: true, out_features: 2, okl_l: 0.5, okl_cmax: 0.4,
 };
 const JD_MIN = J2000 - 5000 * 365.25, JD_MAX = J2000 + 5000 * 365.25;
 const LIVE_REFRESH_MS = 1000;
@@ -165,7 +165,7 @@ function archOf(w) {
   return {
     arch: "v10_topo_attention", n_bodies: w.n_bodies ?? 13, n_planets: N_PLANETS, token_dim: w.token_dim ?? 3,
     d_model: w.d_model, d_ff: w.d_ff, d_head: w.d_head, n_blocks: w.n_blocks,
-    vis_bias: w.vis_bias ?? 3.0, n_anchors: w.n_anchors ?? 2, out_features: w.out_features ?? 2, okl_l: w.okl_l ?? 0.5, okl_cmax: w.okl_cmax ?? 0.4,
+    vis_bias: w.vis_bias ?? 3.0, n_anchors: w.n_anchors ?? 2, qk_norm: w.qk_norm ?? false, out_features: w.out_features ?? 2, okl_l: w.okl_l ?? 0.5, okl_cmax: w.okl_cmax ?? 0.4,
   };
 }
 function makeFieldRT(w, h) {

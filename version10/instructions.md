@@ -63,20 +63,40 @@ so gating it by zenith would wrongly zero out its prominence — after the exemp
 on equal footing with MC in both the per-block attention and the pooled read-out. The exemption
 is mirrored identically in `attn10.js` and the GLSL field shader (parity-tested).
 
-**Anti-ringing recalibration (v10):**
+**Anti-ringing recalibration (v10):** softer horizon gate — `gate_k` 8.0 → **3.0**. A gentle
+falloff for angular proximity avoids a near-discontinuous target; v10's sharpness comes from the
+fast ASC/MC tokens instead of a steep gate.
 
-* **Softer horizon gate** — `gate_k` 8.0 → **3.0**. A gentle physical falloff for angular
-  proximity avoids a near-discontinuous target (which pushes a smooth net toward Gibbs-style
-  spatial ringing). v10's sharpness comes from the fast ASC/MC tokens instead of a steep gate.
-* **Total-variation smoothness** — a light penalty (`tv_weight`, default 0.05) on the squared
-  OKLab colour change between a point and a same-instant longitude neighbour (`tv_delta_deg`).
-  The model must learn genuine localized tension from the tokens, not hallucinate high-frequency
-  noise. Set `--tv-weight 0` to disable.
+**v10.1 — the beaded-zipper cure (hue winding).** Under *deep* training (50k+ steps) a dotted
+rainbow "zipper" can appear along an astrocartography line. It is **not** real structure and it is
+**not** softmax saturation: the diagnostic shows the hue angle *winding* through the colour wheel
+several times across a few degrees, driven by the head weights inflating. Because the isometric
+objective depends only on the *local* colour gap `‖Δ(a,b)‖`, it is blind to adding whole 2π turns
+to the hue — so the network is free to wind at zero loss cost, yet winding encodes **no signal**.
+The cure removes only that gauge freedom, never the signature:
+
+* **Bounded cosine attention** (`qk_norm`, default on) — Q, K (and the pool query/keys) are
+  L2-normalised, so the pre-softmax logit is a cosine in `[-1,1]` times a learnable temperature
+  clamped to ≤ `attn_temp_max` (30). Deep training can no longer inflate Q·K into a saturated
+  switch. Sharp *true* edges (a high temperature) stay reachable; only the runaway is outlawed.
+* **Moderate weight decay** — `3e-3` (was `1e-4`) on the 2-D weight matrices only (never biases,
+  temperatures, `q_pool`, or `E_body`). Holds the head in the small-number regime that renders
+  solid lines. Deliberately far below the PRD's `0.1`, which would dull real signal.
+* **Isometry-referenced anti-winding term** (replaces the blunt TV smoothness) — the *same*
+  isometric objective enforced at fine + coarse spatial scale: neighbouring observers' colours
+  must differ by exactly `γ·d_sky(pair)`, no more. Winding grossly overshoots that (a full hue
+  turn while `d_sky` barely moves) and is removed; a genuine gradient already satisfies it and is
+  untouched. This is faithful *by construction* — the reference is the true sky metric, not zero.
+
+Rejected from the source PRD after checking: **softmax-saturation** as the diagnosis (false — the
+40k model's logits max ≈ 2, softmax max-prob ≈ 0.4), **weight_decay 0.1** (over-smooths), and
+**Huber loss** (irrelevant to hue winding).
 
 ```
 d_local = ||ΔV||/√39 ; d_rel = ||ΔR||/√78 (R = horizon-gated chords, k=3)
 d_sky   = 0.5·d_local + 0.5·d_rel
-L = MSE( ||Δ(OKLab a,b)|| , γ·d_sky ) + λ_anchor·anchor + λ_tv·TV        (γ = 0.35)
+L = MSE( ||Δ(OKLab a,b)|| , γ·d_sky ) + λ_anchor·anchor
+      + Σ_scale λ_scale·MSE( ||Δ(a,b)||_neighbour , γ·d_sky_neighbour )     (γ = 0.35)
 ```
 
 ---

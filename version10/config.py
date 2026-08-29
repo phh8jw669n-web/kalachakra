@@ -30,6 +30,16 @@ class AttnConfig:
     #: visibility prior — they get the full vis_bias regardless of altitude (the Ascendant sits
     #: on the horizon, so gating it by zenith would wrongly zero out its prominence).
     n_anchors: int = 2
+    #: v10.1 anti-ringing: bound the attention logits so deep training cannot inflate Q·K into a
+    #: hard-saturated softmax. When True, Q and K (and the pool query/keys) are L2-normalised
+    #: before their dot product — pure cosine similarity in [-1,1] — then scaled by a LEARNABLE
+    #: temperature clamped to [~0, attn_temp_max]. This replaces the unbounded (1/sqrt(d))*tau
+    #: scale, so no matter how many steps the model trains the pre-softmax logit can never run
+    #: away. It does NOT alter the isometric objective; sharp (true) astrocartography edges are
+    #: still reachable (a high temperature), only the runaway is outlawed.
+    qk_norm: bool = True
+    attn_temp_init: float = 10.0
+    attn_temp_max: float = 30.0
     #: OKLCH pure-chroma head (no luminance): the model outputs polar (C,H) ->
     #: OKLab (a,b) = (C cosH, C sinH), C = okl_cmax*sigmoid(z0), H = z1 (raw radians). okl_l is
     #: the FIXED neutral OKLab lightness supplied only at render time, so the globe is a
@@ -55,7 +65,12 @@ class DataConfig:
 class TrainConfig:
     lr: float = 3e-4
     lr_min: float = 1e-6
-    weight_decay: float = 1e-4
+    #: v10.1: moderate weight decay (was 1e-4). The mechanism test proved the beaded-zipper is
+    #: HUE WINDING driven by head-weight inflation under deep training; a mild gravitational pull
+    #: on the weight matrices keeps them in the small-number regime that renders solid lines. It
+    #: is applied to 2-D weight matrices only (never biases / temperatures / embeddings — see
+    #: training.py). 3e-3 is deliberately far below the PRD's 0.1, which would dull real signal.
+    weight_decay: float = 3e-3
     warmup_steps: int = 500
     max_steps: int = 40_000
     grad_clip: float = 1.0
@@ -74,11 +89,17 @@ class TrainConfig:
     #: ASC/MC tokens (which cross zeniths/horizons rapidly with geography), not from a steep gate
     #: that would push the net into Gibbs-style spatial ringing.
     gate_k: float = 3.0
-    #: Total-variation smoothness prior. Penalises squared colour change between geographically
-    #: neighbouring observers (same jd), so the model learns genuine localized tension from the
-    #: tokens rather than hallucinating high-frequency noise. 0 disables it.
-    tv_weight: float = 0.05
-    tv_delta_deg: float = 0.75        # neighbour offset (deg) used to probe the spatial gradient
+    #: v10.1 anti-winding term (replaces the blunt total-variation smoothness). For a point and a
+    #: nearby same-instant neighbour we enforce the SAME isometric objective at fine spatial
+    #: scale: ||d(OKLab a,b)|| must equal gamma * d_sky(pair), no more. Hue winding grossly
+    #: violates this (a whole colour-wheel turn across a few degrees while d_sky barely moves), so
+    #: it is removed — but genuine structure, which already satisfies the metric, is untouched.
+    #: Because the target is the true sky distance (not zero), this NEVER dulls a real gradient.
+    #: Two scales: a fine one that kills the beads and a coarse one that enforces broad coherence.
+    tv_weight: float = 0.08           # weight on the fine-scale isometry-consistency term
+    tv_delta_deg: float = 0.6         # fine neighbour offset (deg) — the anti-bead scale
+    tv_weight_coarse: float = 0.03    # weight on the coarse-scale term
+    tv_delta_coarse_deg: float = 2.5  # coarse neighbour offset (deg)
     anchor_weight: float = 0.05
     device: str = ""
     num_workers: int = 0
