@@ -32,6 +32,23 @@ N_BODIES = 13                    # + Ascendant + Midheaven (observer-dependent)
 STATE_DIM = N_BODIES * 3         # 39
 _LAT_CLAMP = 89.99               # keep the topocentric frame / tan(lat) off the exact pole
 
+# v10.1 polar-cap fade for the structural anchors (ASC, MC). Measured: the ASC token's spatial
+# gradient is flat through the mid-latitudes (~0.001-0.007/deg) then rises ~40x toward the poles
+# (peaking ~70deg) as longitude converges and the house framework degenerates. We taper ASC/MC to
+# zero across the polar cap ONLY — unity for |lat| <= ANCHOR_FADE_LAT0, a smooth raised-cosine to
+# 0 by ANCHOR_FADE_LAT1 — so the populated mid-latitudes (where ASC is well-defined) are untouched
+# while the wild polar variation is removed. NB: plain cos(lat) was rejected — it would suppress
+# ASC at 30-50deg where there is no problem. LAT0 ~ the polar-circle onset of house degeneracy.
+ANCHOR_FADE_LAT0 = 60.0
+ANCHOR_FADE_LAT1 = 88.0
+
+
+def anchor_fade(lat_deg):
+    """Polar-cap taper in [0,1] for the ASC/MC tokens: 1 at mid-latitudes, 0 beyond the cap."""
+    a = np.abs(np.asarray(lat_deg, dtype=np.float64))
+    t = np.clip((a - ANCHOR_FADE_LAT0) / (ANCHOR_FADE_LAT1 - ANCHOR_FADE_LAT0), 0.0, 1.0)
+    return 0.5 * (1.0 + np.cos(np.pi * t))               # 1 -> 0 raised cosine (C1-smooth)
+
 # JPL "Keplerian Elements for Approximate Positions" (Standish), J2000 + rates/century.
 # columns: a[au], e, I[deg], L[deg], long.peri[deg], long.node[deg]
 # (Earth row is the Earth-Moon barycentre.)
@@ -216,4 +233,10 @@ def topocentric_tensor(lat_deg, lon_deg, jd):
     north = sd * cphi - cd * sphi * cH
     east = -cd * sH
     vec = np.stack([north, east, up], axis=-1)              # [N,13,3] unit vectors
+    # v10.1: taper the ASC (11) & MC (12) tokens to zero across the polar cap so their wild
+    # high-latitude variation cannot inject a polar zipper. Applied at the token source, so the
+    # loss target (local + gated chords) fades consistently with the model input.
+    fade = anchor_fade(lat_deg)[:, None]                    # [N,1]
+    vec[:, 11, :] *= fade
+    vec[:, 12, :] *= fade
     return vec.reshape(vec.shape[0], STATE_DIM).astype(np.float32)

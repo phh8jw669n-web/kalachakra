@@ -66,6 +66,9 @@ export function buildShaders(arch) {
     #define N_PLANETS ${arch.n_planets ?? 11}
     #define N_ANCHORS ${arch.n_anchors ?? 0}
     #define QK_NORM ${arch.qk_norm ? 1 : 0}
+    #define CART_HEAD ${(arch.output_activation ?? "v10_cartesian") === "v10_cartesian" ? 1 : 0}
+    #define ANCHOR_FADE_LAT0 ${(arch.anchor_fade_lat0 ?? 60.0).toFixed(4)}
+    #define ANCHOR_FADE_LAT1 ${(arch.anchor_fade_lat1 ?? 88.0).toFixed(4)}
     #define NBL ${NBL}
     #define TOK ${TOK}
     #define INV_SQRTD ${(1.0 / Math.sqrt(D)).toFixed(8)}
@@ -183,13 +186,17 @@ export function buildShaders(arch) {
       for(int d=0;d<D;d++){ float acc=0.0; for(int b=0;b<NB;b++) acc+=pw[b]*tok[b*D+d]; pooled[d]=acc/Z; }
       float hh[DHEAD];
       for(int oo=0;oo<DHEAD;oo++){ float s=W(OFF_BO1+oo); for(int d=0;d<D;d++) s+=W(OFF_WO1+oo*D+d)*pooled[d]; hh[oo]=tanh(s); }
-      // OKLCH polar head: C = cmax*sigmoid(z0), H = z1 (raw radians) -> OKLab (a,b).
-      // Return (a,b) directly (continuous, no branch cut) — the field stores THIS, so all
-      // interpolation is Cartesian & perceptually uniform (no rainbow-bead hue interpolation).
       float z0=W(OFF_BO2+0), z1=W(OFF_BO2+1);
       for(int d=0;d<DHEAD;d++){ z0+=W(OFF_WO2+0*DHEAD+d)*hh[d]; z1+=W(OFF_WO2+1*DHEAD+d)*hh[d]; }
-      float C = OKL_CMAX / (1.0 + exp(-z0));
-      return vec2(C*cos(z1), C*sin(z1));
+      #if CART_HEAD
+        // v10.1 pure-Cartesian disk head: (a,b) = cmax*z/sqrt(1+|z|^2). No hue angle -> the
+        // optimiser cannot wind the hue; the field stores raw (a,b) so all interpolation is
+        // Cartesian & perceptually uniform (no rainbow-bead hue interpolation).
+        return OKL_CMAX * vec2(z0, z1) / sqrt(1.0 + z0*z0 + z1*z1);
+      #else
+        float C = OKL_CMAX / (1.0 + exp(-z0));            // legacy polar OKLCH
+        return vec2(C*cos(z1), C*sin(z1));
+      #endif
     }`;
 
   // OKLab (a,b) at the fixed neutral L -> gamma sRGB, with a HUE- and LIGHTNESS-preserving
@@ -250,6 +257,12 @@ export function buildShaders(arch) {
       float lamAsc = atan(cR, -(sR*u_cosEps + tan(lat)*u_sinEps));   // Ascendant ecliptic longitude
       ecef[11] = eclToEcef(lamAsc);                     // token 11 = ASC
       ecef[12] = eclToEcef(lamMc);                      // token 12 = MC
+      // v10.1 polar-cap taper: scale ASC/MC to zero across the polar cap (scaling the Earth-fixed
+      // direction == scaling the (N,E,Z) token, since netAB dots it with the local frame).
+      float alat = abs(lat) * (180.0/PI);
+      float ft = clamp((alat - ANCHOR_FADE_LAT0)/(ANCHOR_FADE_LAT1 - ANCHOR_FADE_LAT0), 0.0, 1.0);
+      float fade = 0.5*(1.0 + cos(PI*ft));
+      ecef[11] *= fade; ecef[12] *= fade;
 
       vec2 ab = netAB(nhat, ehat, up, ecef);            // OKLab chroma (a,b)
       fragColor = vec4(ab / (2.0*OKL_CMAX) + 0.5, 0.0, 1.0);      // encode (a,b) in [-cmax,cmax] -> [0,1]

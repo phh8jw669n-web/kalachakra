@@ -67,46 +67,53 @@ is mirrored identically in `attn10.js` and the GLSL field shader (parity-tested)
 falloff for angular proximity avoids a near-discontinuous target; v10's sharpness comes from the
 fast ASC/MC tokens instead of a steep gate.
 
-**v10.1 — the beaded-zipper cure (hue winding).** Under *deep* training (50k+ steps) a dotted
-rainbow "zipper" can appear along an astrocartography line. It is **not** real structure and it is
-**not** softmax saturation: the diagnostic shows the hue angle *winding* through the colour wheel
-several times across a few degrees, driven by the head weights inflating. Because the isometric
-objective depends only on the *local* colour gap `‖Δ(a,b)‖`, it is blind to adding whole 2π turns
-to the hue — so the network is free to wind at zero loss cost, yet winding encodes **no signal**.
-The cure removes only that gauge freedom, never the signature:
+**v10.1 — the beaded-zipper cure, at the source.** Under *deep* training (50k+ steps) a dotted
+rainbow "zipper" appears along an astrocartography line. Measured, it is **hue winding**, not
+softmax saturation (the 40k model's logits max ≈ 2, softmax max-prob ≈ 0.4 — nowhere near
+saturated) and not real structure: emulating deep-training inflation makes the hue angle *wind*
+through the colour wheel several turns down a meridian (+2.98 at head ×8) while chroma barely
+moves. Winding is a pure **gauge artifact** — the isometric objective depends only on the *local*
+colour gap `‖Δ(a,b)‖`, so it is blind to whole 2π turns; the old polar head made winding **free**
+(a monotone `H = z1` ramp). Rather than *penalise* winding after the fact, v10.1 makes it
+**non-representable**:
 
-* **Bounded cosine attention** (`qk_norm`, default on) — Q, K (and the pool query/keys) are
-  L2-normalised, so the pre-softmax logit is a cosine in `[-1,1]` times a learnable temperature
-  clamped to ≤ `attn_temp_max` (30). Deep training can no longer inflate Q·K into a saturated
-  switch. Sharp *true* edges (a high temperature) stay reachable; only the runaway is outlawed.
-* **Moderate weight decay** — `3e-3` (was `1e-4`) on the 2-D weight matrices only (never biases,
-  temperatures, `q_pool`, or `E_body`). Holds the head in the small-number regime that renders
-  solid lines. Deliberately far below the PRD's `0.1`, which would dull real signal.
-* **Isometry-referenced anti-winding term** (replaces the blunt TV smoothness) — the *same*
-  isometric objective enforced at fine + coarse spatial scale: neighbouring observers' colours
-  must differ by exactly `γ·d_sky(pair)`, no more. Winding grossly overshoots that (a full hue
-  turn while `d_sky` barely moves) and is removed; a genuine gradient already satisfies it and is
-  untouched. This is faithful *by construction* — the reference is the true sky metric, not zero.
+* **Pure-Cartesian OKLab head** (`output_activation: v10_cartesian`) — the two logits map straight
+  to the OKLab axes on an open disk of radius `okl_cmax`: `(a,b) = cmax·z / √(1+|z|²)`. There is
+  **no hue angle**, no `sin`/`cos` of an unbounded accumulator. The identical pre-head ramp that
+  winds the polar head 9.5 turns moves the Cartesian head by half a turn — a single monotone
+  sweep. To wind now, the 2-D output would have to genuinely oscillate, which capacity + weight
+  decay resist and the isometric metric penalises. This is the fundamental fix; it caps chroma to
+  `cmax` (in gamut) exactly as the old `C` did, losing nothing.
+* **Polar-cap fade for ASC/MC** — measured, the ASC token's spatial gradient is flat through the
+  mid-latitudes then rises ~40× toward the poles (peaking ~70°) as longitude converges and the
+  house framework degenerates. The two anchor tokens are tapered to zero across the polar cap
+  **only** — unity for `|lat| ≤ 60°`, raised-cosine to 0 by `88°` (`anchor_fade`). This removes
+  the polar zipper without touching the populated mid-latitudes. Plain `cos(lat)` was **rejected**
+  — it would suppress ASC at 30–50° where the gradient is still flat (no problem there).
 
-Rejected from the source PRD after checking: **softmax-saturation** as the diagnosis (false — the
-40k model's logits max ≈ 2, softmax max-prob ≈ 0.4), **weight_decay 0.1** (over-smooths), and
-**Huber loss** (irrelevant to hue winding).
+Retained as sound (not "smoothing hacks"): **bounded cosine attention** (`qk_norm`, Q/K/pool
+L2-normalised, temperature ≤ 30) so deep training can't saturate attention, and **moderate weight
+decay** (`3e-3`, 2-D matrices only). The earlier **isometry-referenced smoothness** term
+(`isometric_pair_loss`, fine+coarse) is now **off by default** — the Cartesian head makes it
+unnecessary — but remains available (`--tv-weight`) as faithful belt-and-suspenders. Rejected from
+the source PRDs after checking: softmax-saturation diagnosis (false), `weight_decay 0.1`
+(over-smooths), Huber loss (irrelevant to winding), and literal `cos(lat)` (mid-latitude
+compromise).
 
 ```
-d_local = ||ΔV||/√39 ; d_rel = ||ΔR||/√78 (R = horizon-gated chords, k=3)
+d_local = ||ΔV||/√39 ; d_rel = ||ΔR||/√78 (R = horizon-gated chords, k=3; ASC/MC polar-faded)
 d_sky   = 0.5·d_local + 0.5·d_rel
-L = MSE( ||Δ(OKLab a,b)|| , γ·d_sky ) + λ_anchor·anchor
-      + Σ_scale λ_scale·MSE( ||Δ(a,b)||_neighbour , γ·d_sky_neighbour )     (γ = 0.35)
+L = MSE( ||Δ(OKLab a,b)|| , γ·d_sky ) + λ_anchor·anchor        (γ = 0.35; a,b are raw Cartesian)
 ```
 
 ---
 
-## 3 · Colour: OKLCH (perceptually uniform, bead-free)
+## 3 · Colour: pure-Cartesian OKLab (perceptually uniform, winding-free)
 
-The head outputs polar OKLCH — `C = 0.4·sigmoid(z0)`, `H = z1` (raw radians, cyclic via
-cos/sin) — carried as OKLab `(a,b) = (C·cosH, C·sinH)`. Euclidean distance on `(a,b)` *is* the
-OKLCH cylindrical distance, so the loss is perceptually uniform. The **field texture stores
-`(a,b)`** (half-float where available) and the globe reconstructs **OKLab → sRGB per pixel**
+The head outputs OKLab `(a,b)` **directly** on a disk of radius `0.4`: `(a,b) = cmax·z/√(1+|z|²)`
+(v10.1 — no hue angle, so no winding; see §2). Euclidean distance on `(a,b)` is the perceptual
+OKLab chroma distance, so the loss is perceptually uniform. The **field texture stores `(a,b)`**
+(half-float where available) and the globe reconstructs **OKLab → sRGB per pixel**
 with a hue- and lightness-preserving gamut clip (bisection to the sRGB boundary). Interpolating
 the Cartesian `(a,b)` — never a hue angle — is what keeps gradients smooth and bead-free.
 

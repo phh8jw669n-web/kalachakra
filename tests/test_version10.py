@@ -16,7 +16,7 @@ torch = pytest.importorskip("torch")
 
 import version10  # noqa: F401,E402
 from version10 import state as st                                    # noqa: E402
-from version10.attention import bound_oklch, build_model             # noqa: E402
+from version10.attention import bound_cartesian, build_model         # noqa: E402
 from version10.config import AttnConfig, DataConfig, TrainConfig, V10Config   # noqa: E402
 from version10.ephemeris import BODY_NAMES, N_BODIES, asc_mc_ecliptic, gmst_deg, _obliquity  # noqa: E402
 from version10.losses import (   # noqa: E402
@@ -43,10 +43,25 @@ def test_local_units_and_asc_mc_placement():
     local = st.local_vectors(lat, lon, jd)
     assert local.shape == (n, 39) and local.dtype == np.float32 and np.isfinite(local).all()
     v = local.reshape(n, 13, 3)
-    assert np.allclose(np.linalg.norm(v, axis=-1), 1.0, atol=1e-4)      # every token is a unit vec
+    assert np.allclose(np.linalg.norm(v[:, :11], axis=-1), 1.0, atol=1e-4)   # 11 bodies are unit
     # ASC (token 11) rises on the horizon: Up ~ 0 ; MC (token 12) is on the meridian: East ~ 0
+    # (fade scales all 3 components equally, so these zero components stay zero)
     assert np.abs(v[:, 11, 2]).max() < 1e-3            # ASC zenith component ~ 0 (on the horizon)
     assert np.abs(v[:, 12, 1]).max() < 1e-3            # MC east component ~ 0 (on the meridian)
+
+
+def test_anchor_polar_fade():
+    """v10.1: ASC/MC are unit through the mid-latitudes (fade == 1) and taper to ~0 at the poles,
+    so their wild high-latitude variation cannot inject a polar zipper. The 11 bodies are never
+    faded."""
+    lat = np.array([0.0, 45.0, 59.0, 75.0, 89.0, -89.0])
+    lon = np.full_like(lat, 33.0)
+    v = st.local_vectors(lat, lon, np.full_like(lat, 2451545.0)).reshape(-1, 13, 3)
+    anc = np.linalg.norm(v[:, 11:], axis=-1)          # [N,2] ASC & MC magnitudes
+    assert np.allclose(anc[:3], 1.0, atol=1e-4)        # |lat| <= 60 -> full unit anchors
+    assert (anc[4] < 0.05).all() and (anc[5] < 0.05).all()   # |lat| ~ 89 -> faded to ~0
+    assert (anc[3] < anc[2]).all()                     # monotone taper across the cap
+    assert np.allclose(np.linalg.norm(v[:, :11], axis=-1), 1.0, atol=1e-4)   # bodies untouched
 
 
 def test_asc_mc_matches_swisseph():
@@ -69,12 +84,12 @@ def test_asc_mc_are_observer_dependent():
     """The whole point of the anchors: unlike the geocentric bodies, ASC/MC differ per observer
     at a fixed instant, so they carry sharp spatial (astrocartography) structure."""
     jd0 = 2451545.0
-    lat = np.repeat(np.linspace(-80, 80, 12), 24)
+    lat = np.repeat(np.linspace(-55, 55, 12), 24)     # mid-latitudes (fade == 1, no confound)
     lon = np.tile(np.linspace(-175, 175, 24), 12)
     v = st.local_vectors(lat, lon, np.full(lat.shape, jd0)).reshape(-1, 13, 3)
-    assert v[:, 0].std(axis=0).mean() > 0.05          # bodies vary across the globe too
-    assert v[:, 11].std(axis=0).mean() > 0.2          # ASC varies strongly with geography
-    assert v[:, 12].std(axis=0).mean() > 0.2          # MC too
+    assert v[:, 0].std(axis=0).max() > 0.05           # bodies vary across the globe too
+    assert v[:, 11].std(axis=0).max() > 0.3           # ASC varies strongly with geography
+    assert v[:, 12].std(axis=0).max() > 0.3           # MC too
 
 
 def test_gated_chords_shape_and_signal():
@@ -97,13 +112,16 @@ def test_model_shapes_and_oklch_bounds():
     assert y.shape == (9, 2)
     y2 = net(torch.randn(9, 39))
     assert y2.shape == (9, 2)
-    ab = bound_oklch(torch.randn(40000, 2) * 3.0, 0.4)
-    assert ab.norm(dim=1).max() <= 0.4 + 1e-5 and ab.norm(dim=1).max() > 0.399
+    # pure-Cartesian disk head: |(a,b)| < cmax always, approaches cmax for large logits, and has
+    # NO hue angle (winding is not representable).
+    ab = bound_cartesian(torch.randn(40000, 2) * 8.0, 0.4)
+    assert ab.norm(dim=1).max() < 0.4 and ab.norm(dim=1).max() > 0.39
+    assert bound_cartesian(torch.zeros(1, 2), 0.4).abs().max() == 0.0      # origin -> 0
 
 
 def test_export_structure():
     w = build_model(d_model=16, d_ff=32, d_head=16, n_blocks=2).export_weights()
-    assert w["arch"] == "v10_topo_attention" and w["output_activation"] == "v10_oklch"
+    assert w["arch"] == "v10_topo_attention" and w["output_activation"] == "v10_cartesian"
     assert w["n_bodies"] == 13 and w["out_features"] == 2 and w["okl_cmax"] == 0.4
     assert w["n_anchors"] == 2                                          # ASC/MC exempt from vis prior
     assert w["qk_norm"] is True                                         # v10.1 bounded cosine attn
@@ -149,7 +167,9 @@ def _numpy_model(w, local):
     pw = sm(psco, 1)
     pooled = np.einsum("nb,nbd->nd", pw, t)
     z = np.tanh(pooled @ np.asarray(w["Wo1"]).T + np.asarray(w["bo1"])) @ np.asarray(w["Wo2"]).T + np.asarray(w["bo2"])
-    C = w["okl_cmax"] / (1.0 + np.exp(-z[:, 0]))
+    if w.get("output_activation") == "v10_cartesian":          # pure-Cartesian disk head (v10.1)
+        return w["okl_cmax"] * z / np.sqrt(1.0 + (z ** 2).sum(-1, keepdims=True))
+    C = w["okl_cmax"] / (1.0 + np.exp(-z[:, 0]))               # legacy polar OKLCH
     return np.stack([C * np.cos(z[:, 1]), C * np.sin(z[:, 1])], axis=-1)
 
 

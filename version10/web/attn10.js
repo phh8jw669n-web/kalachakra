@@ -73,11 +73,18 @@ export function makeModel(weights) {
     const pool = softmax(pscores);
     const pooled = new Array(D).fill(0);
     for (let i = 0; i < NB; i++) for (let d = 0; d < D; d++) pooled[d] += pool[i] * t[i][d];
-    // OKLCH polar head: C = cmax*sigmoid(z0), H = z1 (raw radians) -> OKLab chroma (a,b)
     const z = matvec(W.Wo2, W.bo2, matvec(W.Wo1, W.bo1, pooled).map(tanh));
     const cmax = W.okl_cmax ?? 0.4;
-    const C = cmax / (1 + Math.exp(-z[0])), H = z[1];
-    const ab = [C * Math.cos(H), C * Math.sin(H)];       // OKLab (a,b)
+    let ab;
+    if ((W.output_activation ?? "v10_cartesian") === "v10_cartesian") {
+      // v10.1 pure-Cartesian disk head: (a,b) = cmax*z/sqrt(1+|z|^2) — no hue angle, no winding.
+      const s = cmax / Math.sqrt(1 + z[0] * z[0] + z[1] * z[1]);
+      ab = [z[0] * s, z[1] * s];
+    } else {                                             // legacy polar OKLCH (C = sigmoid, H = z1)
+      const C = cmax / (1 + Math.exp(-z[0]));
+      ab = [C * Math.cos(z[1]), C * Math.sin(z[1])];
+    }
+    const C = Math.hypot(ab[0], ab[1]), H = Math.atan2(ab[1], ab[0]);   // for the HUD readout only
     return { ab, C, H, L: W.okl_l ?? 0.5, pool };
   };
 }

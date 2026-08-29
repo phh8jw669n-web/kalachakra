@@ -9,11 +9,12 @@
         t     = t + W2 tanh(W1 t + b1) + b2           per-token FFN, residual
     pool    w = softmax(temp_pool * norm(t).norm(q_pool)) over the 13 tokens
             p = sum_b w_b t_b                         -> [N, D]        (energy read-out)
-    head    z = Wo2 tanh(Wo1 p + bo1) + bo2           -> [N, 2]  (C,H logits)
-    chroma  C = cmax*sigmoid(z0) ; H = z1             polar OKLCH -> OKLab (a,b)=(C cosH, C sinH)
-                                                      (NO luminance; a fixed neutral OKLab L is
-                                                      added only at render). Euclidean distance
-                                                      on (a,b) IS the OKLCH cylindrical distance.
+    head    z = Wo2 tanh(Wo1 p + bo1) + bo2           -> [N, 2]  raw logits (Cartesian a,b axes)
+    chroma  (a,b) = cmax * z / sqrt(1+|z|^2)          v10.1 PURE-CARTESIAN OKLab head (disk of
+                                                      radius cmax) — NO hue angle, so the optimiser
+                                                      cannot wind the hue (the deep-training beaded
+                                                      zipper). NO luminance; a fixed neutral OKLab L
+                                                      is added only at render.
 
 Why attention (not v8's fixed chords)? A learned bilinear form Q K^T = t_i^T (Wq^T Wk) t_j is
 **not** rotation-invariant unless Wq^T Wk ~ I, so — unlike a plain dot product — it varies with
@@ -34,22 +35,33 @@ from torch import nn
 from torch.nn import functional as F
 
 
+def bound_cartesian(z: torch.Tensor, okl_cmax: float) -> torch.Tensor:
+    """Pure-Cartesian OKLab (a, b) head — v10.1's fundamental cure for HUE WINDING.
+
+    The two raw logits map DIRECTLY to the OKLab chroma axes, squashed into an OPEN DISK of
+    radius ``okl_cmax``:
+
+        (a, b) = okl_cmax * z / sqrt(1 + |z|^2)          |(a,b)| < okl_cmax
+
+    There is **no angle variable** — no ``sin``/``cos`` of an unbounded accumulator — so the
+    optimiser physically cannot 'spin' the hue through the colour wheel (which was free under the
+    old polar ``H = z1`` head and produced the beaded rainbow zipper at depth). To wind now, the
+    2-D output would have to genuinely oscillate, which the network's smoothness + weight decay
+    resist and the isometric metric penalises. Near the origin the map is ~``cmax * z`` (linear,
+    as the source PRD asks); it saturates smoothly to chroma <= cmax so colours stay in gamut and
+    Euclidean distance on (a, b) stays perceptually meaningful (a disk, no corner clipping).
+    A fixed neutral OKLab L is supplied only at render time (no luminance is optimised)."""
+    r2 = (z ** 2).sum(dim=-1, keepdim=True)
+    return okl_cmax * z / torch.sqrt(1.0 + r2)
+
+
 def bound_oklch(z: torch.Tensor, okl_cmax: float) -> torch.Tensor:
-    """Polar OKLCH head -> OKLab chroma vector (a, b). No luminance (a fixed neutral OKLab L is
-    supplied only at render time). The two logits are read as cylindrical components:
-
-        C = okl_cmax * sigmoid(z0)   in [0, cmax]      chroma  (radius; sigmoid avoids clipping)
-        H = z1                        raw radians       hue     (cyclic via cos/sin -> no snapping)
-        a = C*cos(H) ,  b = C*sin(H)                    OKLab Cartesian chroma
-
-    Returning (a, b) makes the reachable set a DISK (not a Cartesian square, so no corner
-    clipping) and makes plain Euclidean distance on (a, b) equal to the OKLCH cylindrical
-    distance sqrt(C1^2 + C2^2 - 2 C1 C2 cos(dH)) — hue wrap and chroma handled for free."""
+    """Legacy polar OKLCH head (pre-v10.1): C = cmax*sigmoid(z0), H = z1, (a,b) = (C cosH, C sinH).
+    Retained only for loading/rendering old weights; the trig hue angle is what made deep-training
+    hue winding free, so live models use :func:`bound_cartesian` instead."""
     C = okl_cmax * torch.sigmoid(z[..., 0:1])
     H = z[..., 1:2]
-    a = C * torch.cos(H)
-    b = C * torch.sin(H)
-    return torch.cat([a, b], dim=-1)
+    return torch.cat([C * torch.cos(H), C * torch.sin(H)], dim=-1)
 
 
 class AttnBlock(nn.Module):
@@ -163,8 +175,8 @@ class TopoAttention(nn.Module):
             t = blk(t, vis)
         w = self._pool_weights(t, vis)                     # [N,11]
         pooled = torch.einsum("nb,nbd->nd", w, t)          # [N,D]
-        z = self.head2(torch.tanh(self.head1(pooled)))     # [N,2] -> (C,H) logits
-        ab = bound_oklch(z, self.cfg["okl_cmax"])          # [N,2] OKLab chroma from polar C,H
+        z = self.head2(torch.tanh(self.head1(pooled)))     # [N,2] raw logits (Cartesian a,b axes)
+        ab = bound_cartesian(z, self.cfg["okl_cmax"])      # [N,2] OKLab (a,b) — no hue angle
         return (ab, w) if return_pool else ab
 
     def export_weights(self) -> dict:
@@ -184,7 +196,7 @@ class TopoAttention(nn.Module):
             "tau": float(blk.eff_temp().detach()),
         } for blk in self.blocks]
         return {
-            "arch": "v10_topo_attention", "output_activation": "v10_oklch", "out_features": 2,
+            "arch": "v10_topo_attention", "output_activation": "v10_cartesian", "out_features": 2,
             "n_bodies": c["n_bodies"], "token_dim": c["token_dim"], "d_model": c["d_model"],
             "d_ff": c["d_ff"], "d_head": c["d_head"], "n_blocks": c["n_blocks"],
             "vis_bias": c["vis_bias"], "n_anchors": c["n_anchors"],

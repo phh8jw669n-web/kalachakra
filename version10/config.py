@@ -40,11 +40,11 @@ class AttnConfig:
     qk_norm: bool = True
     attn_temp_init: float = 10.0
     attn_temp_max: float = 30.0
-    #: OKLCH pure-chroma head (no luminance): the model outputs polar (C,H) ->
-    #: OKLab (a,b) = (C cosH, C sinH), C = okl_cmax*sigmoid(z0), H = z1 (raw radians). okl_l is
-    #: the FIXED neutral OKLab lightness supplied only at render time, so the globe is a
-    #: constant-lightness, perceptually-uniform chromatic energy field. okl_cmax caps chroma to a
-    #: renderable range (0.4 is vivid; lower it if the most saturated hues clip).
+    #: Pure-Cartesian OKLab chroma head (no luminance): the model outputs raw (a,b) via
+    #: (a,b) = okl_cmax * z / sqrt(1+|z|^2) — a disk of radius okl_cmax, NO hue angle (v10.1, so
+    #: the optimiser cannot wind the hue). okl_l is the FIXED neutral OKLab lightness supplied only
+    #: at render time, so the globe is a constant-lightness, perceptually-uniform chromatic energy
+    #: field. okl_cmax caps chroma to a renderable range (0.4 is vivid; lower it if hues clip).
     okl_l: float = 0.5
     okl_cmax: float = 0.4
 
@@ -89,16 +89,15 @@ class TrainConfig:
     #: ASC/MC tokens (which cross zeniths/horizons rapidly with geography), not from a steep gate
     #: that would push the net into Gibbs-style spatial ringing.
     gate_k: float = 3.0
-    #: v10.1 anti-winding term (replaces the blunt total-variation smoothness). For a point and a
-    #: nearby same-instant neighbour we enforce the SAME isometric objective at fine spatial
-    #: scale: ||d(OKLab a,b)|| must equal gamma * d_sky(pair), no more. Hue winding grossly
-    #: violates this (a whole colour-wheel turn across a few degrees while d_sky barely moves), so
-    #: it is removed — but genuine structure, which already satisfies the metric, is untouched.
-    #: Because the target is the true sky distance (not zero), this NEVER dulls a real gradient.
-    #: Two scales: a fine one that kills the beads and a coarse one that enforces broad coherence.
-    tv_weight: float = 0.08           # weight on the fine-scale isometry-consistency term
-    tv_delta_deg: float = 0.6         # fine neighbour offset (deg) — the anti-bead scale
-    tv_weight_coarse: float = 0.03    # weight on the coarse-scale term
+    #: Isometry-consistency (anti-winding) term — enforce ||d(OKLab a,b)|| = gamma*d_sky at fine +
+    #: coarse spatial scale. As of v10.1.1 this is DISABLED BY DEFAULT (weights 0): the pure-
+    #: Cartesian head (no hue angle) makes winding non-representable at the source, so the
+    #: smoothing term is no longer needed — the architecture is physically sound on its own. The
+    #: term is kept (set the weights > 0) as an optional belt-and-suspenders; it is faithful (same
+    #: objective at fine scale, referenced to the true sky metric, so it never dulls real signal).
+    tv_weight: float = 0.0            # fine-scale isometry-consistency weight (0 = off)
+    tv_delta_deg: float = 0.6         # fine neighbour offset (deg)
+    tv_weight_coarse: float = 0.0     # coarse-scale isometry-consistency weight (0 = off)
     tv_delta_coarse_deg: float = 2.5  # coarse neighbour offset (deg)
     anchor_weight: float = 0.05
     device: str = ""

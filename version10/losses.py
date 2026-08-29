@@ -8,11 +8,10 @@ tracks a *fixed, observer-dependent* sky distance:
     d_sky   = w_local * d_local + w_rel * d_rel        defaults 0.5 / 0.5
     L       = MSE( ||ab_A - ab_B|| , gamma * d_sky ) + anchor + iso-pair (v10.1 anti-winding)
 
-The colour is a pure 2-D OKLCH chroma output (polar C,H expressed as OKLab (a,b)=(C cosH, C sinH))
-— no luminance. Euclidean distance on (a,b) is *exactly* the OKLCH cylindrical distance
-sqrt(C_A^2 + C_B^2 - 2 C_A C_B cos(dH)), so hue wrap-around and chroma magnitude are handled
-with no special angular term, and (OKLab being perceptually uniform) the metric is perceptual.
-gamma is in OKLab units now (~60x smaller than the old CIELab default).
+The colour is a pure 2-D OKLab chroma output (v10.1: raw Cartesian (a,b) on a disk of radius cmax,
+no hue angle — so the optimiser cannot wind the hue) — no luminance. Euclidean distance on (a,b)
+is the perceptual OKLab chroma distance, and (OKLab being perceptually uniform) the metric is
+perceptual. gamma is in OKLab units (~60x smaller than the old CIELab default).
 
 Both terms vary across the globe at a fixed instant (the gate makes the chords observer-
 dependent — see state.py), so the globe is never a flat smear and relational events (a

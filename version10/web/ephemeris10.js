@@ -15,6 +15,14 @@ export const N_PLANETS = 11;            // Sun..Node have geocentric directions 
 export const N_BODIES = 13;             // + ASC + MC (computed per observer)
 export const STATE_DIM = 39;            // 13 tokens x (N,E,Zenith)
 export const LAT_CLAMP = 89.99;
+// v10.1 polar-cap fade for ASC/MC (must match version10/ephemeris.py and shader10.js defaults).
+export const ANCHOR_FADE_LAT0 = 60.0;
+export const ANCHOR_FADE_LAT1 = 88.0;
+export function anchorFade(latDeg) {
+  const a = Math.abs(Math.max(-LAT_CLAMP, Math.min(LAT_CLAMP, latDeg)));
+  const t = Math.min(1, Math.max(0, (a - ANCHOR_FADE_LAT0) / (ANCHOR_FADE_LAT1 - ANCHOR_FADE_LAT0)));
+  return 0.5 * (1.0 + Math.cos(Math.PI * t));
+}
 
 // JPL Keplerian elements (Standish): [a, e, I, L, long.peri, long.node] @ J2000 + rates.
 const ELEM = [
@@ -194,5 +202,7 @@ export function topocentricTensor(latDeg, lonDeg, jd) {
     out[k * 3 + 1] = -cd * sH;                               // East
     out[k * 3 + 2] = sd * sphi + cd * cphi * cH;             // Up = sin(alt)
   }
+  const fade = anchorFade(latDeg);                          // v10.1: taper ASC/MC over the polar cap
+  for (let c = 0; c < 3; c++) { out[11 * 3 + c] *= fade; out[12 * 3 + c] *= fade; }
   return out;
 }
